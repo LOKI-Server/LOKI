@@ -219,6 +219,32 @@ order. Each path appears once, at its current version:
   without assuming the full wait elapsed. Use a client read timeout of at least
   `wait + 15` seconds.
 
+## Watching every folder
+
+```text
+GET /sync/v1/watch?state=&wait=60
+```
+
+One request per device that answers as soon as any of the person's folders
+changes: a commit or restore, a new folder, or a deleted one. Prefer it over
+long-polling each folder's feed.
+
+```json
+{
+  "state": "3f9a1c0b7d2e4f61",
+  "changed": true,
+  "folders": [{"id":"7b1e…","seq":44}, {"id":"c02d…","seq":3}]
+}
+```
+
+- `state` is an opaque token for every folder's `seq`. Send the last one you
+  received; leave it empty the first time to get the current state at once.
+- When `changed` is `true`, sync each folder whose `seq` is above your cursor for
+  it, sync new folders you have mapped, and stop syncing folders that are gone.
+- When `changed` is `false`, the wait ended with nothing new: request again.
+- `wait` (0–60 seconds) behaves as for the changes feed, including early
+  answers, so always loop.
+
 ## Blobs
 
 Blob URLs use the lowercase hex SHA-256: `/sync/v1/blobs/{hash}`.
@@ -486,10 +512,11 @@ or kill mid-sync resumes cleanly.
    - `conflict` or `stashed` with `current: null`: the server never had the
      path. Remove it from the index so the next round commits it as new.
    - `rejected`: leave the file alone and tell the user which path clashes.
-6. **Wait.** Long-poll the changes feed with `wait=30` (or `60`) and start a
-   new round when it returns changes, when a file watcher fires, or every few
-   minutes. On a phone, sync when the emulator exits or the app returns to the
-   foreground rather than holding a long-poll open on battery.
+6. **Wait.** Hold one `GET /sync/v1/watch?wait=60` open and start a new round
+   for the folders it reports, when a file watcher fires (after the settle
+   delay), or every few minutes as a fallback. On a phone, hold the watch only
+   while the app is visible or the person has turned on a live-sync mode; sync
+   when the app returns to the foreground otherwise.
 
 Never write a local file in place, and never delete one because its `mtime`
 is older. Never let the local clock decide which version wins.

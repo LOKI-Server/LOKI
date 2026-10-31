@@ -36,6 +36,7 @@ pub fn router() -> Router<State> {
             axum::routing::patch(api::update_folder),
         )
         .route("/sync/v1/folders/{id}/changes", get(api::changes))
+        .route("/sync/v1/watch", get(api::watch))
         .route(
             "/sync/v1/folders/{id}/commit",
             post(api::commit).layer(DefaultBodyLimit::max(4 * MIB as usize)),

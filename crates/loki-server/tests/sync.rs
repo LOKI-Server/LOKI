@@ -881,6 +881,64 @@ async fn long_polls_wake_when_another_device_commits() {
 }
 
 #[tokio::test]
+async fn one_watch_per_device_covers_every_folder() {
+    let (_tmp, state, _owner) = installation().await;
+    let thor = login_device(&state, "owner", "owner-password-123", "Thor").await;
+    let pc = login_device(&state, "owner", "owner-password-123", "PC").await;
+    // Without a state the current one comes back at once.
+    let first = thor.ok("GET", "/sync/v1/watch?wait=30", None).await;
+    assert_eq!(first["changed"], true);
+    assert!(first["folders"].as_array().unwrap().is_empty());
+    let watch = |state: String| {
+        let device = thor.clone();
+        tokio::spawn(async move {
+            device
+                .ok(
+                    "GET",
+                    &format!("/sync/v1/watch?wait=30&state={state}"),
+                    None,
+                )
+                .await
+        })
+    };
+    let started = std::time::Instant::now();
+
+    // A new folder wakes the watcher.
+    let pending = watch(first["state"].as_str().unwrap().into());
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let folder = pc
+        .ok("POST", "/sync/v1/folders", Some(json!({"name":"Saves"})))
+        .await;
+    let id = folder["id"].as_str().unwrap().to_string();
+    let woke = pending.await.unwrap();
+    assert_eq!(woke["changed"], true);
+    assert_eq!(woke["folders"][0], json!({"id":id,"seq":0}));
+
+    // So does a commit in any folder, and an unchanged state just waits.
+    let pending = watch(woke["state"].as_str().unwrap().into());
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!pending.is_finished());
+    let hash = pc.upload(b"save").await;
+    pc.commit(&id, json!([{"path":"a.sav","hash":hash}]), "reject")
+        .await;
+    let woke = pending.await.unwrap();
+    assert_eq!(woke["folders"][0]["seq"], 1);
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    let quiet = thor
+        .ok(
+            "GET",
+            &format!(
+                "/sync/v1/watch?wait=1&state={}",
+                woke["state"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(quiet["changed"], false);
+    state.0.db.close().await;
+}
+
+#[tokio::test]
 async fn backups_carry_synced_files_and_collection_spares_referenced_blobs() {
     let (tmp, state, mut owner) = installation().await;
     let device = login_device(&state, "owner", "owner-password-123", "PC").await;

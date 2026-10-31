@@ -147,6 +147,8 @@ pub async fn new_folder(state: &State, user: &str, name: &str, kind: &str) -> Re
             "You already have a folder with this name.",
         ));
     }
+    // Other devices watching this person's folders learn about the new one.
+    state.wake_sync();
     Ok(folder(state, user, &id).await?.json())
 }
 pub async fn change_folder(
@@ -405,30 +407,93 @@ pub async fn changes(
 ) -> Result<Json<Value>> {
     let Caller { user, .. } = caller(&state, &headers).await?;
     let limit = query.limit.unwrap_or(1000).clamp(1, 5000);
-    // Subscribe before reading so a commit in between still wakes this request.
-    let mut wake = state.0.sync_wake.subscribe();
-    let mut feed = read_feed(&state, &user.id, &id, query.since, limit).await?;
-    let wait = query.wait.clamp(0, 60);
-    if feed.changes.is_empty() && wait > 0 {
-        // A bounded number of requests may wait; the rest answer at once.
-        if let Ok(_waiting) = state.0.sync_waiters.try_acquire() {
-            let deadline =
-                tokio::time::Instant::now() + std::time::Duration::from_secs(wait as u64);
-            while !state.0.maintenance.load(Ordering::SeqCst)
-                && let Ok(Ok(())) = tokio::time::timeout_at(deadline, wake.changed()).await
-            {
-                if state.0.maintenance.load(Ordering::SeqCst) {
-                    break;
-                }
-                feed = read_feed(&state, &user.id, &id, query.since, limit).await?;
-                if !feed.changes.is_empty() {
-                    break;
-                }
-            }
-        }
-    }
+    let feed = long_poll(&state, query.wait, || async {
+        let feed = read_feed(&state, &user.id, &id, query.since, limit).await?;
+        let ready = !feed.changes.is_empty();
+        Ok((feed, ready))
+    })
+    .await?;
     Ok(Json(
         json!({"seq":feed.seq,"more":feed.more,"reset":feed.reset,"changes":feed.changes}),
+    ))
+}
+
+/// Reads with `read` until it reports something new or `wait` seconds pass. Each
+/// commit (and maintenance) wakes waiters to read again. A bounded number of
+/// requests may wait; the rest answer at once.
+async fn long_poll<T, F, Fut>(state: &State, wait: i64, mut read: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(T, bool)>>,
+{
+    // Subscribe before reading so a commit in between still wakes this request.
+    let mut wake = state.0.sync_wake.subscribe();
+    let (mut value, ready) = read().await?;
+    let wait = wait.clamp(0, 60);
+    if ready || wait == 0 {
+        return Ok(value);
+    }
+    let Ok(_waiting) = state.0.sync_waiters.try_acquire() else {
+        return Ok(value);
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait as u64);
+    while !state.0.maintenance.load(Ordering::SeqCst)
+        && let Ok(Ok(())) = tokio::time::timeout_at(deadline, wake.changed()).await
+    {
+        if state.0.maintenance.load(Ordering::SeqCst) {
+            break;
+        }
+        let (next, ready) = read().await?;
+        value = next;
+        if ready {
+            break;
+        }
+    }
+    Ok(value)
+}
+
+#[derive(Deserialize)]
+pub struct WatchQuery {
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    wait: i64,
+}
+/// A short token for the sequence numbers of all of a person's folders: it
+/// changes whenever any folder changes, appears, or is deleted.
+async fn folder_state(state: &State, user: &str) -> Result<(String, Vec<Value>)> {
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT id,seq FROM sync_folders WHERE user_id=? ORDER BY id")
+            .bind(user)
+            .fetch_all(&state.0.db)
+            .await?;
+    let summary = rows
+        .iter()
+        .map(|(id, seq)| format!("{id}:{seq}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let folders = rows
+        .into_iter()
+        .map(|(id, seq)| json!({"id":id,"seq":seq}))
+        .collect();
+    Ok((auth::digest(&summary)[..16].to_string(), folders))
+}
+/// One request per device that returns when any of the person's folders changes,
+/// so clients learn about changes at once without a connection per folder.
+pub async fn watch(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    Query(query): Query<WatchQuery>,
+) -> Result<Json<Value>> {
+    let Caller { user, .. } = caller(&state, &headers).await?;
+    let (token, folders) = long_poll(&state, query.wait, || async {
+        let (token, folders) = folder_state(&state, &user.id).await?;
+        let changed = token != query.state;
+        Ok(((token, folders), changed))
+    })
+    .await?;
+    Ok(Json(
+        json!({"state":token,"changed":token != query.state,"folders":folders}),
     ))
 }
 

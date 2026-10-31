@@ -237,6 +237,46 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Changes" }
         "404": { $ref: "#/components/responses/Error" }
+  /watch:
+    get:
+      tags: [folders]
+      operationId: watch
+      summary: Wait for a change in any folder
+      description: |
+        One long-poll per device. Answers when any of the person's folders
+        changes (commit, restore, new, or deleted folder) relative to state,
+        or when the wait ends. Send an empty state the first time to get the
+        current one at once. When changed is true, sync each folder whose seq
+        is above the client's cursor for it.
+      parameters:
+        - name: state
+          in: query
+          description: The state token from the previous response; empty the first time.
+          schema: { type: string, default: "" }
+        - name: wait
+          in: query
+          description: Seconds to hold the request open while nothing changed. The server may answer earlier.
+          schema: { type: integer, minimum: 0, maximum: 60, default: 0 }
+      responses:
+        "200":
+          description: The current state of every folder.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [state, changed, folders]
+                properties:
+                  state: { type: string }
+                  changed: { type: boolean }
+                  folders:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, seq]
+                      properties:
+                        id: { type: string }
+                        seq: { type: integer, format: int64 }
+        "401": { $ref: "#/components/responses/Error" }
   /folders/{id}/commit:
     parameters:
       - $ref: "#/components/parameters/FolderId"
