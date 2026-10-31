@@ -50,10 +50,13 @@ adds the tool, SDK sources/archive, developer docs, and example. The Windows
 installer uses an explicit runtime file list even if pointed at such a bundle.
 The SDK and cargo-loki remain local source packages until published to crates.io.
 
-The output must be absent or empty. Use a fresh output directory for a new
-bundle; existing nonempty output is never overwritten. Assembly takes place in
-a temporary sibling directory, so validation failures do not publish a partial
-bundle. File links/reparse points are rejected in sources and SDK archives.
+Repeated runs automatically replace the previous generated bundle, removing
+obsolete files. The new bundle is assembled and verified in a temporary sibling
+directory first; a failed build leaves the previous bundle available. Output
+links/junctions, repository sources, input locations, and unrelated nonempty
+folders are rejected. File links/reparse points are also rejected in sources
+and SDK archives. Close programs running from the output if Windows prevents
+replacement.
 The installer reads the default `target/bundle` directory. If you select a
 custom `--output`, update `BundleDir` in `packaging/loki.iss` to match it.
 

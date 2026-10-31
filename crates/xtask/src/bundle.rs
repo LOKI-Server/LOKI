@@ -262,6 +262,158 @@ fn extract_sdk(source: &Path, dest: &Path, version: &str) -> Result<()> {
     fs::write(manifest, text)?;
     Ok(())
 }
+
+fn ordinary_directory(path: &Path) -> Result<bool> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        meta.is_dir() && !meta.file_type().is_symlink(),
+        "Bundle output must be a directory, not a file or link: {}",
+        path.display()
+    );
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        ensure!(
+            meta.file_attributes() & 0x400 == 0,
+            "Bundle output cannot be a junction or reparse point: {}",
+            path.display()
+        );
+    }
+    Ok(true)
+}
+
+fn validate_existing_bundle(output: &Path) -> Result<bool> {
+    if !ordinary_directory(output)? {
+        return Ok(false);
+    }
+    if fs::read_dir(output)?.next().is_none() {
+        return Ok(true);
+    }
+    for name in [
+        if cfg!(windows) {
+            "loki-server.exe"
+        } else {
+            "loki-server"
+        },
+        if cfg!(windows) { "caddy.exe" } else { "caddy" },
+        "LICENSE",
+        "CADDY-LICENSE.txt",
+        "CADDY-SOURCE.txt",
+    ] {
+        let valid = fs::symlink_metadata(output.join(name))
+            .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink());
+        ensure!(
+            valid,
+            "Refusing to replace a non-bundle directory: {} (missing regular {name})",
+            output.display()
+        );
+    }
+    Ok(true)
+}
+
+fn validate_output(output: &Path, inputs: &[&Path]) -> Result<PathBuf> {
+    ensure!(
+        !output
+            .components()
+            .any(|c| matches!(c, Component::ParentDir)),
+        "Bundle output must not contain '..'"
+    );
+    let name = output
+        .file_name()
+        .context("Bundle output needs a directory name")?;
+    let parent = output
+        .parent()
+        .context("Bundle output needs a parent directory")?;
+    fs::create_dir_all(parent)?;
+    let parent = fs::canonicalize(parent)?;
+    let candidate = parent.join(name);
+    let resolved = if ordinary_directory(&candidate)? {
+        fs::canonicalize(&candidate)?
+    } else {
+        candidate
+    };
+    let root = fs::canonicalize(crate::root())?;
+    ensure!(
+        !root.starts_with(&resolved) && resolved != root.join("target"),
+        "Bundle output cannot replace the checkout or target root"
+    );
+    for name in ["crates", "docs", "examples", "packaging", ".git", ".cargo"] {
+        ensure!(
+            !resolved.starts_with(root.join(name)),
+            "Bundle output cannot replace repository sources"
+        );
+    }
+    if output.starts_with(crate::root()) {
+        ensure!(
+            resolved.starts_with(&root),
+            "Bundle output parent resolves outside the checkout"
+        );
+    }
+    if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
+        let home = fs::canonicalize(home)?;
+        ensure!(
+            !home.starts_with(&resolved),
+            "Bundle output cannot replace the user home directory or its ancestors"
+        );
+    }
+    for input in inputs {
+        let input = fs::canonicalize(input)?;
+        ensure!(
+            !input.starts_with(&resolved),
+            "Bundle output would replace an input file: {}",
+            input.display()
+        );
+    }
+    validate_existing_bundle(&resolved)?;
+    Ok(resolved)
+}
+
+fn publish(stage: &Path, output: &Path) -> Result<()> {
+    if !validate_existing_bundle(output)? {
+        fs::rename(stage, output)?;
+        return Ok(());
+    }
+    let parent = output.parent().context("Bundle output needs a parent")?;
+    let previous = tempfile::Builder::new()
+        .prefix(".loki-previous-bundle-")
+        .tempdir_in(parent)?;
+    let old = previous.path().join("bundle");
+    // Resolve/check both move destinations before touching the existing output.
+    let parent = fs::canonicalize(parent)?;
+    let previous_path = fs::canonicalize(previous.path())?;
+    ensure!(
+        previous_path.starts_with(&parent) && fs::canonicalize(output)? == output,
+        "Bundle paths changed during assembly"
+    );
+    fs::rename(output, &old).with_context(|| {
+        format!(
+            "Could not replace {}. Close programs running from that bundle and retry.",
+            output.display()
+        )
+    })?;
+    if let Err(error) = fs::rename(stage, output) {
+        if let Err(rollback) = fs::rename(&old, output) {
+            let saved = previous.keep();
+            bail!(
+                "Bundle publish failed: {error}; restoring the old bundle also failed: {rollback}. Previous bundle retained at {}",
+                saved.join("bundle").display()
+            );
+        }
+        return Err(error).context("Could not publish new bundle; previous bundle restored");
+    }
+    // TempDir removes only this verified private sibling, never the output itself.
+    if let Err(error) = previous.close() {
+        eprintln!(
+            "New bundle is ready; could not remove the previous bundle at {}: {error}",
+            old.display()
+        );
+    }
+    Ok(())
+}
 pub fn run(options: Options) -> Result<()> {
     ensure!(
         options.caddy_version.split('.').count() >= 3
@@ -287,13 +439,19 @@ pub fn run(options: Options) -> Result<()> {
     } else {
         crate::root().join(options.output)
     };
-    ensure!(
-        !output.exists() || (output.is_dir() && fs::read_dir(&output)?.next().is_none()),
-        "Bundle output must be absent or empty: {} (use a fresh directory to avoid stale files)",
-        output.display()
-    );
     let binary = crate::absolute(&options.binary)?;
     let developer = developer_inputs(&binary, options.developer_tools, &crate::root())?;
+    let mut inputs = vec![binary.as_path()];
+    if let Some(developer) = &developer {
+        inputs.extend([developer.tool.as_path(), developer.sdk.as_path()]);
+    }
+    if let Some(archive) = &options.caddy_archive {
+        inputs.push(archive);
+    }
+    if let Some(checksums) = &options.caddy_checksums {
+        inputs.push(checksums);
+    }
+    let output = validate_output(&output, &inputs)?;
     let (bytes, checksums) = match (options.caddy_archive, options.caddy_checksums) {
         (Some(archive), Some(checksums)) => (fs::read(archive)?, fs::read_to_string(checksums)?),
         (None, None) => {
@@ -374,10 +532,7 @@ pub fn run(options: Options) -> Result<()> {
             &dest.join("examples/storage-notes"),
         )?;
     }
-    if output.exists() {
-        fs::remove_dir(&output)?;
-    }
-    fs::rename(dest, &output)?;
+    publish(dest, &output)?;
     println!("{}", output.display());
     Ok(())
 }
@@ -453,15 +608,15 @@ mod tests {
         )
         .unwrap();
         let output = directory.path().join("runtime");
-        run(Options {
+        let options = || Options {
             binary: server.clone(),
             output: output.clone(),
             developer_tools: false,
             caddy_version: "2.11.4".into(),
-            caddy_archive: Some(archive),
-            caddy_checksums: Some(sums),
-        })
-        .unwrap();
+            caddy_archive: Some(archive.clone()),
+            caddy_checksums: Some(sums.clone()),
+        };
+        run(options()).unwrap();
         let mut names: Vec<_> = fs::read_dir(&output)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -477,6 +632,60 @@ mod tests {
         expected.sort();
         assert_eq!(names, expected);
         assert_eq!(fs::read(output.join(executable)).unwrap(), b"caddy fixture");
+        fs::write(output.join("obsolete.txt"), b"stale file").unwrap();
+        fs::create_dir(output.join("old-docs")).unwrap();
+        fs::write(
+            output.join("old-docs/stale.md"),
+            b"obsolete developer asset",
+        )
+        .unwrap();
+        fs::write(&server, b"updated server fixture").unwrap();
+        run(options()).unwrap();
+        assert!(!output.join("obsolete.txt").exists());
+        assert!(!output.join("old-docs").exists());
+        assert_eq!(
+            fs::read(output.join(server.file_name().unwrap())).unwrap(),
+            b"updated server fixture"
+        );
+        fs::write(&archive, b"corrupted download").unwrap();
+        assert!(run(options()).is_err());
+        assert_eq!(
+            fs::read(output.join(server.file_name().unwrap())).unwrap(),
+            b"updated server fixture"
+        );
+    }
+    #[test]
+    fn bundle_publish_failure_restores_previous_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("bundle");
+        fs::create_dir(&output).unwrap();
+        // An empty existing output is also supported; failed publication must
+        // leave it in place rather than lose the original directory.
+        let output = fs::canonicalize(output).unwrap();
+        assert!(publish(&directory.path().join("missing-stage"), &output).is_err());
+        assert!(output.is_dir());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn bundle_output_cannot_replace_inputs_sources_or_unrelated_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input");
+        fs::create_dir(&input).unwrap();
+        let binary = input.join("server");
+        fs::write(&binary, b"input file").unwrap();
+        assert!(validate_output(&input, &[&binary]).is_err());
+        let unrelated = directory.path().join("unrelated");
+        fs::create_dir(&unrelated).unwrap();
+        fs::write(unrelated.join("keep.txt"), b"keep me").unwrap();
+        assert!(validate_output(&unrelated, &[]).is_err());
+        assert_eq!(fs::read(unrelated.join("keep.txt")).unwrap(), b"keep me");
+        for protected in [
+            crate::root(),
+            crate::root().join("target"),
+            crate::root().join("crates"),
+        ] {
+            assert!(validate_output(&protected, &[]).is_err());
+        }
     }
     #[test]
     fn archive_checksums_fail_closed_and_accept_official_algorithms() {

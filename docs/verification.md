@@ -150,8 +150,7 @@ watched rebuilds and failed-build preservation, Ctrl+C cleanup across two previe
 runs, Branch Notes storage/rollback/restore, and the complete Bigshot workflow
 all passed. The 128 MiB Bigshot stream showed about 0.14 MiB resident growth.
 Rust developer-bundle generation downloaded and verified the official Caddy archive,
-included the standalone SDK sources and example, and rejected overwriting a
-nonempty output directory. Both benchmark modes ran with two-second debug
+included the standalone SDK sources and example. Both benchmark modes ran with two-second debug
 samples to check the measurement code; these short checks do not replace the
 release performance measurements above. The task unit tests and Clippy passed.
 
@@ -160,6 +159,12 @@ and Caddy executables, LOKI's license, and Caddy's license/source notices. It
 requires neither a cargo-loki executable nor an SDK archive. Developer files
 are opt-in with `--developer-tools`; the Windows installer has an explicit
 runtime file list. The runtime inventory regression test and Clippy passed.
+
+Automatic bundle replacement was verified on Windows on 2026-10-31 by rerunning
+`cargo xtask bundle` against the existing runtime bundle. All six xtask tests
+and Clippy passed, including stale-file cleanup, preservation after failed
+assembly, rollback after failed publication, and rejection of unsafe output
+locations. New bundles are verified before replacing the previous output.
 
 The actual browser completed login from the LOKI dashboard to
 `bigshot-voter.localhost` on the same listener port. The dashboard showed the
