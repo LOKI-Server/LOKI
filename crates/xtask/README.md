@@ -32,7 +32,7 @@ From the repository root:
 
 ```powershell
 cargo build --release --locked -p loki-server
-cargo xtask bundle --output target/installer-bundle
+cargo xtask bundle
 ISCC.exe packaging/loki.iss
 ```
 
@@ -54,6 +54,8 @@ The output must be absent or empty. Use a fresh output directory for a new
 bundle; existing nonempty output is never overwritten. Assembly takes place in
 a temporary sibling directory, so validation failures do not publish a partial
 bundle. File links/reparse points are rejected in sources and SDK archives.
+The installer reads the default `target/bundle` directory. If you select a
+custom `--output`, update `BundleDir` in `packaging/loki.iss` to match it.
 
 Caddy downloads come from its official GitHub release and are checked against
 that release's SHA-256/SHA-512 checksums before extraction. The default is

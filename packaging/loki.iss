@@ -1,6 +1,6 @@
 ; Build from the repository root (Inno Setup 6.3 or newer):
 ;   cargo build --release --locked -p loki-server
-;   cargo xtask bundle --binary target/release/loki-server.exe --output target/installer-bundle
+;   cargo xtask bundle
 ;   ISCC.exe packaging/loki.iss
 ;
 ; Source and output paths below are relative to this script's directory.
@@ -8,7 +8,7 @@
 ; directory and registers optional sign-in startup through its setup/web UI.
 
 #define AppVersion "0.1.0"
-#define BundleDir "..\target\installer-bundle"
+#define BundleDir "..\target\bundle"
 
 [Setup]
 AppId=Aspenini.LOKI
