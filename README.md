@@ -108,11 +108,12 @@ standalone installations are not imported by this fresh-install release.
 
 ## Build a plugin
 
-The workspace contains three crates:
+The workspace contains four crates:
 
 - [loki-server](crates/loki-server): the server and embedded dashboard.
 - [loki-sdk](crates/loki-sdk): typed HTTP handlers, identity, configuration, SQLite, forms, uploads, streaming, and optional Askama support. The SDK owns the WIT bindings.
 - [cargo-loki](crates/cargo-loki): scaffolding, builds, checksummed packages, and a local development loop.
+- [xtask](crates/xtask): local `cargo xtask` commands for portable bundles, idle benchmarks, and smoke checks. It is not included in release builds.
 
 ```powershell
 cargo build -p loki-server -p cargo-loki
@@ -196,7 +197,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 node --check crates/loki-server/static/app.js
 node --test crates/loki-server/tests/setup-ui.cjs
-python scripts/sdk-smoke.py --tool target/debug/cargo-loki.exe --server target/debug/loki-server.exe
+cargo xtask sdk-smoke --tool target/debug/cargo-loki.exe --server target/debug/loki-server.exe
 ```
 
 The Caddy integration test uses the local Caddy CLI, or `CADDY` if set. Tests that
@@ -206,7 +207,7 @@ locally; this repository has no CI workflows.
 Run the real WASI workflow after building LOKI and packaging Bigshot:
 
 ```powershell
-python scripts/wasi-smoke.py --loki target/debug/loki-server.exe --package ../bigshot-voter/target/loki/bigshot-voter-0.5.0.loki-app
+cargo xtask wasi-smoke --loki target/debug/loki-server.exe --package ../bigshot-voter/target/loki/bigshot-voter-0.5.0.loki-app
 ```
 
 This uses disposable data under `target/wasi-smoke-*`, not installed services or real
@@ -216,7 +217,7 @@ permission revocation, failed-update rollback, and backup/resume.
 For the first-run setup and data-relocation regression check:
 
 ```powershell
-python scripts/setup-smoke.py target/release/loki-server.exe
+cargo xtask setup-smoke target/release/loki-server.exe
 ```
 
 If a setup submission was interrupted after the owner was saved, open `/login`
@@ -226,7 +227,7 @@ Measure the core separately from apps and Caddy:
 
 ```powershell
 cargo build --release
-python scripts/benchmark.py target/release/loki-server.exe
+cargo xtask benchmark target/release/loki-server.exe
 ```
 
 The engineering target is less than 75 MiB idle resident memory and less than

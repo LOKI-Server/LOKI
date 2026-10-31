@@ -214,7 +214,7 @@ cargo loki package
 From the LOKI repository, run the complete real-component workflow:
 
 ```powershell
-python scripts/wasi-smoke.py --loki target/release/loki-server.exe --package PATH_TO_BIGSHOT.loki-app
+cargo xtask wasi-smoke --loki target/release/loki-server.exe --package PATH_TO_BIGSHOT.loki-app
 ```
 
 The sandbox regression fixture is intentionally adversarial:

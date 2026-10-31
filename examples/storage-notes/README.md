@@ -30,7 +30,7 @@ survive restarts and participate in backups and executable/data rollback.
 End-to-end verification (after packaging, from the LOKI checkout):
 
 ```sh
-python scripts/storage-smoke.py --loki target/debug/loki-server.exe --package examples/storage-notes/target/loki/storage-notes-0.1.0.loki-app
+cargo xtask storage-smoke --loki target/debug/loki-server.exe --package examples/storage-notes/target/loki/storage-notes-0.1.0.loki-app
 ```
 
 This uses disposable accounts/directories, verifies separate users' data, range

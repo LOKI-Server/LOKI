@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/loki-server", "crates/loki-sdk", "crates/cargo-loki"]
+members = ["crates/loki-server", "crates/loki-sdk", "crates/cargo-loki", "crates/xtask"]
 default-members = ["crates/loki-server", "crates/cargo-loki"]
 resolver = "3"
 

@@ -21,7 +21,7 @@ The second row includes Wasmtime, compiled Bigshot code, and its SQLite pool
 inside the LOKI process. There is no separate Bigshot process or HTTP listener.
 
 A **128 MiB Bigshot media download** streamed directly from host-managed app
-storage with **0.47 MiB** sampled resident growth. The integration script rejects
+storage with **0.47 MiB** sampled resident growth. The WASI smoke task rejects
 growth of 16 MiB or more. Uploads and downloads use host streaming rather than
 copying complete media files into guest memory.
 
@@ -34,11 +34,11 @@ LOKI and in the total enabled-app memory measurement above.
 Reproduce from the LOKI repository root:
 
 ```powershell
-python scripts/benchmark.py target/release/loki-server.exe
-python scripts/benchmark.py target/release/loki-server.exe --package target/dist/bigshot-voter-0.5.0-wasi.loki-app
+cargo xtask benchmark target/release/loki-server.exe
+cargo xtask benchmark target/release/loki-server.exe --package target/dist/bigshot-voter-0.5.0-wasi.loki-app
 ```
 
-Scripts use disposable directories below `target/`, never enable sign-in startup,
+These tasks use disposable directories below `target/`, never enable sign-in startup,
 and stop their own test processes. JSON reports are `target/benchmark-last.json`
 and `target/benchmark-wasi-last.json`.
 
@@ -58,12 +58,12 @@ cover independent scaffolding, checksummed Unicode assets, malformed components,
 unsafe/duplicate paths, junction rejection, workspace member selection, and preservation of a prior package
 when validation fails.
 
-`python scripts/sdk-smoke.py --tool target/release/cargo-loki.exe --server target/release/loki-server.exe --offline`
+`cargo xtask sdk-smoke --tool target/release/cargo-loki.exe --server target/release/loki-server.exe --offline`
 creates an SDK-only project, checks/builds/packages it, starts a private dev
 installation, signs in through the real host, and serves its assets. It verifies
 a watched rebuild, a failed build retaining the last working component, a second
 run with the saved identity origin, and Ctrl+C stopping the child server. The
-Windows run passed. The script can also be run locally on Linux and macOS.
+Windows run passed. The task can also be run locally on Linux and macOS.
 
 Bigshot is now plugin-only. Its old standalone-server/account tests were removed
 with that implementation; its media, Markdown, voting-view tests and the live
@@ -102,11 +102,11 @@ The real WASI sandbox fixture checks storage capability admission, generated-fil
 streaming, active-format download disposition, persistence across disable/enable,
 and preserving a later guest denial instead of serving an earlier file marker.
 
-`python scripts/storage-smoke.py --loki target/release/loki-server.exe --package target/dist/storage-notes-0.1.0.loki-app`
+`cargo xtask storage-smoke --loki target/release/loki-server.exe --package target/dist/storage-notes-0.1.0.loki-app`
 passed with actual component execution on Windows: sign-in, private per-user
 preferences/SQL notes/exports, missing-file HTTP 404, byte ranges, app restart,
 failed-update rollback, stopped-app backup, restoration into a fresh data
-directory, and immediate download denial after grant revocation. The script
+directory, and immediate download denial after grant revocation. The task
 waits for the restored app's readiness separately from the core listener.
 
 Run formatting, WASI Clippy, package generation, and this live workflow locally.
@@ -115,7 +115,7 @@ in the SDK guide.
 
 ## Real release workflow
 
-`python scripts/wasi-smoke.py --loki target/release/loki-server.exe --package target/dist/bigshot-voter-0.5.0-wasi.loki-app`
+`cargo xtask wasi-smoke --loki target/release/loki-server.exe --package target/dist/bigshot-voter-0.5.0-wasi.loki-app`
 completed the following with the release binaries and disposable data:
 
 1. Import Bigshot's portable component and pass its initialization/readiness check.
@@ -145,7 +145,7 @@ fonts, styles, and panel data loaded correctly from host-served assets.
 - [WASI app management](screenshots/wasi-management.jpg)
 - [Bigshot running as a component](screenshots/bigshot-wasi.jpg)
 
-CI workflows have been removed from LOKI and Bigshot. Verification scripts and
+CI workflows have been removed from LOKI and Bigshot. `cargo xtask` checks and
 regression tests remain available for local runs. Only Windows was executed
 locally. Native Linux/macOS execution, real sign-in startup/service-control
 changes, and public DNS/router/TLS issuance were not verified here. Testing did
