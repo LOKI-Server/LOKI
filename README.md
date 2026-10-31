@@ -21,6 +21,8 @@ and complete [Branch Notes example](examples/storage-notes/README.md).
 For the portable Windows bundle, extract the ZIP and run `loki-server.exe`.
 Choose **Open LOKI** from its system tray icon to begin setup. Rust and the Visual
 C++ runtime do not need to be installed. Keep the bundled `caddy.exe` next to LOKI.
+Runtime bundles and the Windows installer include only LOKI, Caddy, and
+license/source notices. Plugin development tools are distributed separately.
 
 From source, install Rust and run:
 
@@ -191,12 +193,16 @@ including its default listener, so a reload does not rebind its management port.
 
 ## Development and verification
 
+Repository automation is written in Rust. Run `cargo xtask --help` for bundling,
+benchmarks, and the setup, SDK, storage, and Bigshot smoke workflows. See the
+[task guide](crates/xtask/README.md) for prerequisites and installer commands.
+
 ```powershell
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 node --check crates/loki-server/static/app.js
-node --test crates/loki-server/tests/setup-ui.cjs
+node --test crates/loki-server/tests/setup-ui.cjs crates/loki-server/tests/shares-ui.cjs
 cargo xtask sdk-smoke --tool target/debug/cargo-loki.exe --server target/debug/loki-server.exe
 ```
 

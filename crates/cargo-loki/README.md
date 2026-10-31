@@ -16,8 +16,10 @@ cargo loki dev --server /path/to/loki-server
 `new` creates a plain Rust plugin using `loki-sdk`. Until the SDK is published,
 pass its local source path with `--sdk-path` (or `LOKI_SDK_PATH`). Published
 projects can use the default versioned dependency without a local path.
-Portable bundles include the tool executable and SDK sources at
-`crates/loki-sdk`; pass that directory to `new --sdk-path`.
+Developer bundles created with `cargo xtask bundle --developer-tools` include
+the tool executable and SDK sources at `crates/loki-sdk`; pass that directory to
+`new --sdk-path`. The runtime bundle and Windows installer contain no developer
+tools. Publishing the SDK/tool to crates.io is independent of server releases.
 
 `build` and `check` target WASIp2 automatically. `package` defaults to release,
 reads `[package.metadata.loki]`, includes declared assets, validates the component,

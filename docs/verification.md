@@ -137,6 +137,23 @@ are not copied into backups. Test location pointers are isolated from real setup
 
 ## Browser and platform scope
 
+The Rust `cargo xtask` automation was exercised on Windows on 2026-10-31 with
+fresh debug server/tool builds. Setup relocation, SDK scaffolding/check/package,
+watched rebuilds and failed-build preservation, Ctrl+C cleanup across two preview
+runs, Branch Notes storage/rollback/restore, and the complete Bigshot workflow
+all passed. The 128 MiB Bigshot stream showed about 0.14 MiB resident growth.
+Rust developer-bundle generation downloaded and verified the official Caddy archive,
+included the standalone SDK sources and example, and rejected overwriting a
+nonempty output directory. Both benchmark modes ran with two-second debug
+samples to check the measurement code; these short checks do not replace the
+release performance measurements above. The task unit tests and Clippy passed.
+
+The runtime-only default was subsequently verified to contain exactly the LOKI
+and Caddy executables, LOKI's license, and Caddy's license/source notices. It
+requires neither a cargo-loki executable nor an SDK archive. Developer files
+are opt-in with `--developer-tools`; the Windows installer has an explicit
+runtime file list. The runtime inventory regression test and Clippy passed.
+
 The actual browser completed login from the LOKI dashboard to
 `bigshot-voter.localhost` on the same listener port. The dashboard showed the
 running WASI component and its controls. Bigshot's existing voting interface,

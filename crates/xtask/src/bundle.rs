@@ -15,6 +15,9 @@ pub struct Options {
     pub binary: PathBuf,
     #[arg(long, default_value = "target/bundle")]
     pub output: PathBuf,
+    /// Include cargo-loki, SDK sources, examples and developer documentation.
+    #[arg(long)]
+    pub developer_tools: bool,
     #[arg(long, default_value = "2.11.4")]
     pub caddy_version: String,
     /// Use a previously downloaded official archive without network access.
@@ -22,6 +25,39 @@ pub struct Options {
     pub caddy_archive: Option<PathBuf>,
     #[arg(long, requires = "caddy_archive")]
     pub caddy_checksums: Option<PathBuf>,
+}
+
+struct DeveloperInputs {
+    tool: PathBuf,
+    sdk: PathBuf,
+    version: String,
+}
+fn developer_inputs(binary: &Path, enabled: bool, root: &Path) -> Result<Option<DeveloperInputs>> {
+    if !enabled {
+        return Ok(None);
+    }
+    let tool = binary.with_file_name(if cfg!(windows) {
+        "cargo-loki.exe"
+    } else {
+        "cargo-loki"
+    });
+    ensure!(
+        tool.is_file(),
+        "Build cargo-loki alongside the server for --developer-tools"
+    );
+    let workspace: toml::Value = toml::from_str(&fs::read_to_string(root.join("Cargo.toml"))?)?;
+    let version = workspace["workspace"]["package"]["version"]
+        .as_str()
+        .context("Missing workspace version")?
+        .to_owned();
+    let sdk = root
+        .join("target/package")
+        .join(format!("loki-sdk-{version}.crate"));
+    ensure!(
+        sdk.is_file(),
+        "Build the SDK archive for --developer-tools: cargo package -p loki-sdk"
+    );
+    Ok(Some(DeveloperInputs { tool, sdk, version }))
 }
 
 fn relative(name: &str) -> bool {
@@ -257,27 +293,7 @@ pub fn run(options: Options) -> Result<()> {
         output.display()
     );
     let binary = crate::absolute(&options.binary)?;
-    let tool = binary.with_file_name(if cfg!(windows) {
-        "cargo-loki.exe"
-    } else {
-        "cargo-loki"
-    });
-    ensure!(
-        tool.is_file(),
-        "Build cargo-loki alongside the server before bundling"
-    );
-    let workspace: toml::Value =
-        toml::from_str(&fs::read_to_string(crate::root().join("Cargo.toml"))?)?;
-    let version = workspace["workspace"]["package"]["version"]
-        .as_str()
-        .context("Missing workspace version")?;
-    let sdk = crate::root()
-        .join("target/package")
-        .join(format!("loki-sdk-{version}.crate"));
-    ensure!(
-        sdk.is_file(),
-        "Build the SDK archive first: cargo package -p loki-sdk"
-    );
+    let developer = developer_inputs(&binary, options.developer_tools, &crate::root())?;
     let (bytes, checksums) = match (options.caddy_archive, options.caddy_checksums) {
         (Some(archive), Some(checksums)) => (fs::read(archive)?, fs::read_to_string(checksums)?),
         (None, None) => {
@@ -324,34 +340,40 @@ pub fn run(options: Options) -> Result<()> {
             "loki-server"
         }),
     )?;
-    fs::copy(&tool, dest.join(tool.file_name().unwrap()))?;
-    for file in ["README.md", "LICENSE"] {
-        fs::copy(crate::root().join(file), dest.join(file))?;
+    fs::copy(crate::root().join("LICENSE"), dest.join("LICENSE"))?;
+    if let Some(DeveloperInputs { tool, sdk, version }) = developer {
+        fs::copy(&tool, dest.join(tool.file_name().unwrap()))?;
+        fs::copy(crate::root().join("README.md"), dest.join("README.md"))?;
+        copy_tree(&crate::root().join("docs"), &dest.join("docs"))?;
+        copy_tree(
+            &crate::root().join("crates/loki-server/examples"),
+            &dest.join("examples"),
+        )?;
+        copy_tree(
+            &crate::root().join("crates/loki-server/examples"),
+            &dest.join("crates/loki-server/examples"),
+        )?;
+        copy_tree(
+            &crate::root().join("crates/loki-sdk/wit"),
+            &dest.join("wit"),
+        )?;
+        fs::create_dir_all(dest.join("crates/cargo-loki"))?;
+        fs::copy(
+            crate::root().join("crates/cargo-loki/README.md"),
+            dest.join("crates/cargo-loki/README.md"),
+        )?;
+        fs::create_dir_all(dest.join("crates/xtask"))?;
+        fs::copy(
+            crate::root().join("crates/xtask/README.md"),
+            dest.join("crates/xtask/README.md"),
+        )?;
+        fs::copy(&sdk, dest.join(sdk.file_name().unwrap()))?;
+        extract_sdk(&sdk, &dest.join("crates/loki-sdk"), &version)?;
+        copy_tree(
+            &crate::root().join("examples/storage-notes"),
+            &dest.join("examples/storage-notes"),
+        )?;
     }
-    copy_tree(&crate::root().join("docs"), &dest.join("docs"))?;
-    copy_tree(
-        &crate::root().join("crates/loki-server/examples"),
-        &dest.join("examples"),
-    )?;
-    copy_tree(
-        &crate::root().join("crates/loki-server/examples"),
-        &dest.join("crates/loki-server/examples"),
-    )?;
-    copy_tree(
-        &crate::root().join("crates/loki-sdk/wit"),
-        &dest.join("wit"),
-    )?;
-    fs::create_dir_all(dest.join("crates/cargo-loki"))?;
-    fs::copy(
-        crate::root().join("crates/cargo-loki/README.md"),
-        dest.join("crates/cargo-loki/README.md"),
-    )?;
-    fs::copy(&sdk, dest.join(sdk.file_name().unwrap()))?;
-    extract_sdk(&sdk, &dest.join("crates/loki-sdk"), version)?;
-    copy_tree(
-        &crate::root().join("examples/storage-notes"),
-        &dest.join("examples/storage-notes"),
-    )?;
     if output.exists() {
         fs::remove_dir(&output)?;
     }
@@ -363,6 +385,99 @@ pub fn run(options: Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn runtime_bundle_requires_no_sdk_or_tool_and_contains_only_runtime_files() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let server = directory.path().join(if cfg!(windows) {
+            "loki-server.exe"
+        } else {
+            "loki-server"
+        });
+        fs::write(&server, b"server fixture").unwrap();
+        assert!(
+            developer_inputs(&server, false, directory.path())
+                .unwrap()
+                .is_none()
+        );
+        assert!(developer_inputs(&server, true, directory.path()).is_err());
+        let executable = if cfg!(windows) { "caddy.exe" } else { "caddy" };
+        let mut bytes = Vec::new();
+        if cfg!(windows) {
+            let mut archive = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            for (name, data) in [
+                (executable, b"caddy fixture".as_slice()),
+                ("LICENSE", b"license fixture".as_slice()),
+            ] {
+                archive
+                    .start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                archive.write_all(data).unwrap();
+            }
+            archive.finish().unwrap();
+        } else {
+            let gzip = flate2::write::GzEncoder::new(&mut bytes, flate2::Compression::default());
+            let mut archive = tar::Builder::new(gzip);
+            for (name, data) in [
+                (executable, b"caddy fixture".as_slice()),
+                ("LICENSE", b"license fixture".as_slice()),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                archive.append_data(&mut header, name, data).unwrap();
+            }
+            archive.into_inner().unwrap().finish().unwrap();
+        }
+        let os = if cfg!(target_os = "macos") {
+            "mac"
+        } else {
+            std::env::consts::OS
+        };
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "amd64"
+        };
+        let extension = if cfg!(windows) { "zip" } else { "tar.gz" };
+        let archive = directory.path().join("caddy-archive");
+        fs::write(&archive, &bytes).unwrap();
+        let sums = directory.path().join("checksums.txt");
+        fs::write(
+            &sums,
+            format!(
+                "{}  caddy_2.11.4_{os}_{arch}.{extension}\n",
+                hex::encode(Sha256::digest(&bytes))
+            ),
+        )
+        .unwrap();
+        let output = directory.path().join("runtime");
+        run(Options {
+            binary: server.clone(),
+            output: output.clone(),
+            developer_tools: false,
+            caddy_version: "2.11.4".into(),
+            caddy_archive: Some(archive),
+            caddy_checksums: Some(sums),
+        })
+        .unwrap();
+        let mut names: Vec<_> = fs::read_dir(&output)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        let mut expected = vec![
+            server.file_name().unwrap().to_str().unwrap(),
+            executable,
+            "LICENSE",
+            "CADDY-LICENSE.txt",
+            "CADDY-SOURCE.txt",
+        ];
+        expected.sort();
+        assert_eq!(names, expected);
+        assert_eq!(fs::read(output.join(executable)).unwrap(), b"caddy fixture");
+    }
     #[test]
     fn archive_checksums_fail_closed_and_accept_official_algorithms() {
         for digest in [
@@ -385,5 +500,58 @@ mod tests {
             assert!(!relative(path));
         }
         assert!(relative("src/lib.rs"));
+    }
+
+    #[test]
+    fn sdk_sources_are_standalone_and_archive_links_are_rejected() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let build = |path: &Path, linked: bool| {
+            let file = fs::File::create(path).unwrap();
+            let gzip = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+            let mut archive = tar::Builder::new(gzip);
+            let contents = b"[package]\nname='loki-sdk'\nversion='0.1.0'\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, "loki-sdk-0.1.0/Cargo.toml", &contents[..])
+                .unwrap();
+            if linked {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_size(0);
+                header.set_mode(0o777);
+                header.set_link_name("../../outside").unwrap();
+                header.set_cksum();
+                archive
+                    .append_data(&mut header, "loki-sdk-0.1.0/link", std::io::empty())
+                    .unwrap();
+            }
+            let mut gzip = archive.into_inner().unwrap();
+            gzip.flush().unwrap();
+            gzip.finish().unwrap();
+        };
+        let safe = directory.path().join("safe.crate");
+        build(&safe, false);
+        let output = directory.path().join("safe-output");
+        extract_sdk(&safe, &output, "0.1.0").unwrap();
+        let manifest: toml::Value =
+            toml::from_str(&fs::read_to_string(output.join("Cargo.toml")).unwrap()).unwrap();
+        assert!(
+            manifest
+                .get("workspace")
+                .unwrap()
+                .as_table()
+                .unwrap()
+                .is_empty()
+        );
+        let unsafe_archive = directory.path().join("unsafe.crate");
+        build(&unsafe_archive, true);
+        let output = directory.path().join("unsafe-output");
+        assert!(extract_sdk(&unsafe_archive, &output, "0.1.0").is_err());
+        assert!(!output.join("link").exists());
+        assert!(!directory.path().join("outside").exists());
     }
 }

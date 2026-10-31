@@ -23,7 +23,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Task {
-    /// Assemble a portable bundle with a checksum-verified official Caddy binary.
+    /// Assemble LOKI and checksum-verified Caddy; optionally include developer tools.
     Bundle(bundle::Options),
     /// Measure initialized idle resident memory and one-core CPU consumption.
     Benchmark(benchmark::Options),

@@ -1,6 +1,5 @@
 ; Build from the repository root (Inno Setup 6.3 or newer):
-;   cargo build --release --locked -p loki-server -p cargo-loki
-;   cargo package --locked -p loki-sdk
+;   cargo build --release --locked -p loki-server
 ;   cargo xtask bundle --binary target/release/loki-server.exe --output target/installer-bundle
 ;   ISCC.exe packaging/loki.iss
 ;
@@ -42,10 +41,12 @@ VersionInfoDescription=LOKI Server installer
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 
 [Files]
-; Require both runtime executables rather than silently building an incomplete installer.
+; An explicit runtime allowlist keeps developer tools and sources out of the installer.
 Source: "{#BundleDir}\loki-server.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BundleDir}\caddy.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#BundleDir}\*"; DestDir: "{app}"; Excludes: "loki-server.exe,caddy.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#BundleDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BundleDir}\CADDY-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BundleDir}\CADDY-SOURCE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\LOKI Server"; Filename: "{app}\loki-server.exe"; WorkingDir: "{app}"
