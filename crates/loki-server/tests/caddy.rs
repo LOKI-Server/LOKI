@@ -7,6 +7,86 @@ use std::sync::{
 };
 
 #[tokio::test]
+async fn unreachable_existing_caddy_reports_the_cause_and_can_be_disabled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = State::open(tmp.path().into(), "127.0.0.1:7070".parse().unwrap())
+        .await
+        .unwrap();
+    // Accept then close connections to simulate an unavailable management API
+    // without relying on a free port staying unoccupied during the test.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let unavailable = tokio::spawn(async move {
+        loop {
+            let (connection, _) = listener.accept().await.unwrap();
+            drop(connection);
+        }
+    });
+    let mut settings = state.0.settings.read().await.clone();
+    settings.caddy_mode = "existing".into();
+    settings.caddy_admin = format!("http://{address}");
+    settings.caddy_binary = "__missing_loki_test_caddy__".into();
+    settings.caddy_enabled = true;
+    state.save_settings(settings.clone()).await.unwrap();
+
+    let error = caddy::apply_settings(&state, &settings).await.unwrap_err();
+    assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(error.1.contains(&settings.caddy_admin));
+    assert!(error.1.contains("already running Caddy"));
+    assert!(error.1.contains("disable Caddy management and save"));
+    assert!(state.0.settings.read().await.caddy_enabled);
+    assert_eq!(
+        caddy::preview(&state, &settings).await.unwrap_err().0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    settings.caddy_enabled = false;
+    caddy::apply_settings(&state, &settings).await.unwrap();
+    state.save_settings(settings).await.unwrap();
+    assert!(!state.0.settings.read().await.caddy_enabled);
+    // Nothing was validated, launched, or written to replace remote routes.
+    assert_eq!(
+        std::fs::read_dir(tmp.path().join("caddy")).unwrap().count(),
+        0
+    );
+    assert_eq!(
+        std::fs::read_dir(tmp.path().join("backups"))
+            .unwrap()
+            .count(),
+        0
+    );
+    unavailable.abort();
+    state.0.db.close().await;
+}
+
+#[tokio::test]
+async fn disabling_existing_caddy_does_not_ignore_http_or_invalid_json_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = State::open(tmp.path().into(), "127.0.0.1:7070".parse().unwrap())
+        .await
+        .unwrap();
+    let mut settings = state.0.settings.read().await.clone();
+    settings.caddy_mode = "existing".into();
+    settings.caddy_enabled = true;
+    state.save_settings(settings.clone()).await.unwrap();
+    settings.caddy_enabled = false;
+    for (status, body, expected) in [
+        (StatusCode::FORBIDDEN, "denied", "returned HTTP 403"),
+        (StatusCode::OK, "not json", "valid configuration JSON"),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        settings.caddy_admin = format!("http://{}", listener.local_addr().unwrap());
+        let api = Router::new().route("/config/", get(move || async move { (status, body) }));
+        let server = tokio::spawn(async move { axum::serve(listener, api).await.unwrap() });
+        let error = caddy::apply_settings(&state, &settings).await.unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.contains(expected), "{}", error.1);
+        server.abort();
+    }
+    state.0.db.close().await;
+}
+
+#[tokio::test]
 async fn invalid_apply_restores_active_caddy_configuration() {
     let binary = std::env::var("CADDY").unwrap_or_else(|_| "caddy".into());
     if std::process::Command::new(&binary)

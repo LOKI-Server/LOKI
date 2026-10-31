@@ -113,13 +113,34 @@ pub async fn render(state: &State, settings: &Settings) -> Result<String> {
 }
 async fn current_config(settings: &Settings) -> Result<Value> {
     let admin = admin_origin(settings)?;
-    Ok(platform::http()
+    let response = platform::http()
         .get(format!("{admin}/config/"))
         .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, %admin, "Could not reach Caddy management");
+            let guidance = if settings.caddy_mode == "existing" {
+                "Existing mode requires an already running Caddy. Start it separately, or disable Caddy management and save, then select LOKI-managed Caddy process and enable it."
+            } else {
+                "Check the Caddy logs and management address."
+            };
+            Error(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("Cannot reach Caddy at {admin}. {guidance}"),
+            )
+        })?;
+    if !response.status().is_success() {
+        return Err(Error::bad(format!(
+            "Caddy management at {admin} returned HTTP {}. Check the management address and Caddy configuration.",
+            response.status()
+        )));
+    }
+    response.json().await.map_err(|error| {
+        tracing::warn!(%error, %admin, "Invalid Caddy management response");
+        Error::bad(format!(
+            "Caddy management at {admin} did not return valid configuration JSON. Check that this address belongs to Caddy."
+        ))
+    })
 }
 async fn candidate(state: &State, settings: &Settings, live: Option<&Value>) -> Result<Value> {
     let text = render(state, settings).await?;
@@ -245,7 +266,22 @@ pub async fn apply_settings(state: &State, settings: &Settings) -> Result<()> {
         }
     }
     let live = if settings.caddy_mode == "existing" {
-        Some(current_config(settings).await?)
+        match current_config(settings).await {
+            Ok(value) => Some(value),
+            Err(error)
+                if !settings.caddy_enabled
+                    && error.0 == axum::http::StatusCode::SERVICE_UNAVAILABLE =>
+            {
+                // Let the owner leave existing mode when its external process is
+                // gone. We cannot update routes, but disabling local management
+                // must not require starting that process first.
+                tracing::warn!(
+                    "Disabling Caddy management while the existing instance is unreachable; its remote configuration was not changed"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         None
     };

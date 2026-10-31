@@ -166,6 +166,12 @@ and Clippy passed, including stale-file cleanup, preservation after failed
 assembly, rollback after failed publication, and rejection of unsafe output
 locations. New bundles are verified before replacing the previous output.
 
+All five Caddy integration tests passed on Windows on 2026-10-31 using the
+bundled Caddy executable. Offline existing instances now produce an actionable
+connection error and can be disabled without starting Caddy first. HTTP errors
+and malformed configuration responses still fail; managed routes, reloads,
+and rollback remain covered. Clippy passed for all server targets.
+
 The actual browser completed login from the LOKI dashboard to
 `bigshot-voter.localhost` on the same listener port. The dashboard showed the
 running WASI component and its controls. Bigshot's existing voting interface,

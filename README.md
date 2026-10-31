@@ -201,6 +201,13 @@ instance and leave Caddy base JSON blank. Preview and save to apply only LOKI's
 routes. Existing mode preserves the running instance's administration settings,
 including its default listener, so a reload does not rebind its management port.
 
+Existing mode requires Caddy to be started separately. To have LOKI start its
+bundled Caddy, disable Caddy management and save, then select LOKI-managed Caddy
+process and enable management again. You can disable management even if the
+existing instance is offline. When moving from a portable copy to an installed
+copy, saved settings retain the previous mode and executable path; select the
+installed `caddy.exe` if the old executable is no longer available.
+
 ## Development and verification
 
 Repository automation is written in Rust. Run `cargo xtask --help` for bundling,
