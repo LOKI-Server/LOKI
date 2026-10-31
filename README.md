@@ -83,6 +83,19 @@ Caddy using loopback HTTP URLs.
 The green dashboard is served entirely by LOKI. It uses embedded Askama HTML,
 CSS, and framework-free JavaScript, with no CDN or Node.js runtime dependency.
 
+## Save sync
+
+LOKI can keep per-user folders in sync between devices, such as emulator saves
+on an Android handheld and a desktop. The server is authoritative and keeps
+version history, so a conflict or a bad sync never loses a save. Grant the
+**Save sync** resource to the people who should use it, then pair each device
+from **Save sync** in the dashboard. Quotas are per user.
+
+Clients use a versioned HTTP/JSON API under `/sync/v1` and can be written in any
+language. See the [client guide](docs/sync-api.md), its [OpenAPI description](docs/sync-api.yaml)
+for generating Kotlin, C#, or TypeScript bindings, and the standard-library
+[Python reference client](examples/sync-reference-client/README.md).
+
 ## Install Bigshot Voter
 
 Install the development tool from this checkout first:

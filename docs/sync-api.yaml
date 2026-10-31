@@ -1,0 +1,680 @@
+openapi: 3.1.0
+info:
+  title: LOKI save sync API
+  version: "1"
+  summary: Server-authoritative per-user file sync for LOKI.
+  description: |
+    Language-neutral client contract for LOKI's save sync service. The prose
+    guide, including the recommended client algorithm and path rules, is
+    docs/sync-api.md. Clients must ignore unknown response fields. Branch on
+    an error's `code` when present, and on the HTTP status otherwise.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: "{origin}/sync/v1"
+    variables:
+      origin:
+        default: https://loki.example.com
+        description: The LOKI installation's canonical public origin.
+security:
+  - device: []
+tags:
+  - name: discovery
+  - name: auth
+  - name: folders
+  - name: blobs
+paths:
+  /:
+    get:
+      tags: [discovery]
+      operationId: discover
+      summary: Protocol discovery
+      security: []
+      responses:
+        "200":
+          description: Server capabilities.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Discovery" }
+  /pair:
+    post:
+      tags: [auth]
+      operationId: startPairing
+      summary: Start device pairing
+      description: Rate-limited server-wide (429 without a code).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceInfo" }
+      responses:
+        "200":
+          description: Pairing started. Show the user code and poll.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pairing" }
+        "400": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /pair/poll:
+    post:
+      tags: [auth]
+      operationId: pollPairing
+      summary: Poll a pending pairing
+      description: |
+        Poll every `interval` seconds. 428 `authorization_pending`: keep
+        polling. 429 `slow_down`: add 5 seconds to the interval. 403
+        `access_denied`: declined in the dashboard. 400 `expired_token`:
+        expired, unknown or already used.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_code]
+              properties:
+                device_code: { type: string }
+      responses:
+        "200":
+          description: Approved. The pairing is consumed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "428": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Password login for headless clients
+      description: |
+        401 `invalid_credentials` for a wrong username, password or code.
+        403 `forbidden` when the account is not approved or has no sync
+        access. 429 without a code when rate limited.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Signed in; a new device was created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /me:
+    get:
+      tags: [auth]
+      operationId: me
+      summary: Current user, device and quota
+      responses:
+        "200":
+          description: Current state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Me" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /device:
+    delete:
+      tags: [auth]
+      operationId: signOut
+      summary: Sign this device out and revoke its token
+      responses:
+        "200":
+          description: Signed out.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ok" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /folders:
+    get:
+      tags: [folders]
+      operationId: listFolders
+      summary: List your folders
+      responses:
+        "200":
+          description: Folders, sorted by name.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Folder" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [folders]
+      operationId: createFolder
+      summary: Create a folder
+      description: At most 200 folders per user. A duplicate name is 409 `exists`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                kind: { $ref: "#/components/schemas/Kind" }
+      responses:
+        "201":
+          description: The new folder.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Folder" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /folders/{id}:
+    parameters:
+      - $ref: "#/components/parameters/FolderId"
+    patch:
+      tags: [folders]
+      operationId: updateFolder
+      summary: Rename a folder or change keep_versions
+      description: Folders can only be deleted from the dashboard. Lowering keep_versions prunes history at once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                keep_versions: { type: integer, minimum: 1, maximum: 1000 }
+      responses:
+        "200":
+          description: The updated folder.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Folder" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /folders/{id}/changes:
+    parameters:
+      - $ref: "#/components/parameters/FolderId"
+    get:
+      tags: [folders]
+      operationId: changes
+      summary: Changes feed and long-poll
+      description: |
+        Every path whose latest version has seq > since, ascending by seq.
+        since=0 returns the full manifest. Store the returned seq as the next
+        cursor, even when changes is empty. When more is true, request again
+        immediately. When reset is true the cursor was ahead of the server
+        (e.g. it was restored from a backup): the response is the full
+        manifest from 0, and the client must discard its index.
+      parameters:
+        - name: since
+          in: query
+          schema: { type: integer, format: int64, default: 0 }
+        - name: limit
+          in: query
+          description: Clamped to 1-5000.
+          schema: { type: integer, minimum: 1, maximum: 5000, default: 1000 }
+        - name: wait
+          in: query
+          description: Seconds to hold the request open when nothing is newer than since. The server may answer earlier.
+          schema: { type: integer, minimum: 0, maximum: 60, default: 0 }
+      responses:
+        "200":
+          description: Changes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Changes" }
+        "404": { $ref: "#/components/responses/Error" }
+  /folders/{id}/commit:
+    parameters:
+      - $ref: "#/components/parameters/FolderId"
+    post:
+      tags: [folders]
+      operationId: commit
+      summary: Commit changes against base versions
+      description: |
+        Each change gets its own result. Whole-request 400 errors change
+        nothing: invalid_path, invalid_hash, unknown_blob, size_mismatch, or
+        no code for an empty/oversized/repeated change list or an unknown
+        on_conflict. A change whose hash already equals the current hash
+        returns ok without a new version, so retries are safe.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommitRequest" }
+      responses:
+        "200":
+          description: Per-change results, in request order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/CommitResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /folders/{id}/history:
+    parameters:
+      - $ref: "#/components/parameters/FolderId"
+    get:
+      tags: [folders]
+      operationId: history
+      summary: Previous versions and conflicts
+      parameters:
+        - name: path
+          in: query
+          description: Limit to one path; omit for the whole folder.
+          schema: { type: string }
+        - name: conflicts
+          in: query
+          description: Only unresolved conflicts.
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: History entries, newest first, at most 500.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HistoryEntry" }
+        "404": { $ref: "#/components/responses/Error" }
+  /folders/{id}/restore:
+    parameters:
+      - $ref: "#/components/parameters/FolderId"
+    post:
+      tags: [folders]
+      operationId: restore
+      summary: Make a history entry the new current version
+      description: Also marks the entry resolved. Restoring content that is already current only resolves it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [history_id]
+              properties:
+                history_id: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: The current version.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Restored" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /blobs/{hash}:
+    parameters:
+      - name: hash
+        in: path
+        required: true
+        schema: { $ref: "#/components/schemas/Hash" }
+    head:
+      tags: [blobs]
+      operationId: hasBlob
+      summary: Check whether you may use a blob
+      responses:
+        "200":
+          description: You uploaded this blob.
+          headers:
+            Content-Length:
+              schema: { type: integer }
+        "404": { description: Unknown to you. }
+    get:
+      tags: [blobs]
+      operationId: getBlob
+      summary: Download a blob
+      parameters:
+        - name: Range
+          in: header
+          required: false
+          schema: { type: string, examples: ["bytes=1024-"] }
+      responses:
+        "200":
+          description: Blob contents.
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        "206":
+          description: Requested range.
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        "404": { $ref: "#/components/responses/Error" }
+        "416": { description: Range not satisfiable. }
+    put:
+      tags: [blobs]
+      operationId: putBlob
+      summary: Upload a blob
+      description: |
+        The body is hashed while it is written and checked against the URL
+        hash, max_file_bytes and your quota. Errors: 400 invalid_hash or
+        hash_mismatch, 413 too_large or quota_exceeded.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, contentMediaType: application/octet-stream }
+      responses:
+        "200":
+          description: You already had this blob.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, existing]
+                properties:
+                  ok: { type: boolean, const: true }
+                  existing: { type: boolean, const: true }
+        "201":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, size]
+                properties:
+                  ok: { type: boolean, const: true }
+                  size: { type: integer, format: int64 }
+        "400": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    device:
+      type: http
+      scheme: bearer
+      description: |
+        Device token from pairing or /login. Browser session cookies are never
+        accepted. Failures: 401 `unauthorized` (pair again) or 403 `forbidden`
+        (no sync access).
+  parameters:
+    FolderId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Error. Branch on code when present.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Hash:
+      type: string
+      pattern: "^[0-9a-f]{64}$"
+      description: Lowercase hex SHA-256 of the file contents.
+    Path:
+      type: string
+      maxLength: 1024
+      description: |
+        Folder-relative, NFC-normalized, /-separated, at most 1024 bytes. No
+        leading /, empty, . or .. components; no \, :, NUL or control
+        characters; no component ending in space or .; no Windows device
+        names (CON, PRN, AUX, NUL, COM1-9, LPT1-9). See docs/sync-api.md.
+    Kind:
+      type: string
+      default: generic
+      maxLength: 64
+      pattern: "^[a-z0-9][a-z0-9-]*$"
+      description: Client hint such as retroarch-saves; never interpreted by the server.
+    Ok:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean, const: true }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: Human-readable message. }
+        code:
+          type: string
+          description: Absent for plain validation errors, rate limits and maintenance.
+          enum:
+            - unauthorized
+            - forbidden
+            - invalid_credentials
+            - authorization_pending
+            - slow_down
+            - access_denied
+            - expired_token
+            - exists
+            - unknown_folder
+            - invalid_path
+            - invalid_hash
+            - unknown_blob
+            - size_mismatch
+            - hash_mismatch
+            - too_large
+            - quota_exceeded
+            - path_conflict
+    Discovery:
+      type: object
+      required: [protocol, server, name, hash, max_file_bytes, pairing]
+      properties:
+        protocol: { type: integer, const: 1 }
+        server: { type: string, description: LOKI version. }
+        name: { type: string }
+        hash: { type: string, const: sha256 }
+        max_file_bytes: { type: integer, format: int64 }
+        pairing: { type: boolean }
+    DeviceInfo:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80, examples: [AYN Thor] }
+        platform: { type: string, maxLength: 40, examples: [android] }
+    Pairing:
+      type: object
+      required: [device_code, user_code, verification_uri, verification_uri_complete, interval, expires_in]
+      properties:
+        device_code: { type: string, description: Secret; never display. }
+        user_code: { type: string, examples: [BCDF-GHJK] }
+        verification_uri: { type: string, format: uri }
+        verification_uri_complete: { type: string, format: uri }
+        interval: { type: integer, description: Seconds between polls. }
+        expires_in: { type: integer, description: Seconds until the pairing expires. }
+    LoginRequest:
+      allOf:
+        - $ref: "#/components/schemas/DeviceInfo"
+        - type: object
+          required: [username, password]
+          properties:
+            username: { type: string, description: Username or email. }
+            password: { type: string, format: password }
+            code: { type: string, description: TOTP or recovery code. }
+    Device:
+      type: object
+      required: [id, name, platform]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        platform: { type: string }
+    User:
+      type: object
+      required: [id, username, display_name]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        display_name: { type: string }
+    Session:
+      type: object
+      required: [token, device, user]
+      properties:
+        token: { type: string }
+        device: { $ref: "#/components/schemas/Device" }
+        user: { $ref: "#/components/schemas/User" }
+    Me:
+      type: object
+      required: [user, device, quota, max_file_bytes]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        device: { $ref: "#/components/schemas/Device" }
+        quota:
+          type: object
+          required: [used, limit]
+          properties:
+            used: { type: integer, format: int64 }
+            limit: { type: integer, format: int64 }
+        max_file_bytes: { type: integer, format: int64 }
+    Folder:
+      type: object
+      required: [id, name, kind, keep_versions, seq, created]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { type: string, examples: [retroarch-saves] }
+        keep_versions: { type: integer }
+        seq: { type: integer, format: int64 }
+        created: { type: integer, format: int64, description: Unix seconds. }
+    NullableHash:
+      oneOf:
+        - $ref: "#/components/schemas/Hash"
+        - type: "null"
+      description: null for a tombstone (deleted path).
+    Version:
+      type: object
+      description: A path's current version, as embedded in commit results (no path).
+      required: [version, hash, size, mtime, device, seq]
+      properties:
+        version: { type: integer, format: int64 }
+        hash: { $ref: "#/components/schemas/NullableHash" }
+        size: { type: integer, format: int64 }
+        mtime: { type: integer, format: int64, description: Client-supplied; never interpreted. Unix milliseconds by convention. }
+        device: { type: string, description: Device id that wrote this version. }
+        seq: { type: integer, format: int64 }
+    FileVersion:
+      allOf:
+        - $ref: "#/components/schemas/Version"
+        - type: object
+          required: [path]
+          properties:
+            path: { $ref: "#/components/schemas/Path" }
+    Changes:
+      type: object
+      required: [seq, more, reset, changes]
+      properties:
+        seq: { type: integer, format: int64, description: Next cursor. }
+        more: { type: boolean }
+        reset: { type: boolean, description: The cursor was ahead of the server; this is the full manifest from 0. }
+        changes:
+          type: array
+          items: { $ref: "#/components/schemas/FileVersion" }
+    Change:
+      type: object
+      required: [path]
+      properties:
+        path: { $ref: "#/components/schemas/Path" }
+        base_version: { type: integer, format: int64, minimum: 0, default: 0, description: Last version you saw; 0 for a path you never saw. }
+        hash:
+          allOf: [{ $ref: "#/components/schemas/NullableHash" }]
+          description: null (or absent) deletes the path.
+        size: { type: integer, format: int64, description: Optional; must equal the uploaded blob's size. }
+        mtime: { type: integer, format: int64, default: 0 }
+    CommitRequest:
+      type: object
+      required: [changes]
+      properties:
+        on_conflict:
+          type: string
+          enum: [reject, overwrite, stash]
+          default: reject
+        changes:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: { $ref: "#/components/schemas/Change" }
+    CommitOk:
+      type: object
+      required: [path, status, version, seq]
+      properties:
+        path: { $ref: "#/components/schemas/Path" }
+        status: { type: string, const: ok }
+        version: { type: integer, format: int64 }
+        seq: { type: integer, format: int64 }
+        conflict: { type: boolean, description: True when overwrite replaced a version you had not seen. Absent when nothing changed because the hash already matched. }
+    CurrentOrNull:
+      oneOf:
+        - $ref: "#/components/schemas/Version"
+        - type: "null"
+      description: The server's current version, or null if the server has never had the path.
+    CommitConflict:
+      type: object
+      required: [path, status, current]
+      properties:
+        path: { $ref: "#/components/schemas/Path" }
+        status: { type: string, const: conflict }
+        current: { $ref: "#/components/schemas/CurrentOrNull" }
+    CommitStashed:
+      type: object
+      required: [path, status, history_id, current]
+      properties:
+        path: { $ref: "#/components/schemas/Path" }
+        status: { type: string, const: stashed }
+        history_id: { type: integer, format: int64 }
+        current: { $ref: "#/components/schemas/CurrentOrNull" }
+    CommitRejected:
+      type: object
+      required: [path, status, code, error]
+      properties:
+        path: { $ref: "#/components/schemas/Path" }
+        status: { type: string, const: rejected }
+        code: { type: string, enum: [case_conflict, path_conflict] }
+        error: { type: string }
+    CommitResult:
+      oneOf:
+        - $ref: "#/components/schemas/CommitOk"
+        - $ref: "#/components/schemas/CommitConflict"
+        - $ref: "#/components/schemas/CommitStashed"
+        - $ref: "#/components/schemas/CommitRejected"
+      discriminator:
+        propertyName: status
+        mapping:
+          ok: "#/components/schemas/CommitOk"
+          conflict: "#/components/schemas/CommitConflict"
+          stashed: "#/components/schemas/CommitStashed"
+          rejected: "#/components/schemas/CommitRejected"
+    Restored:
+      type: object
+      required: [ok, path, version, seq]
+      properties:
+        ok: { type: boolean, const: true }
+        path: { $ref: "#/components/schemas/Path" }
+        version: { type: integer, format: int64 }
+        seq: { type: integer, format: int64 }
+    HistoryEntry:
+      type: object
+      required: [id, path, version, hash, size, mtime, device, device_name, created, reason, resolved]
+      properties:
+        id: { type: integer, format: int64 }
+        path: { $ref: "#/components/schemas/Path" }
+        version: { type: integer, format: int64 }
+        hash: { $ref: "#/components/schemas/NullableHash" }
+        size: { type: integer, format: int64 }
+        mtime: { type: integer, format: int64 }
+        device: { type: string }
+        device_name: { type: string, description: "Current device name, Dashboard, or Removed device." }
+        created: { type: integer, format: int64, description: Server time, Unix seconds. }
+        reason: { type: string, enum: [replaced, deleted, conflict] }
+        resolved: { type: boolean }
