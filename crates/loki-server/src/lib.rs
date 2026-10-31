@@ -1,5 +1,6 @@
 mod app_storage;
 pub mod apps;
+pub mod assets;
 pub mod auth;
 pub mod caddy;
 pub mod components;

@@ -1807,6 +1807,7 @@ dependencies = [
  "cap-std 3.4.6",
  "clap",
  "directories",
+ "flate2",
  "fs2",
  "futures-util",
  "hex",

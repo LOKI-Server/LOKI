@@ -162,18 +162,39 @@ pub async fn session(
     headers: HeaderMap,
 ) -> Result<axum::response::Response> {
     use axum::response::IntoResponse;
+    if let Some(value) = existing_session(&state, &headers).await {
+        return Ok(Json(value).into_response());
+    }
     let settings = state.0.settings.read().await.clone();
     let setup = state.0.setup_token.lock().await.is_some();
-    if let Ok(ctx) = context(&state, &headers).await {
-        return Ok(Json(serde_json::json!({"user":ctx.user,"csrf":ctx.session.csrf,"setup":setup,"name":settings.name,"registration":settings.registration,"public_url":settings.public_url})).into_response());
-    }
     let (raw, csrf) = new_session(&state, None, "Before sign-in").await?;
     let jar = CookieJar::from_headers(&headers).add(cookie(
         raw,
         secure_cookie(&settings, &headers, state.0.bind),
         1,
     ));
-    Ok((jar, Json(serde_json::json!({"user":null,"csrf":csrf,"setup":setup,"name":settings.name,"registration":settings.registration,"public_url":settings.public_url}))).into_response())
+    Ok((jar, Json(session_json(&settings, setup, None, &csrf))).into_response())
+}
+/// Session details for a browser that already holds a valid session cookie.
+/// Never creates a session, so the dashboard shell can embed it safely.
+pub async fn existing_session(state: &State, headers: &HeaderMap) -> Option<serde_json::Value> {
+    let ctx = context(state, headers).await.ok()?;
+    let settings = state.0.settings.read().await.clone();
+    let setup = state.0.setup_token.lock().await.is_some();
+    Some(session_json(
+        &settings,
+        setup,
+        ctx.user.as_ref(),
+        &ctx.session.csrf,
+    ))
+}
+fn session_json(
+    settings: &Settings,
+    setup: bool,
+    user: Option<&User>,
+    csrf: &str,
+) -> serde_json::Value {
+    serde_json::json!({"user":user,"csrf":csrf,"setup":setup,"name":settings.name,"registration":settings.registration,"public_url":settings.public_url})
 }
 pub async fn rate(state: &State, key: String, max: u32, seconds: i64) -> Result<()> {
     let mut limits = state.0.limits.lock().await;

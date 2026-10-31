@@ -19,6 +19,9 @@ use tokio::io::AsyncWriteExt;
 #[template(path = "shell.html")]
 struct Shell {
     version: &'static str,
+    assets: &'static str,
+    modules: Vec<&'static str>,
+    boot: Option<String>,
 }
 pub fn router(state: State) -> Router {
     Router::new()
@@ -26,24 +29,7 @@ pub fn router(state: State) -> Router {
             "/health",
             get(|| async { Json(json!({"ok":true,"protocol":1})) }),
         )
-        .route(
-            "/assets/style.css",
-            get(|| async {
-                (
-                    [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-                    include_str!("../static/style.css"),
-                )
-            }),
-        )
-        .route(
-            "/assets/app.js",
-            get(|| async {
-                (
-                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-                    include_str!("../static/app.js"),
-                )
-            }),
-        )
+        .route("/assets/{*path}", get(crate::assets::serve))
         .route("/api/session", get(auth::session))
         .route("/api/setup", post(auth::setup))
         .route("/api/login", post(auth::login))
@@ -84,19 +70,50 @@ pub fn router(state: State) -> Router {
         .route("/gateway/check/{id}", get(gateway_check))
         .route("/_loki/start", get(gateway_start))
         .route("/_loki/callback", get(gateway_callback))
-        .fallback(get(|| async {
-            match (Shell {
-                version: env!("CARGO_PKG_VERSION"),
-            })
-            .render()
-            {
-                Ok(s) => Html(s).into_response(),
-                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-            }
-        }))
+        .fallback(get(shell))
         .layer(DefaultBodyLimit::max(131072))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
+}
+async fn shell(ExtractState(state): ExtractState<State>, headers: HeaderMap) -> Response {
+    let boot = if state
+        .0
+        .maintenance
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        None
+    } else {
+        boot(&state, &headers).await
+    };
+    let page = Shell {
+        version: env!("CARGO_PKG_VERSION"),
+        assets: crate::assets::base(),
+        modules: crate::assets::modules(),
+        boot,
+    };
+    match page.render() {
+        // The page can carry the visitor's session, so it is never cached.
+        Ok(s) => ([(header::CACHE_CONTROL, "no-store")], Html(s)).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+/// Session and dashboard state embedded in the page, saving the dashboard's first
+/// round trips. Only browsers that already hold a session get it; others fetch.
+async fn boot(state: &State, headers: &HeaderMap) -> Option<String> {
+    let session = auth::existing_session(state, headers).await?;
+    let mut boot = json!({ "session": session });
+    if boot["session"]["user"]["status"] == "approved"
+        && let Ok(Json(value)) = dashboard(ExtractState(state.clone()), headers.clone()).await
+    {
+        boot["state"] = value;
+    }
+    let text = serde_json::to_string(&boot).ok()?;
+    // JSON inside <script> must not be able to close the element.
+    Some(
+        text.replace('<', "\\u003c")
+            .replace('>', "\\u003e")
+            .replace('&', "\\u0026"),
+    )
 }
 async fn guard(ExtractState(state): ExtractState<State>, request: Request, next: Next) -> Response {
     let path = request.uri().path().to_string();

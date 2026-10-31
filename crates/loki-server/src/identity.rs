@@ -9,6 +9,7 @@ use askama::Template;
 struct Denied {
     name: String,
     message: &'static str,
+    assets: &'static str,
 }
 use axum::{
     Form, Json,
@@ -125,7 +126,14 @@ pub async fn authorize(
         };
         return Ok((
             StatusCode::FORBIDDEN,
-            axum::response::Html(Denied { name, message }.render()?),
+            axum::response::Html(
+                Denied {
+                    name,
+                    message,
+                    assets: crate::assets::base(),
+                }
+                .render()?,
+            ),
         )
             .into_response());
     }

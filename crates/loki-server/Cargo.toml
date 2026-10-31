@@ -20,6 +20,7 @@ clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
 fs2 = "0.4"
 futures-util = "0.3"
+flate2 = "1"
 hex = "0.4"
 hmac = "0.12"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }

@@ -1,15 +1,19 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
+const {pathToFileURL} = require('node:url');
+
+const modules = name => import(pathToFileURL(path.join(__dirname, '../static', name)).href);
+const define = (name, value) => Object.defineProperty(globalThis, name, {value, configurable: true, writable: true});
 
 const conflict = proof => ({requires_confirmation: 'startup', startup: {
   existing_executable: 'F:\\Portable\\loki-server.exe',
   current_executable: 'C:\\Apps\\LOKI\\loki-server.exe',
   data_directory: 'F:\\Servers\\LOKI', confirmation: proof
 }});
-function browser(responses) {
+async function browser(responses) {
+  const {store, act} = await modules('lib/core.js');
+  const auth = await modules('pages/auth.js');
   const calls = [], redirects = [], nodes = new Map();
   const main = {innerHTML: 'unsaved setup form'};
   nodes.set('#main', main);
@@ -24,29 +28,26 @@ function browser(responses) {
   for (const id of ['#startup-replace', '#startup-cancel']) {
     nodes.set(id, {addEventListener(event, handler) {this[event] = handler;}});
   }
-  const context = vm.createContext({FormData,
-    document: {querySelector: selector => {assert.ok(nodes.has(selector), selector); return nodes.get(selector);}},
-    location: {pathname: '/setup', assign: url => redirects.push(url)},
-    sessionStorage: {setItem() {}}, setTimeout() {},
-    fetch: async (url, options) => {
-      calls.push({url, options});
-      assert.ok(responses.length, 'unexpected request');
-      const body = responses.shift();
-      return {ok: true, status: 200, json: async () => body};
-    }
+  define('document', {querySelector: selector => {assert.ok(nodes.has(selector), selector); return nodes.get(selector);}});
+  define('location', {pathname: '/setup', hash: '', assign: url => redirects.push(url)});
+  define('sessionStorage', {setItem() {}});
+  define('fetch', async (url, options) => {
+    calls.push({url, options});
+    assert.ok(responses.length, 'unexpected request');
+    const body = responses.shift();
+    return {ok: true, status: 200, json: async () => body};
   });
-  const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
-  vm.runInContext(source.slice(0, source.indexOf('function nav()')), context);
-  vm.runInContext('session={csrf:"csrf"}', context);
-  return {context, calls, redirects, nodes, main, dialog,
-    submit: () => vm.runInContext('submitSetup({token:"setup-token",username:"owner",password:"test-password",startup:true})', context),
+  store.session = {csrf: 'csrf'};
+  store.state = null;
+  return {store, act, auth, calls, redirects, nodes, main, dialog,
+    submit: () => auth.submitSetup({token: 'setup-token', username: 'owner', password: 'test-password', startup: true}),
     ready: () => new Promise(resolve => setImmediate(resolve)),
     click: id => nodes.get(id).click()
   };
 }
 
 test('canceling portable startup replacement keeps setup and makes no retry', async () => {
-  const app = browser([conflict('first')]);
+  const app = await browser([conflict('first')]);
   const pending = app.submit();
   await app.ready();
   assert.equal(app.dialog.open, true);
@@ -59,7 +60,7 @@ test('canceling portable startup replacement keeps setup and makes no retry', as
 });
 
 test('replacing startup resubmits setup with the reviewed confirmation', async () => {
-  const app = browser([conflict('reviewed'), {ok: true}]);
+  const app = await browser([conflict('reviewed'), {ok: true}]);
   const pending = app.submit();
   await app.ready();
   app.click('#startup-replace');
@@ -71,8 +72,8 @@ test('replacing startup resubmits setup with the reviewed confirmation', async (
 });
 
 test('a changed startup entry requires a new review before settings are saved', async () => {
-  const app = browser([conflict('old'), conflict('changed'), {ok: true}]);
-  const pending = vm.runInContext('submitStartupAware(confirmation=>act("settings","",{startup:true,startup_confirmation:confirmation}))', app.context);
+  const app = await browser([conflict('old'), conflict('changed'), {ok: true}]);
+  const pending = app.auth.submitStartupAware(confirmation => app.act('settings', '', {startup: true, startup_confirmation: confirmation}));
   await app.ready();
   app.click('#startup-replace');
   await app.ready();
@@ -86,7 +87,7 @@ test('a changed startup entry requires a new review before settings are saved', 
 test('closing the confirmation dialog cancels and paths are escaped', async () => {
   const value = conflict('proof');
   value.startup.existing_executable = '<img src=x onerror=alert(1)>';
-  const app = browser([value]);
+  const app = await browser([value]);
   const pending = app.submit();
   await app.ready();
   const html = app.nodes.get('#dialog-body').innerHTML;
@@ -98,10 +99,10 @@ test('closing the confirmation dialog cancels and paths are escaped', async () =
   assert.deepEqual(app.redirects, []);
 });
 
-test('a restored enabled flag does not show another executable as this copy startup', () => {
-  const app = browser([]);
-  vm.runInContext('state={startup:{needs_confirmation:true,registered_executable:"F:\\Portable\\loki-server.exe"}}', app.context);
-  const html = vm.runInContext('startupControl({startup:true})', app.context);
+test('a restored enabled flag does not show another executable as this copy startup', async () => {
+  const app = await browser([]);
+  app.store.state = {startup: {needs_confirmation: true, registered_executable: 'F:\\Portable\\loki-server.exe'}};
+  const html = app.auth.startupControl({startup: true});
   assert.ok(!html.includes(' checked'));
   assert.ok(html.includes('another LOKI copy'));
 });

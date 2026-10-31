@@ -1,0 +1,42 @@
+// Stroke icons on a 24px grid. Only geometry lives here; style.css sets stroke and size.
+const paths = {
+  home: "M3 10.5 12 3l9 7.5M5 9v11h5v-6h4v6h5V9",
+  apps: "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z",
+  folder: "M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z",
+  route: "M7 3v18M7 5h10l3 3-3 3H7M7 14h8l-2-2M15 14l-2 2",
+  people: "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21v-1a6 6 0 0 1 12 0v1M16 3.5a4 4 0 0 1 0 7M22 21v-1a6 6 0 0 0-4-5.6",
+  activity: "M3 12h4l3-8 4 16 3-8h4",
+  settings: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM9 10a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM17 16a2 2 0 1 1 0 4 2 2 0 0 1 0-4z",
+  user: "M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM4 21a8 8 0 0 1 16 0",
+  logout: "M10 4H5v16h5M15 8l4 4-4 4M19 12H9",
+  plus: "M12 5v14M5 12h14",
+  upload: "M12 16V4M7 9l5-5 5 5M4 16v4h16v-4",
+  download: "M12 4v12M7 11l5 5 5-5M4 20h16",
+  external: "M14 4h6v6M20 4l-9 9M18 14v6H4V6h6",
+  file: "M6 3h8l5 5v13H6zM14 3v5h5",
+  image: "M4 5h16v14H4zM4 16l5-5 4 4 2-2 5 5M15.5 9.5h.01",
+  video: "M3 6h13v12H3zM16 10l5-3v10l-5-3",
+  audio: "M9 18V5l11-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM20 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
+  text: "M6 3h8l5 5v13H6zM14 3v5h5M9 13h6M9 17h6",
+  chevron: "M9 6l6 6-6 6",
+  left: "M15 6l-6 6 6 6",
+  up: "M12 19V5M6 11l6-6 6 6",
+  power: "M12 3v9M6.3 7a8 8 0 1 0 11.4 0",
+  refresh: "M20 11a8 8 0 0 0-14.9-3M4 4v4h4M4 13a8 8 0 0 0 14.9 3M20 20v-4h-4",
+  trash: "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3",
+  key: "M8 19a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM10.8 12.2 20 3M17 6l3 3M14.5 8.5l2 2",
+  shield: "M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6zM9 12l2 2 4-4",
+  server: "M4 4h16v7H4zM4 13h16v7H4zM8 7.5h.01M8 16.5h.01",
+  logs: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01",
+  check: "M5 12.5l4.5 4.5L19 7",
+  close: "M6 6l12 12M18 6L6 18",
+  alert: "M12 3l10 18H2zM12 10v5M12 18h.01",
+  archive: "M3 4h18v5H3zM5 9v11h14V9M10 13h4",
+  edit: "M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4",
+  globe: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9z",
+  lock: "M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4",
+};
+
+export function icon(name, extra = "") {
+  return `<svg class="icon${extra ? ` ${extra}` : ""}" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name] || paths.file}"/></svg>`;
+}

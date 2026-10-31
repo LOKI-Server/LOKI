@@ -47,7 +47,7 @@ and `target/benchmark-wasi-last.json`.
 **65 Rust tests pass:** 29 server tests, 10 SDK tests, 5 tooling tests, and
 21 Bigshot domain/UI tests. Four Node setup-UI tests also pass. Both repositories
 pass formatting and Clippy with warnings denied, including Bigshot's actual
-`wasm32-wasip2` guest target. LOKI's embedded JavaScript passes `node --check`.
+`wasm32-wasip2` guest target. LOKI's embedded JavaScript modules each pass `node --check`.
 The SDK's standalone Cargo package also passes `cargo package` verification,
 including its embedded WIT. No crate has been published to a registry.
 

@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 800" fill="none" stroke-linecap="round">
+  <!-- Yggdrasil: the world tree, its three wells, and the nine realms in orbit. -->
+  <ellipse cx="300" cy="400" rx="270" ry="330" stroke="#7de7a7" stroke-opacity=".10" stroke-dasharray="1 9"/>
+  <ellipse cx="300" cy="400" rx="228" ry="282" stroke="#c8b681" stroke-opacity=".06"/>
+  <g fill="#c8b681" fill-opacity=".18" stroke="#c8b681" stroke-opacity=".28">
+    <circle cx="300" cy="70" r="5"/><circle cx="473.6" cy="147.2" r="4"/><circle cx="566" cy="342.6" r="4"/>
+    <circle cx="533.8" cy="565" r="4"/><circle cx="392.3" cy="710.2" r="4"/><circle cx="207.7" cy="710.2" r="4"/>
+    <circle cx="66.2" cy="565" r="4"/><circle cx="34" cy="342.6" r="4"/><circle cx="126.4" cy="147.2" r="4"/>
+  </g>
+  <g stroke="#7de7a7" stroke-opacity=".22" stroke-width="2.4">
+    <path d="M286 562C291 482 279 420 292 334M314 562C309 482 321 420 308 334"/>
+    <path d="M300 340C260 290 200 270 130 250M300 340C340 290 400 270 470 250"/>
+    <path d="M298 334C285 260 250 200 210 150M302 334C315 260 350 200 390 150M300 330C300 250 298 170 300 92"/>
+    <path d="M288 562C270 612 220 640 150 660M312 562C330 612 380 640 450 660M300 566C300 620 298 680 300 728"/>
+  </g>
+  <g stroke="#7de7a7" stroke-opacity=".15" stroke-width="1.4">
+    <path d="M130 250C100 240 80 220 62 190M470 250C500 240 520 220 538 190M210 150C190 125 170 110 140 100M390 150C410 125 430 110 460 100"/>
+    <path d="M200 268C190 240 170 225 150 220M400 268C410 240 430 225 450 220M250 210C230 180 230 150 240 120M350 210C370 180 370 150 360 120"/>
+    <path d="M300 200C270 170 260 140 262 110M300 200C330 170 340 140 338 110M160 256C140 270 110 275 80 270M440 256C460 270 490 275 520 270"/>
+    <path d="M150 660C120 668 100 690 92 716M450 660C480 668 500 690 508 716M220 640C200 660 196 690 200 712M380 640C400 660 404 690 400 712"/>
+    <path d="M296 600C280 640 262 660 240 676M304 600C320 640 338 660 360 676M292 470C276 460 262 446 254 430M308 430C324 420 338 404 344 388"/>
+  </g>
+  <g stroke="#7de7a7" stroke-opacity=".12" stroke-width=".9">
+    <path d="M62 190C50 172 48 156 52 140M538 190C550 172 552 156 548 140M140 100C120 92 104 92 88 98M460 100C480 92 496 92 512 98"/>
+    <path d="M240 120C244 100 254 86 268 76M360 120C356 100 346 86 332 76M80 270C64 268 50 260 40 248M520 270C536 268 550 260 560 248"/>
+  </g>
+  <g fill="#7de7a7" fill-opacity=".22">
+    <circle cx="62" cy="190" r="2.5"/><circle cx="538" cy="190" r="2.5"/><circle cx="140" cy="100" r="2.5"/><circle cx="460" cy="100" r="2.5"/>
+    <circle cx="300" cy="92" r="3"/><circle cx="150" cy="220" r="2"/><circle cx="450" cy="220" r="2"/><circle cx="240" cy="120" r="2"/>
+    <circle cx="360" cy="120" r="2"/><circle cx="262" cy="110" r="2"/><circle cx="338" cy="110" r="2"/><circle cx="80" cy="270" r="2"/><circle cx="520" cy="270" r="2"/>
+  </g>
+  <g stroke="#c8b681" stroke-opacity=".24">
+    <circle cx="92" cy="736" r="18"/><circle cx="92" cy="736" r="10" stroke-opacity=".14"/>
+    <circle cx="508" cy="736" r="18"/><circle cx="508" cy="736" r="10" stroke-opacity=".14"/>
+    <circle cx="300" cy="752" r="20"/><circle cx="300" cy="752" r="11" stroke-opacity=".14"/>
+  </g>
+</svg>

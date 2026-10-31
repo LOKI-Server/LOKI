@@ -218,7 +218,7 @@ benchmarks, and the setup, SDK, storage, and Bigshot smoke workflows. See the
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-node --check crates/loki-server/static/app.js
+Get-ChildItem crates/loki-server/static -Recurse -Filter *.js | ForEach-Object { node --check $_.FullName }
 node --test crates/loki-server/tests/setup-ui.cjs crates/loki-server/tests/shares-ui.cjs crates/loki-server/tests/startup-ui.cjs
 cargo xtask sdk-smoke --tool target/debug/cargo-loki.exe --server target/debug/loki-server.exe
 ```
