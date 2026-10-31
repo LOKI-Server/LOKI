@@ -1,0 +1,1 @@
+{"protocol":1,"id":"branch","name":"Branch","version":"1.0.0","target":"native","entry":"branch","health":"/health","description":"A small public hello from a new branch of your universe.","roles":[],"fields":[{"key":"message","label":"Welcome message","kind":"text","required":true,"default":"Hello, universe."}],"files":{}}

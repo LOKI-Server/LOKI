@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Branch Notes · LOKI</title><link rel="stylesheet" href="/static/style.css"></head>
+<body class="{% if gold %}gold{% endif %}">
+<main>
+  <header><p class="eyebrow">A small place for your stories</p><h1>Branch Notes</h1><p>Welcome, {{ username }}. These notes belong to you.</p></header>
+  <section aria-labelledby="preferences"><h2 id="preferences">Make it yours</h2>
+    <form method="post" action="/preferences"><input type="hidden" name="csrf_token" value="{{ csrf }}"><label class="check"><input type="checkbox" name="gold" {% if gold %}checked{% endif %}> A touch of gold</label><button>Save preference</button></form>
+  </section>
+  <section aria-labelledby="new-note"><h2 id="new-note">A new note</h2>
+    <form method="post" action="/notes"><input type="hidden" name="csrf_token" value="{{ csrf }}"><label for="text">What would you like to remember?</label><textarea id="text" name="text" rows="4" maxlength="4096" required></textarea><button>Save note</button></form>
+  </section>
+  <section aria-labelledby="your-notes"><h2 id="your-notes">Your notes</h2>
+    {% if notes.is_empty() %}<p class="muted">Your first story starts above.</p>{% endif %}
+    {% for note in notes %}<article><p class="note">{{ note.text }}</p><form method="post" action="/notes/{{ note.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="quiet">Delete note</button></form></article>{% endfor %}
+    <form method="post" action="/export"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button>Download these notes</button></form>
+  </section>
+  <footer><p>Your preferences, notes and exports stay with this LOKI installation.</p><form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="quiet">Sign out</button></form></footer>
+</main>
+</body></html>

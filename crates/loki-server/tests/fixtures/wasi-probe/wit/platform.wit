@@ -1,0 +1,8 @@
+package loki:app@0.1.0;
+
+interface platform {
+    call: func(operation: string, input: string) -> result<string, string>;
+}
+world host-api {
+    import platform;
+}

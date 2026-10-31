@@ -1,0 +1,65 @@
+[package]
+name = "loki-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Your services, held together. A self-hosted account and application platform."
+license.workspace = true
+
+[dependencies]
+loki-sdk = { workspace = true, features = ["manifest"] }
+anyhow = "1"
+argon2 = "0.5"
+askama = "0.12"
+axum = { version = "0.8", features = ["multipart", "macros"] }
+axum-extra = { version = "0.10", features = ["cookie"] }
+base64 = "0.22"
+cap-std = "3"
+clap = { version = "4", features = ["derive", "env"] }
+directories = "6"
+fs2 = "0.4"
+futures-util = "0.3"
+hex = "0.4"
+hmac = "0.12"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+mime_guess = "2"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rsa = { version = "0.9", features = ["sha2", "pem"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = { version = "0.10", features = ["oid"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "derive"] }
+subtle = "2"
+time = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "sync", "time", "signal", "process"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+wasmtime = { version = "=47.0.4", default-features = false, features = ["anyhow", "async", "component-model", "cranelift", "runtime", "std", "parallel-compilation"] }
+wasmtime-wasi = { version = "=47.0.4", default-features = false, features = ["p2"] }
+wasmtime-wasi-http = { version = "=47.0.4", default-features = false, features = ["p2"] }
+http-body-util = "0.1"
+bytes = "1"
+multer = "3"
+http-body = "1"
+libsqlite3-sys = "0.30.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = { version = "0.24", default-features = false }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+tempfile = "3"
+http-body-util = "0.1"

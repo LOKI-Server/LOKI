@@ -1,0 +1,12 @@
+# Keep source diffs stable across Windows, Linux and macOS.
+* text=auto eol=lf
+
+# Documentation images and other binary assets must not be normalized.
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.ico binary
+*.woff2 binary
+*.wasm binary
+*.zip binary
+*.loki-app binary

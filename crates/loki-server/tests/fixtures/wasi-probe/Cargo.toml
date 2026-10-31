@@ -1,0 +1,23 @@
+[package]
+name = "wasi-probe"
+version = "0.1.0"
+edition = "2024"
+authors = ["Aspenini"]
+repository = "https://github.com/Aspenini/LOKI"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasi = "0.14"
+wit-bindgen = "0.57"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"

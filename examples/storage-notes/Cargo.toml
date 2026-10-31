@@ -1,0 +1,32 @@
+[package]
+name = "storage-notes"
+version = "0.1.0"
+edition = "2024"
+authors = ["Aspenini"]
+repository = "https://github.com/Aspenini/LOKI"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+loki-sdk = { version = "0.1.0", path = "../../crates/loki-sdk", features = ["templates"] }
+askama = { version = "0.12", default-features = false }
+serde = { version = "1", features = ["derive"] }
+
+[package.metadata.loki]
+id = "storage-notes"
+name = "Branch Notes"
+description = "SDK example: shared login, preferences, database records and generated files."
+health = "/health"
+capabilities = ["storage", "database", "forms"]
+assets = ["static"]
+
+[profile.release]
+lto = true
+opt-level = "s"
+strip = true
+panic = "abort"

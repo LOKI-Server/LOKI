@@ -1,0 +1,11 @@
+package loki:app@0.1.0;
+
+/// Host services are scoped to the installed app and the authenticated request.
+interface platform {
+    /// JSON messages; the protocol documents each bounded operation.
+    call: func(operation: string, input: string) -> result<string, string>;
+}
+
+world host-api {
+    import platform;
+}
