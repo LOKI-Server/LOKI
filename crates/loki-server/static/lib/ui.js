@@ -27,6 +27,7 @@ const runes = {
   activity: ["ᛞ", "Dagaz", "day and change"],
   settings: ["ᛏ", "Tiwaz", "order and law"],
   account: ["ᛖ", "Ehwaz", "trust between companions"],
+  sync: ["ᛇ", "Eihwaz", "the yew that endures"],
   waiting: ["ᛁ", "Isa", "stillness before spring"],
   lost: ["ᚺ", "Hagalaz", "the storm"],
 };

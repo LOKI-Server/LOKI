@@ -3,10 +3,11 @@ import { $, act, api, close, confirmDialog, enc, esc, modal, resource, store, to
 import { field, jsonView } from "./ui.js";
 import { navigate, refresh, routable } from "./router.js";
 import { submitSetup, submitStartupAware } from "../pages/auth.js";
-import { appManage, folderPicker, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects } from "../pages/manage.js";
+import { appManage, folderPicker, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
 import { userManage } from "../pages/people.js";
 import { passwordProof } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
+import { conflictsDialog, deviceRename, folderForm, folderManage, historyDialog, pairDialog } from "../pages/sync.js";
 
 let busy = false;
 
@@ -36,7 +37,8 @@ export async function onSubmit(event) {
         location.href = "/login";
       } else if (kind === "login") {
         const next = new URLSearchParams(location.search).get("next");
-        location.href = next?.startsWith("/oidc/authorize?") ? next : "/";
+        // Signing in from a device pairing link returns to it, code included.
+        location.href = next?.startsWith("/oidc/authorize?") ? next : location.pathname === "/pair" ? location.pathname + location.search : "/";
       } else location.href = "/login";
       return;
     }
@@ -69,7 +71,8 @@ export async function onSubmit(event) {
       return;
     }
     else if (kind === "settings") {
-      const result = await submitStartupAware(confirmation => act("settings", "", { ...data, startup_confirmation: confirmation }));
+      const numbers = { sync_quota_mb: Number(data.sync_quota_mb), sync_max_file_mb: Number(data.sync_max_file_mb) };
+      const result = await submitStartupAware(confirmation => act("settings", "", { ...data, ...numbers, startup_confirmation: confirmation }));
       if (!result) return;
       session = true;
       toast("Settings saved.");
@@ -99,6 +102,23 @@ export async function onSubmit(event) {
       return;
     }
     else if (kind === "group-create") { await act("group-create", "", data); close(); toast("Group created."); }
+    else if (kind === "sync-folder") {
+      if (id) data.keep_versions = Number(data.keep_versions);
+      await act("sync-folder-save", id, data);
+      close();
+      toast(id ? "Folder saved." : "Folder created. Map it to a local directory on each device.");
+    }
+    else if (kind === "sync-folder-delete") {
+      await act(kind, id, data);
+      close();
+      toast("Folder deleted.");
+      await refresh();
+      await navigate("/sync", { replace: true });
+      return;
+    }
+    else if (kind === "sync-device-rename") { await act(kind, id, data); close(); toast("Device renamed."); }
+    else if (kind === "sync-quota") { await act(kind, id, { mb: data.mb === "" ? null : Number(data.mb) }); toast("Quota saved."); }
+    else if (kind === "sync-pair") { pairDialog(await act("sync-pair-lookup", "", data)); return; }
     await refresh({ session });
   } catch (error) {
     toast(error.message, true);
@@ -122,6 +142,12 @@ const dialogs = {
   "group-new": () => modal("Create a group", `<form data-form="group-create">${field("name", "Group name", "", "text", "required maxlength=80")}<div class="actions"><button>Create group</button></div></form>`),
   "mfa-start": () => modal("Set up two-factor authentication", `<form data-form="mfa-start">${passwordProof()}<div class="actions"><button>Continue</button></div></form>`),
   "mfa-disable": () => modal("Disable two-factor authentication", `<form data-form="mfa-disable">${passwordProof()}<div class="actions"><button>Continue</button></div></form>`),
+  "sync-manage": id => syncManage(id),
+  "sync-pair": () => navigate("/pair"),
+  "sync-folder-new": () => modal("New sync folder", folderForm()),
+  "sync-folder-manage": id => folderManage(id),
+  "sync-device-rename": id => deviceRename(id),
+  "sync-conflicts": id => conflictsDialog(id),
   "storage-move": () => storage("Move server data", false),
   "storage-restore": () => storage("Restore a backup", true),
 };
@@ -173,6 +199,7 @@ export async function onClick(event) {
       else modal("Share a folder", shareForm(draft));
       return;
     }
+    if (action === "sync-history") return await historyDialog(id, b.dataset.path);
     if (action === "logs") {
       const result = await api(`/api/logs/${enc(id)}`);
       return modal(id === "caddy" ? "Caddy logs" : "Service logs", `<pre class="log">${esc(result.text || "No log output yet.")}</pre>`);
@@ -193,6 +220,7 @@ export async function onClick(event) {
     if (action === "group-delete" && !(await ask(["Delete this group?", "The group and its resource permissions are removed. Its members keep their accounts.", "Delete group"]))) return;
     if (action === "share-delete" && !(await ask(["Remove this share?", "Files on disk are kept. People lose access through LOKI.", "Remove share"]))) return;
     if (action === "revoke-all" && !(await ask(["Sign out everywhere?", "Every browser and application session for your account ends, including this one.", "Sign out everywhere"]))) return;
+    if (action === "sync-device-revoke" && !(await ask(["Sign out this device?", "It stops syncing until you pair it again. Files already on it stay there.", "Sign out device"]))) return;
     b.disabled = true;
     if (action === "logout") { await api("/api/logout", {}); location.href = "/login"; return; }
     if (action === "revoke-all") { await act(action); location.href = "/login"; return; }
@@ -212,6 +240,18 @@ export async function onClick(event) {
     else if (action === "group-delete") await act(action, id);
     else if (action === "share-delete") { await act("resource-delete", id); close(); }
     else if (action === "session-revoke") await act(action, id);
+    else if (action === "sync-device-revoke") await act(action, id);
+    else if (action === "sync-pair-approve" || action === "sync-pair-deny") {
+      await act(action, "", { code: b.dataset.code });
+      close();
+      toast(action === "sync-pair-approve" ? "Device approved. It will finish signing in by itself." : "Pairing declined.");
+      await refresh();
+      return await navigate("/sync");
+    }
+    else if (action === "sync-restore" || action === "sync-conflict-resolve") {
+      await act(action, id, { history_id: Number(b.dataset.history), keep: b.dataset.keep });
+      close();
+    }
     else if (action === "diagnostics") return modal("Server diagnostics", jsonView(await act(action)));
     else if (action === "backup") {
       const result = await act(action);

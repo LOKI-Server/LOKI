@@ -107,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
                 "tokens",
                 "codes",
                 "gateway_sessions",
+                "sync_devices",
                 "recovery_codes",
                 "resets",
             ] {
@@ -157,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::error!(error=%e.1,"Caddy reconciliation failed; dashboard remains available locally");
     }
     let monitor = tokio::spawn(apps::monitor(state.clone()));
+    let sync_maintenance = tokio::spawn(loki_server::sync::maintain(state.clone()));
     let stop = Arc::new(AtomicBool::new(false));
     let tray = if cli.no_tray {
         None
@@ -169,8 +171,12 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(unix)]let terminate=async{if let Ok(mut signal)=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()){signal.recv().await;}};
         #[cfg(not(unix))]let terminate=std::future::pending::<()>();
         tokio::select!{_=tokio::signal::ctrl_c()=>{},_=shutdown.0.shutdown.notified()=>{},_=terminate=>{}}
+        // Sync long polls would otherwise hold graceful shutdown open.
+        shutdown.0.maintenance.store(true, Ordering::SeqCst);
+        shutdown.wake_sync();
     }).await?;
     monitor.abort();
+    sync_maintenance.abort();
     stop.store(true, Ordering::Relaxed);
     if let Some(tray) = tray {
         let _ = tray.join();

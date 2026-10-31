@@ -344,6 +344,11 @@ td small { margin-top: 1px; }
 .session-row:last-child { border-bottom: 0; }
 .session-row > div { flex: 1; min-width: 0; }
 .session-row strong { font-weight: 500; margin-right: 8px; }
+.session-row > div.actions { flex: 0 0 auto; margin: 0; }
+progress.quota { width: 100%; height: 10px; margin: 6px 0 10px; appearance: none; border: 1px solid var(--border); border-radius: 999px; background: var(--raised); overflow: hidden; }
+progress.quota::-webkit-progress-bar { background: var(--raised); }
+progress.quota::-webkit-progress-value { background: linear-gradient(90deg, var(--green), var(--gold)); border-radius: 999px; }
+progress.quota::-moz-progress-bar { background: linear-gradient(90deg, var(--green), var(--gold)); border-radius: 999px; }
 .session-icon { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; background: #142219; color: var(--muted); flex: none; }
 
 /* Readable JSON */

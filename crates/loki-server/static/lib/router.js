@@ -8,8 +8,9 @@ import { appsPage, overview, routesPage, sharesPage } from "../pages/services.js
 import { accountsPage, activityPage, avatar } from "../pages/people.js";
 import { accountPage, settingsPage } from "../pages/account.js";
 import { browse } from "../pages/files.js";
+import { folderPage, pairPage, syncPage } from "../pages/sync.js";
 
-const memberPages = { "/": overview, "/apps": appsPage, "/shares": sharesPage, "/account": accountPage };
+const memberPages = { "/": overview, "/apps": appsPage, "/shares": sharesPage, "/sync": syncPage, "/pair": pairPage, "/account": accountPage };
 const ownerPages = { "/routes": routesPage, "/accounts": accountsPage, "/activity": activityPage, "/settings": settingsPage };
 const STALE_MS = 15000;
 
@@ -43,6 +44,7 @@ async function resolve() {
   if (!store.state) await refreshState();
   if (session.user.status !== "approved") return heading("Your account is waiting", "The server owner will review your account request.", "", "waiting") + `<div class="card narrow"><p>Status: ${tag(session.user.status, "warn")}</p>${button("Sign out", "logout", "", "", "subtle", "logout")}</div>`;
   if (page.startsWith("/shares/")) return browse(decodeURIComponent(page.split("/")[2]), browseParams());
+  if (page.startsWith("/sync/")) return folderPage(decodeURIComponent(page.split("/")[2]), browseParams());
   const view = memberPages[page] || (session.user.owner && ownerPages[page]) || overview;
   return view();
 }
@@ -56,7 +58,7 @@ export function nav() {
   };
   let links = "";
   if (user && user.status === "approved") {
-    links = `<div class="nav-section"><span class="section-label">Your universe</span>${link("/", "Overview", "home")}${link("/apps", "Applications", "apps")}${link("/shares", "File shares", "folder")}</div>`;
+    links = `<div class="nav-section"><span class="section-label">Your universe</span>${link("/", "Overview", "home")}${link("/apps", "Applications", "apps")}${link("/shares", "File shares", "folder")}${state?.sync ? link("/sync", "Save sync", "sync", state.sync.folders.reduce((n, f) => n + f.conflicts, 0)) : ""}</div>`;
     if (user.owner) {
       const pending = state?.users?.filter(u => u.status === "pending").length || 0;
       links += `<div class="nav-section"><span class="section-label">Server</span>${link("/routes", "Routes & services", "route")}${link("/accounts", "People & groups", "people", pending)}${link("/activity", "Activity", "activity")}${link("/settings", "Server settings", "settings")}</div>`;
@@ -132,7 +134,7 @@ export function routable(link, event) {
   if ((link.target && link.target !== "_self") || link.hasAttribute("download")) return false;
   const url = new URL(link.href, location.href);
   if (url.origin !== location.origin) return false;
-  return !/^\/(api|oidc|avatars|assets|gateway|_loki|\.well-known)(\/|$)/.test(url.pathname);
+  return !/^\/(api|oidc|avatars|assets|gateway|_loki|\.well-known|sync\/v1)(\/|$)/.test(url.pathname);
 }
 
 // While an application is starting, check on it with a gentle back-off.

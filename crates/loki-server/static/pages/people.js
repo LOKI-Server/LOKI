@@ -2,6 +2,7 @@
 import { ago, esc, modal, store } from "../lib/core.js";
 import { icon } from "../lib/icons.js";
 import { button, empty, heading, initial, status, table, tag } from "../lib/ui.js";
+import { quotaSection } from "./sync.js";
 
 const statusKind = { approved: "", pending: "warn live", suspended: "bad", rejected: "bad" };
 const groupName = id => store.state.groups.find(g => g.id === id)?.name || id;
@@ -37,7 +38,7 @@ export function userManage(id) {
   const u = state.users.find(u => u.id === id);
   const labels = { approved: "Approve", suspended: "Suspend", rejected: "Reject" };
   const statusButtons = u.owner ? "" : Object.keys(labels).filter(s => s !== u.status).map(s => button(labels[s], "user-status", id, `data-status="${s}"`, s === "approved" ? "primary" : "danger", s === "approved" ? "check" : "close")).join("");
-  modal(u.display_name || u.username, `<div class="person large">${avatar(u)}<div><strong>@${esc(u.username)}</strong>${status(u.status[0].toUpperCase() + u.status.slice(1), statusKind[u.status] ?? "dim")}</div></div><div class="actions">${statusButtons}${button("Issue password reset link", "reset-issue", id, "", "subtle", "key")}</div><section class="dialog-section"><h3>Group membership</h3><div class="check-list">${state.groups.map(g => `<label class="check"><input type="checkbox" data-membership="${esc(id)}" data-group="${esc(g.id)}" ${state.memberships.some(([uid, gid]) => uid === id && gid === g.id) ? "checked" : ""}><span>${esc(g.name)}</span></label>`).join("")}</div></section>`);
+  modal(u.display_name || u.username, `<div class="person large">${avatar(u)}<div><strong>@${esc(u.username)}</strong>${status(u.status[0].toUpperCase() + u.status.slice(1), statusKind[u.status] ?? "dim")}</div></div><div class="actions">${statusButtons}${button("Issue password reset link", "reset-issue", id, "", "subtle", "key")}</div><section class="dialog-section"><h3>Group membership</h3><div class="check-list">${state.groups.map(g => `<label class="check"><input type="checkbox" data-membership="${esc(id)}" data-group="${esc(g.id)}" ${state.memberships.some(([uid, gid]) => uid === id && gid === g.id) ? "checked" : ""}><span>${esc(g.name)}</span></label>`).join("")}</div></section>${quotaSection(id)}`);
 }
 
 export function activityPage() {

@@ -3,7 +3,7 @@ import { enc, esc, store } from "../lib/core.js";
 import { icon } from "../lib/icons.js";
 import { button, empty, heading, linkButton, status } from "../lib/ui.js";
 
-const kinds = { app: "apps", share: "folder", route: "route" };
+const kinds = { app: "apps", share: "folder", route: "route", sync: "sync" };
 
 export function resourceStatus(r) {
   if (r.kind === "app") return r.ready ? status("Running") : r.enabled ? status("Starting", "live") : status("Disabled", "dim");
@@ -14,8 +14,9 @@ export function resourceStatus(r) {
 export function cards(items) {
   const owner = store.session.user.owner;
   return `<div class="grid">${items.map(r => {
-    const description = r.kind === "app" ? r.manifest.description : r.kind === "share" ? "Browse, preview, and download shared files." : r.hostname || r.url;
+    const description = r.kind === "app" ? r.manifest.description : r.kind === "share" ? "Browse, preview, and download shared files." : r.kind === "sync" ? "Keep game saves and files the same on every device." : r.hostname || r.url;
     const open = r.kind === "share" ? linkButton("Browse files", `/shares/${enc(r.id)}`, "subtle", "folder")
+      : r.kind === "sync" ? linkButton("Open sync", "/sync", "subtle", "sync")
       : r.kind === "route" || r.ready ? linkButton("Open service", r.url, "subtle", "external", 'target="_blank" rel="noopener"') : "";
     const manage = owner ? button("Manage", `${r.kind}-manage`, r.id, "", "ghost", "settings") : "";
     return `<article class="card resource ${r.kind}" data-key="${esc(r.id)}"><div class="card-header"><span class="card-symbol" aria-hidden="true">${icon(kinds[r.kind])}</span>${resourceStatus(r)}</div><h2>${esc(r.name)}</h2><p>${esc(description)}</p>${r.error ? `<p class="help error-text">${icon("alert")}${esc(r.error)}</p>` : ""}<div class="actions">${open}${manage}</div></article>`;

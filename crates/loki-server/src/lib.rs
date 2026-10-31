@@ -10,6 +10,7 @@ pub mod identity;
 pub mod platform;
 pub mod startup;
 pub mod storage;
+pub mod sync;
 pub mod web;
 
 use axum::{
@@ -42,7 +43,16 @@ impl Error {
     pub fn not_found() -> Self {
         Self(StatusCode::NOT_FOUND, "Not found.".into())
     }
+    /// An error that also carries a stable machine-readable code for API clients.
+    /// The code travels inside the message and is split out in the response.
+    pub fn coded(status: StatusCode, code: &str, message: impl Into<String>) -> Self {
+        Self(status, format!("{code}{CODE_SEPARATOR}{}", message.into()))
+    }
+    pub fn code(&self) -> Option<&str> {
+        self.1.split_once(CODE_SEPARATOR).map(|(code, _)| code)
+    }
 }
+const CODE_SEPARATOR: char = '\u{1f}';
 impl<E: Into<anyhow::Error>> From<E> for Error {
     fn from(value: E) -> Self {
         tracing::error!(error = %value.into(), "operation failed");
@@ -54,7 +64,14 @@ impl<E: Into<anyhow::Error>> From<E> for Error {
 }
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        (self.0, Json(serde_json::json!({"error": self.1}))).into_response()
+        match self.1.split_once(CODE_SEPARATOR) {
+            Some((code, message)) => (
+                self.0,
+                Json(serde_json::json!({"error": message, "code": code})),
+            )
+                .into_response(),
+            None => (self.0, Json(serde_json::json!({"error": self.1}))).into_response(),
+        }
     }
 }
 
@@ -70,6 +87,8 @@ pub struct Settings {
     pub caddy_base: String,
     pub caddy_enabled: bool,
     pub startup: bool,
+    pub sync_quota_mb: u64,
+    pub sync_max_file_mb: u64,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -91,6 +110,8 @@ impl Default for Settings {
             caddy_base: String::new(),
             caddy_enabled: false,
             startup: false,
+            sync_quota_mb: 10240,
+            sync_max_file_mb: 2048,
         }
     }
 }
@@ -115,6 +136,11 @@ pub struct Inner {
     pub wasm_engine: tokio::sync::OnceCell<wasmtime::Engine>,
     pub component_slots: Arc<Semaphore>,
     pub startup: startup::Manager,
+    /// Bumped after every sync commit and before maintenance, waking long polls.
+    pub sync_wake: tokio::sync::watch::Sender<u64>,
+    pub sync_waiters: Semaphore,
+    /// Shared by blob uploads and commits; exclusive for garbage collection.
+    pub sync_blobs: RwLock<()>,
 }
 impl State {
     pub async fn open(data: PathBuf, bind: std::net::SocketAddr) -> anyhow::Result<Self> {
@@ -126,9 +152,21 @@ impl State {
         startup: startup::Manager,
     ) -> anyhow::Result<Self> {
         for p in [
-            "apps", "app-data", "backups", "staging", "avatars", "logs", "caddy",
+            "apps",
+            "app-data",
+            "backups",
+            "staging",
+            "avatars",
+            "logs",
+            "caddy",
+            "sync/blobs",
+            "sync/staging",
         ] {
             std::fs::create_dir_all(data.join(p))?;
+        }
+        // Interrupted uploads never became blobs.
+        for entry in std::fs::read_dir(data.join("sync/staging"))?.flatten() {
+            let _ = std::fs::remove_file(entry.path());
         }
         platform::private_directory(&data)?;
         let db = db::open(&data.join("loki.db")).await?;
@@ -186,6 +224,9 @@ impl State {
             wasm_engine: tokio::sync::OnceCell::new(),
             component_slots: Arc::new(Semaphore::new(8)),
             startup,
+            sync_wake: tokio::sync::watch::Sender::new(0),
+            sync_waiters: Semaphore::new(256),
+            sync_blobs: RwLock::new(()),
         }));
         Ok(http)
     }
@@ -198,6 +239,10 @@ impl State {
             .execute(&self.0.db)
             .await?;
         Ok(())
+    }
+    /// Return every sync long poll promptly, e.g. before draining or shutting down.
+    pub fn wake_sync(&self) {
+        self.0.sync_wake.send_modify(|n| *n = n.wrapping_add(1));
     }
     pub async fn save_settings(&self, settings: Settings) -> Result<()> {
         sqlx::query("INSERT OR REPLACE INTO settings(id,json) VALUES(1,?)")

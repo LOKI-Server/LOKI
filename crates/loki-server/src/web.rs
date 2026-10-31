@@ -70,6 +70,7 @@ pub fn router(state: State) -> Router {
         .route("/gateway/check/{id}", get(gateway_check))
         .route("/_loki/start", get(gateway_start))
         .route("/_loki/callback", get(gateway_callback))
+        .merge(crate::sync::router())
         .fallback(get(shell))
         .layer(DefaultBodyLimit::max(131072))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
@@ -148,7 +149,8 @@ async fn guard(ExtractState(state): ExtractState<State>, request: Request, next:
         && (path.starts_with("/api/")
             || path.starts_with("/oidc/")
             || path.starts_with("/gateway/")
-            || path.starts_with("/_loki/"))
+            || path.starts_with("/_loki/")
+            || path.starts_with("/sync/v1"))
     {
         return Error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -216,6 +218,7 @@ async fn guard(ExtractState(state): ExtractState<State>, request: Request, next:
         || path.starts_with("/oidc/")
         || path.starts_with("/gateway/")
         || path.starts_with("/_loki/")
+        || path.starts_with("/sync/v1")
     {
         headers.insert(
             header::CACHE_CONTROL,
@@ -302,6 +305,9 @@ async fn dashboard(
     }
     let sessions=sqlx::query("SELECT id,label,created,expires FROM sessions WHERE user_id=? AND expires>? ORDER BY created DESC").bind(&user.id).bind(auth::now()).fetch_all(&state.0.db).await?.into_iter().map(|r|json!({"id":r.get::<String,_>("id"),"label":r.get::<String,_>("label"),"created":r.get::<i64,_>("created"),"current":r.get::<String,_>("id")==ctx.session.id})).collect::<Vec<_>>();
     let mut output = json!({"resources":resources,"sessions":sessions,"mfa":user.totp.is_some(),"data_dir":state.0.data.to_string_lossy(),"target":apps::target()});
+    if let Some(sync) = crate::sync::summary(&state, user).await? {
+        output["sync"] = sync;
+    }
     if user.owner {
         output["settings"] = json!(*state.0.settings.read().await);
         #[cfg(windows)]
@@ -422,7 +428,13 @@ async fn action(
             if updated.rows_affected() != 1 {
                 return Err(Error::unauthorized());
             }
-            for table in ["sessions", "tokens", "codes", "gateway_sessions"] {
+            for table in [
+                "sessions",
+                "tokens",
+                "codes",
+                "gateway_sessions",
+                "sync_devices",
+            ] {
                 sqlx::query(&format!("DELETE FROM {table} WHERE user_id=?"))
                     .bind(&user.id)
                     .execute(&mut *tx)
@@ -496,6 +508,9 @@ async fn action(
             tx.commit().await?;
             output = json!({"recovery_codes":codes});
         }
+        name if name.starts_with("sync-") => {
+            output = crate::sync::action(&state, ctx.approved()?, name, id, data).await?;
+        }
         "mfa-disable" => {
             current_password(&state, user, data).await?;
             let mut tx = state.0.db.begin().await?;
@@ -541,7 +556,13 @@ async fn action(
                     if status == "approved" {
                         sqlx::query("INSERT OR IGNORE INTO memberships(user_id,group_id) VALUES(?,'members')").bind(id).execute(&mut *tx).await?;
                     }
-                    for table in ["sessions", "tokens", "codes", "gateway_sessions"] {
+                    for table in [
+                        "sessions",
+                        "tokens",
+                        "codes",
+                        "gateway_sessions",
+                        "sync_devices",
+                    ] {
                         sqlx::query(&format!("DELETE FROM {table} WHERE user_id=?"))
                             .bind(id)
                             .execute(&mut *tx)
@@ -703,6 +724,8 @@ async fn action(
                             "open" | "approval" | "closed"
                         )
                         || !matches!(settings.caddy_mode.as_str(), "managed" | "existing")
+                        || !(1..=100_000_000).contains(&settings.sync_quota_mb)
+                        || !(1..=1_048_576).contains(&settings.sync_max_file_mb)
                     {
                         return Err(Error::bad("Invalid settings."));
                     }
@@ -840,7 +863,13 @@ async fn reset(
         .bind(&uid)
         .execute(&mut *tx)
         .await?;
-    for table in ["sessions", "tokens", "codes", "gateway_sessions"] {
+    for table in [
+        "sessions",
+        "tokens",
+        "codes",
+        "gateway_sessions",
+        "sync_devices",
+    ] {
         sqlx::query(&format!("DELETE FROM {table} WHERE user_id=?"))
             .bind(&uid)
             .execute(&mut *tx)
@@ -853,6 +882,15 @@ async fn save_access(state: &State, id: &str, data: &Value) -> Result<()> {
     let visibility = text(data, "visibility")?;
     if !matches!(visibility, "public" | "members" | "restricted") {
         return Err(Error::bad("Invalid visibility."));
+    }
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM resources WHERE id=?")
+        .bind(id)
+        .fetch_optional(&state.0.db)
+        .await?;
+    if kind.as_deref() == Some("sync") && visibility == "public" {
+        return Err(Error::bad(
+            "Sync requires a LOKI account. Choose Members or Restricted.",
+        ));
     }
     let grants = data["grants"]
         .as_array()
@@ -1215,7 +1253,7 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
                 .await?;
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             std::fs::copy(source.join("identity.pem"), output.join("identity.pem"))?;
-            for name in ["apps", "app-data", "avatars", "caddy"] {
+            for name in ["apps", "app-data", "avatars", "caddy", "sync/blobs"] {
                 apps::copy_tree(&source.join(name), &output.join(name))?;
             }
             for (id, path) in previous {

@@ -543,7 +543,13 @@ pub async fn revoke_user(state: &State, user: &str) -> Result<()> {
         .bind(user)
         .execute(&mut *tx)
         .await?;
-    for table in ["sessions", "tokens", "codes", "gateway_sessions"] {
+    for table in [
+        "sessions",
+        "tokens",
+        "codes",
+        "gateway_sessions",
+        "sync_devices",
+    ] {
         sqlx::query(&format!("DELETE FROM {table} WHERE user_id=?"))
             .bind(user)
             .execute(&mut *tx)

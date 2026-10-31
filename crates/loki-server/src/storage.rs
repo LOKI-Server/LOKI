@@ -34,9 +34,16 @@ fn validated_archive(backup: &Path) -> anyhow::Result<zip::ZipArchive<std::fs::F
             || file.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000)
             || !seen.insert(name.to_string())
             || !(matches!(name, "loki.db" | "identity.pem")
-                || ["apps/", "app-data/", "avatars/", "caddy/", "rollback-data/"]
-                    .iter()
-                    .any(|p| name.starts_with(p)))
+                || [
+                    "apps/",
+                    "app-data/",
+                    "avatars/",
+                    "caddy/",
+                    "rollback-data/",
+                    "sync/blobs/",
+                ]
+                .iter()
+                .any(|p| name.starts_with(p)))
         {
             anyhow::bail!("Unsafe backup entry");
         }
@@ -123,6 +130,8 @@ pub async fn switch_home(state: &State, target: &str, selected_backup: Option<&s
     {
         return Err(Error::bad("A storage operation is already running."));
     }
+    // Long polls hold request permits; release them before draining.
+    state.wake_sync();
     let pointer_before = std::fs::read(location_file()).ok();
     let mut pointer_changed = false;
     let result = async {
