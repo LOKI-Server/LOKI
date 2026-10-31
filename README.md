@@ -70,7 +70,10 @@ Caddy using loopback HTTP URLs.
   browser gate is intended for browser services, not native media clients.
 - **File shares:** choose server folders remotely, browse and sort listings,
   preview safe formats, and download files. Files stay in place; browser uploads,
-  edits, and guest bearer links are not part of this release.
+  edits, and guest bearer links are not part of this release. Each share can
+  ignore extensions such as `.tmp, .bak, .psd, .tar.gz`. Matching ignores case
+  across all subfolders; excluded files cannot be listed, previewed, or downloaded
+  through that share. Folders remain browsable and files on disk are untouched.
 - **Storage:** create/download backups; move data or restore a local backup into
   an empty directory and restart from the web UI. The original installation is
   retained. External shared folders keep their original absolute paths.

@@ -45,6 +45,16 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
             .execute(&pool)
             .await?;
     }
+    if !sqlx::query("PRAGMA table_info(shares)")
+        .fetch_all(&pool)
+        .await?
+        .iter()
+        .any(|r| r.get::<String, _>("name") == "excluded_extensions")
+    {
+        sqlx::query("ALTER TABLE shares ADD COLUMN excluded_extensions TEXT NOT NULL DEFAULT '[]'")
+            .execute(&pool)
+            .await?;
+    }
     sqlx::query("INSERT OR IGNORE INTO token_families(id,expires) SELECT family,max(expires) FROM tokens GROUP BY family").execute(&pool).await?;
     Ok(pool)
 }
@@ -56,4 +66,46 @@ pub async fn settings(pool: &SqlitePool) -> anyhow::Result<Settings> {
         Some(j) => serde_json::from_str(&j)?,
         None => Settings::default(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn existing_shares_gain_empty_exclusions_and_keep_them_after_reopening() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("loki.db");
+        let pool = SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::raw_sql("CREATE TABLE resources(id TEXT PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL,visibility TEXT NOT NULL DEFAULT 'restricted'); CREATE TABLE shares(id TEXT PRIMARY KEY REFERENCES resources(id),root TEXT NOT NULL); INSERT INTO resources(id,kind,name) VALUES('old','share','Old share'); INSERT INTO shares(id,root) VALUES('old','kept-folder');")
+            .execute(&pool).await.unwrap();
+        pool.close().await;
+        let pool = open(&path).await.unwrap();
+        let share: (String, String) =
+            sqlx::query_as("SELECT root,excluded_extensions FROM shares WHERE id='old'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(share, ("kept-folder".into(), "[]".into()));
+        sqlx::query("UPDATE shares SET excluded_extensions='[\"tmp\"]' WHERE id='old'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = open(&path).await.unwrap();
+        let excluded: String =
+            sqlx::query_scalar("SELECT excluded_extensions FROM shares WHERE id='old'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(excluded, "[\"tmp\"]");
+        pool.close().await;
+    }
 }

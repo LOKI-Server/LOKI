@@ -283,6 +283,170 @@ async fn registration_grants_and_revocation() {
     state.0.db.close().await;
 }
 #[tokio::test]
+async fn share_exclusions_filter_before_pagination_and_block_direct_file_requests() {
+    let (tmp, state, mut owner) = installation().await;
+    let folder = tmp.path().join("shared");
+    std::fs::create_dir_all(folder.join("folder.tmp")).unwrap();
+    for n in 0..105 {
+        std::fs::write(folder.join(format!("visible-{n:03}.txt")), b"hello world").unwrap();
+        std::fs::write(folder.join(format!("hidden-{n:03}.tmp")), b"hidden").unwrap();
+    }
+    for name in [
+        "photo.JPG",
+        "archive.TAR.GZ",
+        ".tmp",
+        "notes.tmp.txt",
+        "folder.tmp/日本語.txt",
+        "folder.tmp/hidden.BAK",
+    ] {
+        std::fs::write(folder.join(name), b"contents").unwrap();
+    }
+    let share = owner.action("share-save", "", json!({"name":"Filtered","root":folder,"excluded_extensions":".TMP, *.JPG; .tar.gz bak"})).await;
+    let id = share["id"].as_str().unwrap();
+    let listing_url = format!("/api/shares/{id}");
+    let mut guest = Browser::new(web::router(state.clone()));
+    assert_eq!(
+        guest.request("GET", &listing_url, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    owner
+        .action(
+            "resource-access",
+            id,
+            json!({"visibility":"public","grants":[]}),
+        )
+        .await;
+    let (status, listing) = guest.request("GET", &listing_url, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listing["total"], 107);
+    assert_eq!(listing["entries"].as_array().unwrap().len(), 100);
+    assert_eq!(listing["entries"][0]["name"], "folder.tmp");
+    let (_, next) = guest
+        .request("GET", &format!("{listing_url}?page=1&sort=size"), None)
+        .await;
+    assert_eq!(next["total"], 107);
+    assert_eq!(next["entries"].as_array().unwrap().len(), 7);
+    let (_, nested) = guest
+        .request("GET", &format!("{listing_url}?path=folder.tmp"), None)
+        .await;
+    assert_eq!(nested["total"], 1);
+    assert_eq!(nested["entries"][0]["name"], "日本語.txt");
+    for path in [
+        "photo.JPG",
+        "photo.%4A%50%47",
+        "archive.TAR.GZ",
+        ".tmp",
+        "folder.tmp%2Fhidden.BAK",
+    ] {
+        for suffix in ["", "&download=true"] {
+            let url = format!("{listing_url}/file?path={path}{suffix}");
+            assert_eq!(
+                guest.request("GET", &url, None).await.0,
+                StatusCode::NOT_FOUND,
+                "{url}"
+            );
+            assert_eq!(
+                owner.request("GET", &url, None).await.0,
+                StatusCode::NOT_FOUND,
+                "{url}"
+            );
+        }
+    }
+    let blocked = guest
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("{listing_url}/file?path=photo.JPG"))
+                .header(header::RANGE, "bytes=0-2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::NOT_FOUND);
+    let allowed = guest
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{listing_url}/file?path=visible-000.txt"))
+                .header(header::RANGE, "bytes=0-4")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        allowed
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        b"hello"
+    );
+    let (_, snapshot) = owner.request("GET", "/api/state", None).await;
+    let saved = snapshot["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap();
+    assert_eq!(
+        saved["excluded_extensions"],
+        json!(["bak", "jpg", "tar.gz", "tmp"])
+    );
+    let invalid = owner.request("POST", "/api/action", Some(json!({"action":"share-save","id":id,"data":{"name":"Invalid edit","root":folder,"excluded_extensions":"../txt"}}))).await;
+    assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        guest
+            .request("GET", &format!("{listing_url}/file?path=photo.JPG"), None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    // Other shares of the same folder have independent settings; clearing the
+    // filter takes effect on the next request and never deletes the file.
+    let other = owner
+        .action("share-save", "", json!({"name":"Unfiltered","root":folder}))
+        .await;
+    assert_eq!(
+        owner
+            .request(
+                "GET",
+                &format!(
+                    "/api/shares/{}/file?path=photo.JPG",
+                    other["id"].as_str().unwrap()
+                ),
+                None
+            )
+            .await
+            .0,
+        StatusCode::OK
+    );
+    owner
+        .action(
+            "share-save",
+            id,
+            json!({"name":"Filtered","root":folder,"excluded_extensions":""}),
+        )
+        .await;
+    assert_eq!(
+        guest
+            .request("GET", &format!("{listing_url}/file?path=photo.JPG"), None)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert!(folder.join("photo.JPG").is_file());
+    state.0.db.close().await;
+}
+
+#[tokio::test]
 async fn file_permissions_ranges_and_active_content() {
     let (tmp, state, mut owner) = installation().await;
     let folder = tmp.path().join("shared");

@@ -270,12 +270,13 @@ async fn dashboard(
             "share" => {
                 resource["url"] = json!(format!("/shares/{id}"));
                 if user.owner {
-                    resource["root"] = json!(
-                        sqlx::query_scalar::<_, String>("SELECT root FROM shares WHERE id=?")
+                    let (root, excluded): (String, String) =
+                        sqlx::query_as("SELECT root,excluded_extensions FROM shares WHERE id=?")
                             .bind(&id)
                             .fetch_one(&state.0.db)
-                            .await?
-                    );
+                            .await?;
+                    resource["root"] = json!(root);
+                    resource["excluded_extensions"] = serde_json::from_str(&excluded)?;
                 }
             }
             _ => {}
@@ -571,6 +572,14 @@ async fn action(
                     save_access(&state, id, data).await?;
                 }
                 "share-save" => {
+                    let excluded = match data.get("excluded_extensions") {
+                        Some(value) => value
+                            .as_str()
+                            .ok_or_else(|| Error::bad("Excluded file extensions must be text."))?,
+                        None => "",
+                    };
+                    let excluded =
+                        serde_json::to_string(&files::parse_excluded_extensions(excluded)?)?;
                     let root = tokio::fs::canonicalize(text(data, "root")?).await?;
                     if !root.is_dir() {
                         return Err(Error::bad("Choose a readable directory."));
@@ -592,19 +601,23 @@ async fn action(
                             .bind(name)
                             .execute(&mut *tx)
                             .await?;
-                        sqlx::query("INSERT INTO shares(id,root) VALUES(?,?)")
-                            .bind(&rid)
-                            .bind(root.to_string_lossy().as_ref())
-                            .execute(&mut *tx)
-                            .await?;
+                        sqlx::query(
+                            "INSERT INTO shares(id,root,excluded_extensions) VALUES(?,?,?)",
+                        )
+                        .bind(&rid)
+                        .bind(root.to_string_lossy().as_ref())
+                        .bind(&excluded)
+                        .execute(&mut *tx)
+                        .await?;
                     } else {
                         sqlx::query("UPDATE resources SET name=? WHERE id=? AND kind='share'")
                             .bind(name)
                             .bind(id)
                             .execute(&mut *tx)
                             .await?;
-                        sqlx::query("UPDATE shares SET root=? WHERE id=?")
+                        sqlx::query("UPDATE shares SET root=?,excluded_extensions=? WHERE id=?")
                             .bind(root.to_string_lossy().as_ref())
+                            .bind(&excluded)
                             .bind(id)
                             .execute(&mut *tx)
                             .await?;

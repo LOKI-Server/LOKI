@@ -12,6 +12,95 @@ use std::path::{Component, Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
+pub fn parse_excluded_extensions(input: &str) -> Result<Vec<String>> {
+    if input.len() > 4096 {
+        return Err(Error::bad(
+            "Excluded file extensions must fit within 4,096 bytes.",
+        ));
+    }
+    let mut extensions = std::collections::BTreeSet::new();
+    for value in input.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';')) {
+        if value.is_empty() {
+            continue;
+        }
+        let value = value
+            .strip_prefix("*.")
+            .or_else(|| value.strip_prefix('.'))
+            .unwrap_or(value);
+        if value.is_empty()
+            || value.len() > 32
+            || value.split('.').any(|part| {
+                part.is_empty()
+                    || !part
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"_-+".contains(&c))
+            })
+        {
+            return Err(Error::bad(
+                "Enter file extensions such as .tmp, .bak or .tar.gz, separated by commas or spaces.",
+            ));
+        }
+        extensions.insert(value.to_ascii_lowercase());
+        if extensions.len() > 64 {
+            return Err(Error::bad(
+                "Use at most 64 excluded file extensions per share.",
+            ));
+        }
+    }
+    Ok(extensions.into_iter().collect())
+}
+
+fn excluded(path: &Path, extensions: &[String]) -> bool {
+    if extensions.is_empty() {
+        return false;
+    }
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    // Win32 can treat trailing spaces/dots as aliases for the same filename.
+    #[cfg(windows)]
+    let name = name.trim_end_matches([' ', '.']);
+    extensions.iter().any(|extension| {
+        name.strip_suffix(extension)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+    })
+}
+
+fn check_opened_file(file: &std::fs::File, path: &Path, extensions: &[String]) -> Result<()> {
+    if excluded(path, extensions) {
+        return Err(Error::not_found());
+    }
+    #[cfg(not(windows))]
+    let _ = file;
+    #[cfg(windows)]
+    if !extensions.is_empty() {
+        use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW, VOLUME_NAME_NT,
+        };
+        // Check the opened handle's long filename as well: an 8.3 alias can
+        // have a different extension, especially for compound suffixes.
+        let mut buffer = vec![0u16; 32768];
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle().cast(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_NT,
+            )
+        } as usize;
+        if length == 0 || length >= buffer.len() {
+            return Err(Error::not_found());
+        }
+        let resolved = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
+        if excluded(&resolved, extensions) {
+            return Err(Error::not_found());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Deserialize, Default)]
 pub struct Browse {
     #[serde(default)]
@@ -64,7 +153,11 @@ pub(crate) fn confined(root: &str, path: &str) -> Result<(Dir, PathBuf)> {
     }
     Ok((dir, path))
 }
-pub async fn share_root(state: &State, headers: &HeaderMap, id: &str) -> Result<String> {
+pub struct Share {
+    pub root: String,
+    pub excluded_extensions: Vec<String>,
+}
+pub async fn share(state: &State, headers: &HeaderMap, id: &str) -> Result<Share> {
     let ctx = auth::context(state, headers).await.ok();
     let user = ctx.as_ref().and_then(|c| c.user.as_ref());
     if !auth::allowed(state, user, id, "access").await? {
@@ -74,18 +167,23 @@ pub async fn share_root(state: &State, headers: &HeaderMap, id: &str) -> Result<
             Error::forbidden()
         });
     }
-    sqlx::query_scalar("SELECT root FROM shares WHERE id=?")
-        .bind(id)
-        .fetch_optional(&state.0.db)
-        .await?
-        .ok_or_else(Error::not_found)
+    let (root, extensions): (String, String) =
+        sqlx::query_as("SELECT root,excluded_extensions FROM shares WHERE id=?")
+            .bind(id)
+            .fetch_optional(&state.0.db)
+            .await?
+            .ok_or_else(Error::not_found)?;
+    Ok(Share {
+        root,
+        excluded_extensions: serde_json::from_str(&extensions)?,
+    })
 }
 pub async fn info(
     ExtractState(state): ExtractState<State>,
     RoutePath(id): RoutePath<String>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>> {
-    share_root(&state, &headers, &id).await?;
+    share(&state, &headers, &id).await?;
     let (name, visibility): (String, String) =
         sqlx::query_as("SELECT name,visibility FROM resources WHERE id=? AND kind='share'")
             .bind(&id)
@@ -101,10 +199,10 @@ pub async fn list(
     headers: HeaderMap,
     Query(query): Query<Browse>,
 ) -> Result<Json<serde_json::Value>> {
-    let root = share_root(&state, &headers, &id).await?;
+    let share = share(&state, &headers, &id).await?;
     let path = query.path.clone();
     let (entries, total) = tokio::task::spawn_blocking(move || -> Result<(Vec<Entry>, usize)> {
-        let (dir, path) = confined(&root, &path)?;
+        let (dir, path) = confined(&share.root, &path)?;
         let current = if path.as_os_str().is_empty() {
             dir
         } else {
@@ -131,6 +229,9 @@ pub async fn list(
                 }
             }
             if !meta.is_dir() && !meta.is_file() {
+                continue;
+            }
+            if meta.is_file() && excluded(Path::new(&name), &share.excluded_extensions) {
                 continue;
             }
             total += 1;
@@ -229,15 +330,20 @@ pub async fn download(
     headers: HeaderMap,
     Query(query): Query<Browse>,
 ) -> Result<Response> {
-    let root = share_root(&state, &headers, &id).await?;
+    let share = share(&state, &headers, &id).await?;
     let path = query.path.clone();
     let (file, path) = tokio::task::spawn_blocking(move || -> Result<_> {
-        let (dir, path) = confined(&root, &path)?;
+        let (dir, path) = confined(&share.root, &path)?;
+        if excluded(&path, &share.excluded_extensions) {
+            return Err(Error::not_found());
+        }
         let file = dir.open(&path).map_err(|_| Error::not_found())?;
         if !file.metadata()?.is_file() {
             return Err(Error::not_found());
         }
-        Ok((file.into_std(), path))
+        let file = file.into_std();
+        check_opened_file(&file, &path, &share.excluded_extensions)?;
+        Ok((file, path))
     })
     .await??;
     let length = file.metadata()?.len();
@@ -343,6 +449,70 @@ pub async fn folders(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn exclusions_check_the_actual_opened_filename_not_only_a_short_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("日本語 archive.tar.gz");
+        std::fs::write(&path, b"private").unwrap();
+        let file = std::fs::File::open(path).unwrap();
+        let extensions = parse_excluded_extensions("tar.gz").unwrap();
+        assert_eq!(
+            check_opened_file(&file, Path::new("ARCHIV~1.GZ"), &extensions)
+                .unwrap_err()
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert!(check_opened_file(&file, Path::new("ARCHIV~1.GZ"), &[]).is_ok());
+    }
+    #[test]
+    fn excluded_extensions_are_normalized_and_match_file_suffixes() {
+        let extensions = parse_excluded_extensions(".TMP, bak; *.JPG\n.tar.gz tmp").unwrap();
+        assert_eq!(extensions, ["bak", "jpg", "tar.gz", "tmp"]);
+        for name in [
+            "image.JPG",
+            "日本語.Bak",
+            "archive.TAR.GZ",
+            ".tmp",
+            "folder/photo.jpg",
+        ] {
+            assert!(excluded(Path::new(name), &extensions), "{name}");
+        }
+        for name in [
+            "notmp",
+            "photo.jpg.txt",
+            "archive.gz",
+            "README",
+            "folder.tmp/readme.txt",
+        ] {
+            assert!(!excluded(Path::new(name), &extensions), "{name}");
+        }
+        assert!(parse_excluded_extensions(" , ; \n").unwrap().is_empty());
+        for input in [
+            "*",
+            "*.*",
+            "../txt",
+            "a/b",
+            "a\\b",
+            ".",
+            "..tmp",
+            "*..tmp",
+            "a..b",
+            "exe:stream",
+            "<script>",
+        ] {
+            assert!(parse_excluded_extensions(input).is_err(), "{input}");
+        }
+        assert!(parse_excluded_extensions(&"x".repeat(33)).is_err());
+        assert!(parse_excluded_extensions(&" ".repeat(4097)).is_err());
+        let too_many = (0..65)
+            .map(|n| format!("ext{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(parse_excluded_extensions(&too_many).is_err());
+        #[cfg(windows)]
+        assert!(excluded(Path::new("photo.JPG. "), &extensions));
+    }
     #[test]
     fn ranges() {
         assert_eq!(range("bytes=0-9", 100), Some((0, 9)));
