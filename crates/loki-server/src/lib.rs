@@ -7,6 +7,7 @@ pub mod db;
 pub mod files;
 pub mod identity;
 pub mod platform;
+pub mod startup;
 pub mod storage;
 pub mod web;
 
@@ -112,9 +113,17 @@ pub struct Inner {
     pub requests: Semaphore,
     pub wasm_engine: tokio::sync::OnceCell<wasmtime::Engine>,
     pub component_slots: Arc<Semaphore>,
+    pub startup: startup::Manager,
 }
 impl State {
     pub async fn open(data: PathBuf, bind: std::net::SocketAddr) -> anyhow::Result<Self> {
+        Self::open_with_startup(data, bind, startup::Manager::system()?).await
+    }
+    pub(crate) async fn open_with_startup(
+        data: PathBuf,
+        bind: std::net::SocketAddr,
+        startup: startup::Manager,
+    ) -> anyhow::Result<Self> {
         for p in [
             "apps", "app-data", "backups", "staging", "avatars", "logs", "caddy",
         ] {
@@ -175,6 +184,7 @@ impl State {
             requests: Semaphore::new(1024),
             wasm_engine: tokio::sync::OnceCell::new(),
             component_slots: Arc::new(Semaphore::new(8)),
+            startup,
         }));
         Ok(http)
     }

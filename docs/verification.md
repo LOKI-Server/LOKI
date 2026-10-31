@@ -137,6 +137,13 @@ are not copied into backups. Test location pointers are isolated from real setup
 
 ## Browser and platform scope
 
+Windows startup migration has regression coverage for explicit replacement
+confirmation, cancellation before owner/settings changes, stale confirmation
+rejection, restored enabled settings, and rollback after failed saves. Native
+registry round trips use random `Software\LOKI\Tests` subkeys rather than the
+Windows Run key. The real sign-in startup registration is not modified by tests.
+Dashboard tests cover confirm/cancel/dismiss behavior and escaped file paths.
+
 The Rust `cargo xtask` automation was exercised on Windows on 2026-10-31 with
 fresh debug server/tool builds. Setup relocation, SDK scaffolding/check/package,
 watched rebuilds and failed-build preservation, Ctrl+C cleanup across two preview

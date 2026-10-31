@@ -275,40 +275,15 @@ fn service_boxed<'a>(
 }
 
 pub async fn startup(enable: bool, data: &Path, bind: std::net::SocketAddr) -> Result<()> {
+    #[cfg(not(windows))]
     let exe = std::env::current_exe()?;
     #[cfg(windows)]
-    {
-        let mut cmd = Command::new("reg.exe");
-        cmd.creation_flags(0x08000000);
-        if enable {
-            cmd.args([
-                "add",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                "/v",
-                "LOKI",
-                "/t",
-                "REG_SZ",
-                "/d",
-            ]);
-            cmd.arg(format!(
-                "\"{}\" --data-dir \"{}\" --bind {}",
-                exe.display(),
-                data.display(),
-                bind
-            ))
-            .arg("/f");
-        } else {
-            cmd.args([
-                "delete",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                "/v",
-                "LOKI",
-                "/f",
-            ]);
-        }
-        let output = cmd.output().await?;
-        if enable && !output.status.success() {
-            return Err(Error::bad("Could not register startup."));
+    match crate::startup::Manager::system()?.change(enable, data, bind, None)? {
+        crate::startup::Change::Ready(registration) => registration.commit(),
+        crate::startup::Change::Confirm(_) => {
+            return Err(Error::bad(
+                "Windows startup points to another LOKI copy. Enable startup in Server settings and confirm replacement before moving data.",
+            ));
         }
     }
     #[cfg(target_os = "linux")]

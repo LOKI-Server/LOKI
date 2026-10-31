@@ -182,6 +182,16 @@ Automatic startup is per-user sign-in, not a privileged system service. Windows
 uses the current user's Run key, Linux an XDG autostart entry, and macOS a
 LaunchAgent. Existing OS services may require independently configured access.
 
+On Windows, switching from a portable copy to an installed copy preserves your
+accounts/apps when both use the same data directory. Quit the portable server,
+start the installed one, and enable startup in Server settings. If LOKI's
+existing startup entry points at a different executable, a prompt shows both
+paths and the data folder this copy will use. Confirm to replace the entry, or
+cancel to leave it and your settings unchanged. A restored enabled setting is
+also checked when saving. Disabling startup from another copy does not remove
+the registered copy's entry. This changes startup only; keep your data directory
+when deleting the old executable or portable folder.
+
 When adopting an existing Caddy, preview and back up its live configuration,
 then stop Patty or any other configuration writer. LOKI preserves that base and
 adds its own routes. Never expose Caddy's management endpoint publicly.
@@ -202,7 +212,7 @@ cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 node --check crates/loki-server/static/app.js
-node --test crates/loki-server/tests/setup-ui.cjs crates/loki-server/tests/shares-ui.cjs
+node --test crates/loki-server/tests/setup-ui.cjs crates/loki-server/tests/shares-ui.cjs crates/loki-server/tests/startup-ui.cjs
 cargo xtask sdk-smoke --tool target/debug/cargo-loki.exe --server target/debug/loki-server.exe
 ```
 

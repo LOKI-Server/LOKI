@@ -287,6 +287,15 @@ async fn dashboard(
     let mut output = json!({"resources":resources,"sessions":sessions,"mfa":user.totp.is_some(),"data_dir":state.0.data.to_string_lossy(),"target":apps::target()});
     if user.owner {
         output["settings"] = json!(*state.0.settings.read().await);
+        #[cfg(windows)]
+        {
+            output["startup"] = match state.0.startup.status() {
+                Ok(status) => json!(status),
+                Err(_) => {
+                    json!({"error":"Could not inspect the Windows startup entry. Saving will check again."})
+                }
+            };
+        }
         output["users"] = json!(
             sqlx::query_as::<_, auth::User>("SELECT * FROM users ORDER BY owner DESC,username")
                 .fetch_all(&state.0.db)
@@ -702,11 +711,32 @@ async fn action(
                             ));
                         }
                     }
+                    #[cfg(windows)]
+                    let startup_registration = if settings.startup || old.startup {
+                        match state.0.startup.change(
+                            settings.startup,
+                            &state.0.data,
+                            state.0.bind,
+                            data["startup_confirmation"].as_str(),
+                        )? {
+                            crate::startup::Change::Confirm(conflict) => {
+                                return Ok(Json(conflict.response()));
+                            }
+                            crate::startup::Change::Ready(registration) => Some(registration),
+                        }
+                    } else {
+                        None
+                    };
                     caddy::apply_settings(&state, &settings).await?;
+                    #[cfg(not(windows))]
                     if settings.startup != old.startup {
                         platform::startup(settings.startup, &state.0.data, state.0.bind).await?;
                     }
                     state.save_settings(settings).await?;
+                    #[cfg(windows)]
+                    if let Some(registration) = startup_registration {
+                        registration.commit();
+                    }
                 }
                 "caddy-preview" => {
                     let _guard = state.0.operations.lock().await;

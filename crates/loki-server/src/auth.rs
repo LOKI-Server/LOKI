@@ -263,6 +263,8 @@ pub struct Setup {
     #[serde(default)]
     pub startup: bool,
     #[serde(default)]
+    pub startup_confirmation: Option<String>,
+    #[serde(default)]
     pub data_dir: String,
 }
 fn check_setup_token(expected: Option<&str>, provided: &str) -> Result<()> {
@@ -294,6 +296,21 @@ pub async fn setup(
     if !input.data_dir.trim().is_empty() {
         crate::storage::prepare_destination(&state, input.data_dir.trim()).await?;
     }
+    #[cfg(windows)]
+    let startup_registration = if input.startup {
+        match state.0.startup.change(
+            true,
+            &state.0.data,
+            state.0.bind,
+            input.startup_confirmation.as_deref(),
+        )? {
+            crate::startup::Change::Confirm(conflict) => return Ok(Json(conflict.response())),
+            crate::startup::Change::Ready(registration) => Some(registration),
+        }
+    } else {
+        None
+    };
+    #[cfg(not(windows))]
     if input.startup {
         crate::platform::startup(true, &state.0.data, state.0.bind).await?;
     }
@@ -315,6 +332,10 @@ pub async fn setup(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    #[cfg(windows)]
+    if let Some(registration) = startup_registration {
+        registration.commit();
+    }
     *state.0.settings.write().await = settings;
     *token = None;
     let _ = tokio::fs::remove_file(state.0.data.join("setup-token.txt")).await;
