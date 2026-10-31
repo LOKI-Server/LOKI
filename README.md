@@ -180,6 +180,11 @@ When adopting an existing Caddy, preview and back up its live configuration,
 then stop Patty or any other configuration writer. LOKI preserves that base and
 adds its own routes. Never expose Caddy's management endpoint publicly.
 
+To replace an existing instance's site configuration, select Existing Caddy
+instance and leave Caddy base JSON blank. Preview and save to apply only LOKI's
+routes. Existing mode preserves the running instance's administration settings,
+including its default listener, so a reload does not rebind its management port.
+
 ## Development and verification
 
 ```powershell

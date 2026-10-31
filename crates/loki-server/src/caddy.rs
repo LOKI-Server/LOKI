@@ -111,7 +111,17 @@ pub async fn render(state: &State, settings: &Settings) -> Result<String> {
     }
     Ok(text)
 }
-async fn candidate(state: &State, settings: &Settings) -> Result<Value> {
+async fn current_config(settings: &Settings) -> Result<Value> {
+    let admin = admin_origin(settings)?;
+    Ok(platform::http()
+        .get(format!("{admin}/config/"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
+}
+async fn candidate(state: &State, settings: &Settings, live: Option<&Value>) -> Result<Value> {
     let text = render(state, settings).await?;
     let path = state.0.data.join("caddy/candidate.Caddyfile");
     tokio::fs::write(&path, &text).await?;
@@ -182,6 +192,18 @@ async fn candidate(state: &State, settings: &Settings) -> Result<Value> {
         base["admin"] = generated["admin"].clone();
         generated = base;
     }
+    if let Some(live) = live {
+        // The API URL is a connection address, not a request to rebind Caddy.
+        // Preserve even an omitted admin block: its effective default may come
+        // from CADDY_ADMIN in the existing process. Overlapping localhost/IP
+        // listeners cannot be rebound during a Windows reload.
+        match live.get("admin") {
+            Some(admin) => generated["admin"] = admin.clone(),
+            None => {
+                generated.as_object_mut().unwrap().remove("admin");
+            }
+        }
+    }
     // Validate the merged document as well as the generated fragment.
     let path = state.0.data.join("caddy/candidate.json");
     tokio::fs::write(&path, serde_json::to_vec_pretty(&generated)?).await?;
@@ -222,7 +244,12 @@ pub async fn apply_settings(state: &State, settings: &Settings) -> Result<()> {
             return Ok(());
         }
     }
-    let value = candidate(state, settings).await?;
+    let live = if settings.caddy_mode == "existing" {
+        Some(current_config(settings).await?)
+    } else {
+        None
+    };
+    let value = candidate(state, settings, live.as_ref()).await?;
     let admin = admin_origin(settings)?;
     let client = platform::http();
     if settings.caddy_mode == "managed" {
@@ -286,20 +313,17 @@ pub async fn apply_settings(state: &State, settings: &Settings) -> Result<()> {
             }
         }
     }
-    let previous = client
-        .get(format!("{admin}/config/"))
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+    let previous = match live {
+        Some(value) => value,
+        None => current_config(settings).await?,
+    };
     let backup =
         state
             .0
             .data
             .join("backups")
             .join(format!("caddy-{}-{}.json", auth::now(), auth::id()));
-    tokio::fs::write(backup, &previous).await?;
+    tokio::fs::write(backup, serde_json::to_vec(&previous)?).await?;
     let response = client
         .post(format!("{admin}/load"))
         .json(&value)
@@ -317,8 +341,7 @@ pub async fn apply_settings(state: &State, settings: &Settings) -> Result<()> {
         failed => {
             let rollback = client
                 .post(format!("{admin}/load"))
-                .header("content-type", "application/json")
-                .body(previous.to_vec())
+                .json(&previous)
                 .send()
                 .await;
             let restored = rollback.is_ok_and(|r| r.status().is_success());
@@ -335,18 +358,16 @@ pub async fn apply_settings(state: &State, settings: &Settings) -> Result<()> {
     }
 }
 pub async fn preview(state: &State, settings: &Settings) -> Result<Value> {
-    candidate(state, settings).await
+    let live = if settings.caddy_mode == "existing" {
+        Some(current_config(settings).await?)
+    } else {
+        None
+    };
+    candidate(state, settings, live.as_ref()).await
 }
 pub async fn adopt(state: &State) -> Result<String> {
     let settings = state.0.settings.read().await.clone();
-    let admin = admin_origin(&settings)?;
-    let value: Value = platform::http()
-        .get(format!("{admin}/config/"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let value = current_config(&settings).await?;
     let json = serde_json::to_string_pretty(&value)?;
     tokio::fs::write(
         state.0.data.join("backups/caddy-before-adoption.json"),
