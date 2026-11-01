@@ -9,6 +9,7 @@ import { passwordProof } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
 import { conflictsDialog, deviceRename, folderForm, folderManage, historyDialog, pairDialog } from "../pages/sync.js";
 import { panelAction, panelDialog } from "../pages/panel.js";
+import { previewPackage } from "./package.js";
 
 let busy = false;
 
@@ -144,7 +145,7 @@ export async function onSubmit(event) {
 // Buttons that only open a dialog; nothing changes on the server.
 const dialogs = {
   "backup-import": () => modal("Import a backup", '<p>Choose a LOKI backup ZIP up to 2 GiB. Importing stores it locally; restoration is a separate action. Backups include private credentials and native app packages, so use a source you trust.</p><form data-form="backup-import"><input type="file" name="backup" aria-label="Backup archive" accept=".zip" required><div class="actions"><button>Import backup archive</button></div></form>'),
-  "app-import": () => modal("Import a LOKI application", `<p>Select a portable WASI .loki-app package, or a native package for <strong>${esc(store.state.target)}</strong>.</p><div class="notice">WASI components share LOKI’s web server and use limited app services. Native packages run with your server user’s permissions. Review the package source before importing.</div><form data-form="import"><input type="file" name="package" aria-label="Application package" accept=".loki-app" required><p class="help">Up to 512 MiB. Replacing an installed package snapshots its stopped data before updating, including builds with the same prerelease version.</p><div class="actions"><button>Import package</button></div></form>`),
+  "app-import": () => modal("Import a LOKI application", `<p>Select a portable WASI .loki-app package, or a native package for <strong>${esc(store.state.target)}</strong>.</p><div class="notice">WASI components share LOKI’s web server and use limited app services. Native packages run with your server user’s permissions. Review the package source before importing.</div><form data-form="import"><input type="file" name="package" aria-label="Application package" accept=".loki-app" required><p class="help">Up to 512 MiB. Replacing an installed package snapshots its stopped data before updating, including builds with the same prerelease version.</p><div id="package-preview" aria-live="polite"></div><div class="actions"><button disabled>Import package</button></div></form>`),
   "app-manage": id => appManage(id),
   "share-manage": id => shareManage(id),
   "route-manage": id => routeManage(id),
@@ -307,6 +308,7 @@ export async function onChange(event) {
       toast(error.message, true);
     }
   }
+  if (e.matches('form[data-form="import"] input[type="file"]')) await previewPackage(e);
   if (e.id === "file-sort") navigate(browseUrl(e.dataset.share, e.dataset.path, 0, e.value)).catch(error => toast(error.message, true));
 }
 

@@ -26,6 +26,11 @@ const FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../static/lib/actions.js"),
     ),
     (
+        "lib/package.js",
+        JS,
+        include_bytes!("../static/lib/package.js"),
+    ),
+    (
         "pages/auth.js",
         JS,
         include_bytes!("../static/pages/auth.js"),

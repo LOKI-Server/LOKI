@@ -294,6 +294,10 @@ main { width: 100%; max-width: 1240px; margin: 0 auto; padding: 44px; flex: 1; o
 .panel-section .session-row .actions { margin: 0; flex-wrap: wrap; justify-content: flex-end; }
 .panel-upload input[type="file"] { display: block; margin-top: 6px; }
 .notice.error, .error { color: #ffc3bb; background: var(--danger-bg); border-color: var(--danger-border); }
+.notice ul { margin: 6px 0 0; padding-left: 1.1rem; }
+.package-preview { margin: 16px 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-s); background: #0c1510; }
+.package-preview h3 { margin: 0 0 4px; }
+.package-preview .notice { margin: 12px 0 0; }
 .error-text { display: flex; gap: 6px; align-items: flex-start; color: var(--danger); }
 .secret { user-select: all; color: #ccedb2; font-size: .9rem; }
 
