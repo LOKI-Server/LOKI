@@ -11,7 +11,7 @@ license.workspace = true
 loki-sdk = { workspace = true, features = ["manifest"] }
 anyhow = "1"
 argon2 = "0.5"
-askama = "0.12"
+askama = "0.16"
 axum = { version = "0.8", features = ["multipart", "macros", "ws"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 base64 = "0.22"
