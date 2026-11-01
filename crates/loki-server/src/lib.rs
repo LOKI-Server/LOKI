@@ -165,6 +165,8 @@ pub struct Inner {
     pub bind: std::net::SocketAddr,
     pub settings: RwLock<Settings>,
     pub key: RsaPrivateKey,
+    /// Signs identity tokens with `key`; see [`identity::signer`].
+    pub signer: ring::signature::RsaKeyPair,
     pub setup_token: Mutex<Option<String>>,
     pub operations: Mutex<()>,
     pub runtimes: Mutex<HashMap<String, apps::Runtime>>,
@@ -239,6 +241,7 @@ impl State {
             platform::write_private(&key_path, key.to_pkcs8_pem(LineEnding::LF)?.as_bytes())?;
             key
         };
+        let signer = identity::signer(&key)?;
         let setup_token =
             if sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users WHERE owner=1")
                 .fetch_one(&db)
@@ -255,6 +258,7 @@ impl State {
             bind,
             settings: RwLock::new(settings),
             key,
+            signer,
             setup_token: Mutex::new(setup_token),
             operations: Mutex::new(()),
             runtimes: Mutex::new(HashMap::new()),

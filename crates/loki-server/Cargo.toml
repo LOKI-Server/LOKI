@@ -26,6 +26,8 @@ hmac = "0.12"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 mime_guess = "2"
 rand = "0.8"
+# Constant-time RSA signing for identity tokens; already used by rustls.
+ring = "0.17"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rsa = { version = "0.9", features = ["sha2", "pem"] }
 semver = "1"

@@ -21,16 +21,37 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use rsa::{
-    pkcs1v15::SigningKey,
-    signature::{SignatureEncoding, Signer},
-    traits::PublicKeyParts,
+use ring::{
+    rand::SystemRandom,
+    signature::{RSA_PKCS1_SHA256, RsaKeyPair},
 };
+use rsa::{RsaPrivateKey, traits::PublicKeyParts};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 
+/// Tokens are signed with ring's constant-time, blinded RSA. The rsa crate's
+/// private-key operations leak timing (RUSTSEC-2023-0071), so LOKI uses it only to
+/// generate and read the key, never to sign with it.
+pub(crate) fn signer(key: &RsaPrivateKey) -> anyhow::Result<RsaKeyPair> {
+    use rsa::pkcs8::EncodePrivateKey;
+    RsaKeyPair::from_pkcs8(key.to_pkcs8_der()?.as_bytes())
+        .map_err(|e| anyhow::anyhow!("The identity key cannot sign tokens: {e}."))
+}
+/// An RS256 (RSASSA-PKCS1-v1_5 with SHA-256) signature.
+pub(crate) fn sign(signer: &RsaKeyPair, message: &[u8]) -> Result<Vec<u8>> {
+    let mut signature = vec![0; signer.public().modulus_len()];
+    signer
+        .sign(
+            &RSA_PKCS1_SHA256,
+            &SystemRandom::new(),
+            message,
+            &mut signature,
+        )
+        .map_err(|_| anyhow::anyhow!("Could not sign an identity token."))?;
+    Ok(signature)
+}
 pub fn kid(state: &State) -> String {
     auth::digest(&URL_SAFE_NO_PAD.encode(state.0.key.n().to_bytes_be()))[..16].into()
 }
@@ -402,9 +423,9 @@ pub async fn token(
     )?);
     let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims)?);
     let message = format!("{header}.{payload}");
-    let signature = SigningKey::<Sha256>::new(state.0.key.clone()).sign(message.as_bytes());
+    let signature = sign(&state.0.signer, message.as_bytes())?;
     Ok(Json(
-        json!({"token_type":"Bearer","expires_in":900,"access_token":access,"refresh_token":refresh,"scope":scope,"id_token":format!("{message}.{}",URL_SAFE_NO_PAD.encode(signature.to_bytes()))}),
+        json!({"token_type":"Bearer","expires_in":900,"access_token":access,"refresh_token":refresh,"scope":scope,"id_token":format!("{message}.{}",URL_SAFE_NO_PAD.encode(signature))}),
     ))
 }
 pub async fn token_user(
@@ -509,4 +530,24 @@ pub async fn revoke(
     sqlx::query("DELETE FROM tokens WHERE client=? AND family IN(SELECT family FROM tokens WHERE id=? AND client=?)").bind(&client.id).bind(auth::digest(&input.token)).bind(&client.id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsa::{
+        pkcs1v15::{Signature, SigningKey, VerifyingKey},
+        signature::{SignatureEncoding, Signer, Verifier},
+    };
+    #[test]
+    fn ring_signs_exactly_what_rsa_would_and_it_verifies() {
+        let key = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let message = b"header.payload";
+        let signature = sign(&signer(&key).unwrap(), message).unwrap();
+        let expected = SigningKey::<Sha256>::new(key.clone()).sign(message);
+        assert_eq!(signature, expected.to_bytes().as_ref());
+        VerifyingKey::<Sha256>::new(key.to_public_key())
+            .verify(message, &Signature::try_from(signature.as_slice()).unwrap())
+            .unwrap();
+    }
 }
