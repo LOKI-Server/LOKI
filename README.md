@@ -250,8 +250,10 @@ This uses disposable data under `target/wasi-smoke-*`, not installed services or
 accounts. It exercises component readiness, host-managed sign-in, voting,
 permission revocation, failed-update rollback, and backup/resume.
 
-Two test components exercise the sandbox and realtime apps. Their tests skip
-themselves unless pointed at a build:
+Two test components exercise the sandbox and realtime apps. `cargo test` runs
+the builds [frozen](crates/loki-server/tests/fixtures/frozen/README.md) at each
+supported SDK, which are never rebuilt, so a change that would break existing
+apps fails. To test a fresh build instead:
 
 ```powershell
 cargo build --release --target wasm32-wasip2 --manifest-path crates/loki-server/tests/fixtures/wasi-probe/Cargo.toml --target-dir target/wasi-probe

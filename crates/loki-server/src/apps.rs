@@ -40,8 +40,11 @@ pub fn target() -> String {
 pub fn validate_manifest(m: &Manifest) -> Result<()> {
     loki_sdk::manifest::validate_manifest(m).map_err(|error| Error::bad(error.to_string()))
 }
-/// The oldest `loki-sdk` whose apps this LOKI runs. Raise it with each breaking
-/// change to the host API, so older apps are asked to rebuild instead of failing.
+/// The oldest `loki-sdk` whose apps this LOKI runs. Apps built with it or any
+/// later SDK keep working, so raise it only to deliberately end support for older
+/// apps: delete their frozen test builds (`tests/fixtures/frozen`) in the same
+/// change and announce it in the release notes. Those apps are then asked to
+/// rebuild instead of failing.
 pub const OLDEST_SDK: semver::Version = semver::Version::new(0, 3, 0);
 /// Why this LOKI can't run an app with this runtime, built with this `loki-sdk`.
 /// Checked on the raw manifest at import, before fields a newer SDK may add are

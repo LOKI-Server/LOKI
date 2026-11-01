@@ -1,3 +1,4 @@
+mod common;
 use axum::{
     body::Body,
     http::{Request, StatusCode, header},
@@ -31,15 +32,14 @@ async fn request(
         serde_json::from_slice(&body).unwrap_or_else(|_| json!(String::from_utf8_lossy(&body))),
     )
 }
+/// Runs against each frozen SDK build, or a fresh one from LOKI_COMPONENT_FIXTURE.
 #[tokio::test]
 async fn wasi_guests_are_scoped_bounded_and_stop_without_stopping_loki() {
-    let Ok(fixture) = std::env::var("LOKI_COMPONENT_FIXTURE") else {
-        eprintln!(
-            "Set LOKI_COMPONENT_FIXTURE to the compiled wasi-probe.wasm to run the sandbox integration test."
-        );
-        return;
-    };
-    let bytes = std::fs::read(fixture).unwrap();
+    for build in common::builds("wasi_probe.wasm", "LOKI_COMPONENT_FIXTURE") {
+        sandbox(&build.wasm, &build.sdk).await;
+    }
+}
+async fn sandbox(bytes: &[u8], sdk: &str) {
     let directory = tempfile::tempdir().unwrap();
     let state = State::open(directory.path().into(), "127.0.0.1:7070".parse().unwrap())
         .await
@@ -50,7 +50,7 @@ async fn wasi_guests_are_scoped_bounded_and_stop_without_stopping_loki() {
         .fetch_one(&state.0.db)
         .await
         .unwrap();
-    let mut manifest = json!({"protocol":1,"id":"wasi-probe","name":"WASI probe","version":"0.1.0","runtime":"wasi","target":"wasm32-wasip2","entry":"probe.wasm","health":"/health","roles":["admin"],"capabilities":["database"],"limits":{"fuel":1000000,"memory_mib":16,"timeout_seconds":2},"files":{"probe.wasm":hex::encode(Sha256::digest(&bytes))},"built_with":{"sdk":env!("CARGO_PKG_VERSION"),"cargo_loki":env!("CARGO_PKG_VERSION")}});
+    let mut manifest = json!({"protocol":1,"id":"wasi-probe","name":"WASI probe","version":"0.1.0","runtime":"wasi","target":"wasm32-wasip2","entry":"probe.wasm","health":"/health","roles":["admin"],"capabilities":["database"],"limits":{"fuel":1000000,"memory_mib":16,"timeout_seconds":2},"files":{"probe.wasm":hex::encode(Sha256::digest(bytes))},"built_with":{"sdk":sdk,"cargo_loki":sdk}});
     let package = directory.path().join("probe.loki-app");
     let mut archive = zip::ZipWriter::new(std::fs::File::create(&package).unwrap());
     archive
@@ -60,7 +60,7 @@ async fn wasi_guests_are_scoped_bounded_and_stop_without_stopping_loki() {
     archive
         .start_file("probe.wasm", zip::write::SimpleFileOptions::default())
         .unwrap();
-    archive.write_all(&bytes).unwrap();
+    archive.write_all(bytes).unwrap();
     archive.finish().unwrap();
     apps::import(&state, package, &uid).await.unwrap();
     apps::action(&state, "wasi-probe", "enable").await.unwrap();
@@ -116,7 +116,7 @@ async fn wasi_guests_are_scoped_bounded_and_stop_without_stopping_loki() {
     archive
         .start_file("probe.wasm", zip::write::SimpleFileOptions::default())
         .unwrap();
-    archive.write_all(&bytes).unwrap();
+    archive.write_all(bytes).unwrap();
     archive.finish().unwrap();
     apps::import(&state, package, &uid).await.unwrap();
     let (status, _, stored) = request(&router, "/storage", &cookie).await;

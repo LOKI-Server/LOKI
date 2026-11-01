@@ -1,8 +1,9 @@
 //! Realtime WASI instances: long-lived state, WebSockets held by LOKI, ticks, file
 //! streaming, limits, failure recovery, restarts, the LAN listener and shutdown.
 //!
-//! Build `tests/fixtures/realtime-echo` for wasm32-wasip2 and set
-//! LOKI_REALTIME_FIXTURE to its .wasm to run this test.
+//! Runs against each frozen SDK build of `tests/fixtures/realtime-echo`, or a fresh
+//! wasm32-wasip2 build when LOKI_REALTIME_FIXTURE points at one.
+mod common;
 use axum::{
     body::Body,
     http::{Request, StatusCode, header},
@@ -87,13 +88,11 @@ fn free_port() -> u16 {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn realtime_apps_hold_state_and_connections_without_holding_loki() {
-    let Ok(fixture) = std::env::var("LOKI_REALTIME_FIXTURE") else {
-        eprintln!(
-            "Set LOKI_REALTIME_FIXTURE to the compiled realtime-echo .wasm to run the realtime test."
-        );
-        return;
-    };
-    let bytes = std::fs::read(fixture).unwrap();
+    for build in common::builds("realtime_echo.wasm", "LOKI_REALTIME_FIXTURE") {
+        realtime(&build.wasm, &build.sdk).await;
+    }
+}
+async fn realtime(bytes: &[u8], sdk: &str) {
     let blob: Vec<u8> = (0..3 * 1024 * 1024 + 5)
         .map(|i| (i * 31 % 251) as u8)
         .collect();
@@ -115,12 +114,12 @@ async fn realtime_apps_hold_state_and_connections_without_holding_loki() {
         .unwrap();
     let manifest = json!({"protocol":1,"id":APP,"name":"Realtime echo","version":"0.1.0","runtime":"wasi","target":"wasm32-wasip2","entry":"echo.wasm","health":"/health","capabilities":["realtime","storage","uploads"],"roles":["admin"],"panel":true,
         "limits":{"fuel":50_000_000,"memory_mib":32,"timeout_seconds":5,"realtime":{"path":"/ws","tick_ms":50,"max_connections":3,"max_message_bytes":65536,"event_fuel":5_000_000}},
-        "files":{"echo.wasm":hex::encode(Sha256::digest(&bytes)),"blob.bin":hex::encode(Sha256::digest(&blob))},"built_with":{"sdk":env!("CARGO_PKG_VERSION"),"cargo_loki":env!("CARGO_PKG_VERSION")}});
+        "files":{"echo.wasm":hex::encode(Sha256::digest(bytes)),"blob.bin":hex::encode(Sha256::digest(&blob))},"built_with":{"sdk":sdk,"cargo_loki":sdk}});
     let package = directory.path().join("echo.loki-app");
     let mut archive = zip::ZipWriter::new(std::fs::File::create(&package).unwrap());
     for (name, data) in [
         ("manifest.json", manifest.to_string().into_bytes()),
-        ("echo.wasm", bytes),
+        ("echo.wasm", bytes.to_vec()),
         ("blob.bin", blob.clone()),
     ] {
         archive

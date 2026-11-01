@@ -6,6 +6,9 @@ use std::{
     path::{Component, Path},
 };
 
+/// LOKI refuses fields it doesn't know, so new fields arrive only with a new SDK
+/// minor version. An older LOKI then refuses those packages by their
+/// `built_with` version, with a request to update LOKI, before reading the rest.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {

@@ -1,3 +1,13 @@
+// LOKI's host API. Apps built against any 0.3.x version of this package keep
+// running on later LOKI releases, so every change here must stay compatible:
+//
+// - Only add: a new function, interface or type goes in the next 0.3.x version.
+//   Never rename, remove or change anything that exists, including adding a
+//   field to a record or a case to a variant or enum; add a new type instead.
+// - A breaking change needs a new package version (0.4.0) that LOKI provides
+//   alongside this one, so older apps keep linking.
+// - LOKI's tests run apps frozen at each supported SDK
+//   (crates/loki-server/tests/fixtures/frozen).
 package loki:app@0.3.0;
 
 /// Types shared by the host interfaces.
