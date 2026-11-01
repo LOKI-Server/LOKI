@@ -7,7 +7,7 @@ resolver = "3"
 version = "0.3.0"
 edition = "2024"
 authors = ["Aspenini"]
-repository = "https://github.com/Aspenini/LOKI"
+repository = "https://github.com/LOKI-Server/LOKI"
 license = "MIT"
 
 [workspace.dependencies]

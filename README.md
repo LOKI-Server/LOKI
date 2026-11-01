@@ -4,7 +4,7 @@
 
 **Your services, held together.**
 
-By [Aspenini](https://github.com/Aspenini) · [GitHub](https://github.com/Aspenini/LOKI) · [MIT license](LICENSE)
+By [Aspenini](https://github.com/Aspenini) · [GitHub](https://github.com/LOKI-Server/LOKI) · [MIT license](LICENSE)
 
 LOKI is a self-hosted Rust account server, application host, Caddy controller, and
 read-only file-sharing portal. Each installation owns its accounts. Your apps

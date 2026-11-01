@@ -3,7 +3,7 @@ name = "realtime-echo"
 version = "0.1.0"
 edition = "2024"
 authors = ["Aspenini"]
-repository = "https://github.com/Aspenini/LOKI"
+repository = "https://github.com/LOKI-Server/LOKI"
 license = "MIT"
 publish = false
 
