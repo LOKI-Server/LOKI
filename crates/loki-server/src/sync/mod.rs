@@ -5,13 +5,14 @@ mod api;
 mod blobs;
 mod devices;
 
-use crate::{Error, Result, State, apps, auth, auth::User};
+use crate::{Error, Result, State, apps, auth, auth::User, web::args};
 use axum::{
     Router,
     extract::DefaultBodyLimit,
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::Row;
 
@@ -197,19 +198,57 @@ pub async fn summary(state: &State, user: &User) -> Result<Option<Value>> {
     Ok(Some(value))
 }
 
+#[derive(Deserialize)]
+struct Quota {
+    /// MiB, or none for the server default.
+    mb: Option<i64>,
+}
+#[derive(Deserialize)]
+struct Code {
+    #[serde(default)]
+    code: String,
+}
+#[derive(Deserialize)]
+struct DeviceName {
+    #[serde(default)]
+    name: String,
+}
+/// Creates a folder when the action has no `id`; otherwise changes what is given.
+#[derive(Deserialize)]
+struct FolderChange {
+    name: Option<String>,
+    kind: Option<String>,
+    keep_versions: Option<i64>,
+}
+#[derive(Deserialize)]
+struct FolderDeletion {
+    /// The folder's name, typed again.
+    #[serde(default)]
+    confirm: String,
+}
+#[derive(Deserialize)]
+struct Version {
+    #[serde(default)]
+    history_id: i64,
+    /// For a conflict, `this` keeps the conflicting version instead of the current one.
+    #[serde(default)]
+    keep: String,
+}
 /// Dashboard actions named `sync-*`. The caller is an approved, signed-in user.
 pub async fn action(
     state: &State,
     user: &User,
     name: &str,
     id: &str,
-    data: &Value,
+    data: Value,
 ) -> Result<Value> {
     if name == "sync-quota" {
         if !user.owner {
             return Err(Error::forbidden());
         }
-        match data["mb"].as_i64() {
+        let quota: Quota = args(data)
+            .map_err(|_| Error::bad("Enter a quota in MiB, or leave it blank for the default."))?;
+        match quota.mb {
             Some(mb) if (0..=100_000_000).contains(&mb) => {
                 sqlx::query("INSERT INTO sync_quotas(user_id,bytes) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET bytes=excluded.bytes")
                     .bind(id)
@@ -217,13 +256,13 @@ pub async fn action(
                     .execute(&state.0.db)
                     .await?;
             }
-            None if data["mb"].is_null() => {
+            None => {
                 sqlx::query("DELETE FROM sync_quotas WHERE user_id=?")
                     .bind(id)
                     .execute(&state.0.db)
                     .await?;
             }
-            _ => {
+            Some(_) => {
                 return Err(Error::bad(
                     "Enter a quota in MiB, or leave it blank for the default.",
                 ));
@@ -234,11 +273,16 @@ pub async fn action(
     if !auth::allowed(state, Some(user), RESOURCE, "access").await? {
         return Err(Error::forbidden());
     }
-    let text = |key: &str| data[key].as_str().unwrap_or("");
     match name {
-        "sync-pair-lookup" => crate::device_codes::lookup(state, user, text("code")).await,
-        "sync-pair-approve" => crate::device_codes::decide(state, user, text("code"), true).await,
-        "sync-pair-deny" => crate::device_codes::decide(state, user, text("code"), false).await,
+        "sync-pair-lookup" => {
+            let input: Code = args(data)?;
+            crate::device_codes::lookup(state, user, &input.code).await
+        }
+        "sync-pair-approve" | "sync-pair-deny" => {
+            let input: Code = args(data)?;
+            let approve = name == "sync-pair-approve";
+            crate::device_codes::decide(state, user, &input.code, approve).await
+        }
         "sync-device-revoke" => {
             sqlx::query("DELETE FROM sync_devices WHERE id=? AND user_id=?")
                 .bind(id)
@@ -248,8 +292,9 @@ pub async fn action(
             Ok(json!({"ok":true}))
         }
         "sync-device-rename" => {
+            let input: DeviceName = args(data)?;
             sqlx::query("UPDATE sync_devices SET name=? WHERE id=? AND user_id=?")
-                .bind(valid_name(text("name"), 80)?)
+                .bind(valid_name(&input.name, 80)?)
                 .bind(id)
                 .bind(&user.id)
                 .execute(&state.0.db)
@@ -257,12 +302,13 @@ pub async fn action(
             Ok(json!({"ok":true}))
         }
         "sync-folder-save" => {
+            let input: FolderChange = args(data)?;
             let folder = if id.is_empty() {
                 api::new_folder(
                     state,
                     &user.id,
-                    text("name"),
-                    data["kind"].as_str().unwrap_or("generic"),
+                    input.name.as_deref().unwrap_or(""),
+                    input.kind.as_deref().unwrap_or("generic"),
                 )
                 .await?
             } else {
@@ -270,17 +316,18 @@ pub async fn action(
                     state,
                     &user.id,
                     id,
-                    data["name"].as_str(),
-                    data["keep_versions"].as_i64(),
+                    input.name.as_deref(),
+                    input.keep_versions,
                 )
                 .await?
             };
             Ok(json!({"ok":true,"id":folder["id"]}))
         }
         "sync-folder-delete" => {
+            let input: FolderDeletion = args(data)?;
             let _guard = state.0.operations.lock().await;
             let folder = api::folder(state, &user.id, id).await?;
-            if text("confirm") != folder.name {
+            if input.confirm != folder.name {
                 return Err(Error::bad("Type the folder name to confirm deletion."));
             }
             sqlx::query("DELETE FROM sync_folders WHERE id=? AND user_id=?")
@@ -292,21 +339,15 @@ pub async fn action(
             Ok(json!({"ok":true}))
         }
         "sync-restore" => {
-            api::restore_version(
-                state,
-                &user.id,
-                id,
-                data["history_id"].as_i64().unwrap_or(0),
-                "web",
-            )
-            .await
+            let input: Version = args(data)?;
+            api::restore_version(state, &user.id, id, input.history_id, "web").await
         }
         "sync-conflict-resolve" => {
-            let history = data["history_id"].as_i64().unwrap_or(0);
-            if text("keep") == "this" {
-                api::restore_version(state, &user.id, id, history, "web").await
+            let input: Version = args(data)?;
+            if input.keep == "this" {
+                api::restore_version(state, &user.id, id, input.history_id, "web").await
             } else {
-                api::dismiss_conflict(state, &user.id, id, history).await
+                api::dismiss_conflict(state, &user.id, id, input.history_id).await
             }
         }
         _ => Err(Error::bad("Unknown action.")),

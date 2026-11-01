@@ -818,3 +818,138 @@ async fn members_can_write_a_bio_within_the_limit() {
     owner.action("bio", "", json!({"bio":""})).await;
     assert_eq!(owner.session().await["user"]["bio"], "");
 }
+
+#[tokio::test]
+async fn dashboard_actions_read_their_fields() {
+    let (tmp, state, mut owner) = installation().await;
+    let rejected = |status: StatusCode| assert_eq!(status, StatusCode::BAD_REQUEST);
+    let send = |name: &str, id: &str, data: Value| json!({"action":name,"id":id,"data":data});
+
+    owner
+        .action(
+            "profile",
+            "",
+            json!({"current_password":"owner-password-123","username":"owner","display_name":"Odin","email":"Odin@Example.com"}),
+        )
+        .await;
+    let session = owner.session().await;
+    assert_eq!(session["user"]["display_name"], "Odin");
+    assert_eq!(session["user"]["email"], "odin@example.com");
+    owner.action("session-revoke", "unknown", json!({})).await;
+
+    let (status, error) = owner
+        .request(
+            "POST",
+            "/api/action",
+            Some(send("user-create", "", json!({}))),
+        )
+        .await;
+    rejected(status);
+    assert!(
+        error["error"].as_str().unwrap().contains("username"),
+        "{error}"
+    );
+    let created = owner
+        .action("user-create", "", json!({"username":"freya"}))
+        .await;
+    assert!(created["url"].as_str().unwrap().contains("/reset#"));
+
+    owner
+        .action("group-create", "", json!({"name":"Valkyries"}))
+        .await;
+    let group: String = sqlx::query_scalar("SELECT id FROM groups WHERE name='Valkyries'")
+        .fetch_one(&state.0.db)
+        .await
+        .unwrap();
+    owner.action("group-delete", &group, json!({})).await;
+
+    let folder = tmp.path().join("shared");
+    std::fs::create_dir(&folder).unwrap();
+    let share = owner
+        .action(
+            "share-save",
+            "",
+            json!({"root":folder.to_string_lossy(),"name":"Saves","excluded_extensions":".tmp"}),
+        )
+        .await;
+    let share = share["id"].as_str().unwrap().to_string();
+    owner.action("resource-delete", &share, json!({})).await;
+
+    let route = owner
+        .action(
+            "route-save",
+            "",
+            json!({"name":"Media","hostname":"Media.Example.com","upstream":"http://127.0.0.1:8096","gated":false,"service":"","service_kind":"none"}),
+        )
+        .await;
+    let route = route["id"].as_str().unwrap().to_string();
+    let host: String = sqlx::query_scalar("SELECT hostname FROM routes WHERE id=?")
+        .bind(&route)
+        .fetch_one(&state.0.db)
+        .await
+        .unwrap();
+    assert_eq!(host, "media.example.com");
+    rejected(
+        owner
+            .request(
+                "POST",
+                "/api/action",
+                Some(send("route-action", &route, json!({"operation":"explode"}))),
+            )
+            .await
+            .0,
+    );
+    owner
+        .action("route-action", &route, json!({"operation":"delete"}))
+        .await;
+
+    let saved = owner
+        .action(
+            "sync-folder-save",
+            "",
+            json!({"name":"GBA saves","kind":"retroarch-saves"}),
+        )
+        .await;
+    let sync = saved["id"].as_str().unwrap().to_string();
+    owner
+        .action("sync-folder-save", &sync, json!({"keep_versions":3}))
+        .await;
+    rejected(
+        owner
+            .request(
+                "POST",
+                "/api/action",
+                Some(send(
+                    "sync-folder-delete",
+                    &sync,
+                    json!({"confirm":"wrong"}),
+                )),
+            )
+            .await
+            .0,
+    );
+    owner
+        .action("sync-folder-delete", &sync, json!({"confirm":"GBA saves"}))
+        .await;
+
+    rejected(
+        owner
+            .request(
+                "POST",
+                "/api/action",
+                Some(send("device-lookup", "", json!({"code":"BCDF-GHJK"}))),
+            )
+            .await
+            .0,
+    );
+    owner
+        .action(
+            "mfa-disable",
+            "",
+            json!({"current_password":"owner-password-123"}),
+        )
+        .await;
+    owner.action("revoke-all", "", json!({})).await;
+    assert!(owner.session().await["user"].is_null());
+    state.0.db.close().await;
+}
