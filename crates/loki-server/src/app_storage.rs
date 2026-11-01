@@ -27,13 +27,13 @@ fn io(error: std::io::Error) -> Error {
         std::io::ErrorKind::NotFound => Error::not_found(),
         std::io::ErrorKind::PermissionDenied => Error::forbidden(),
         std::io::ErrorKind::AlreadyExists => {
-            Error(StatusCode::CONFLICT, "Storage name already exists.".into())
+            Error::new(StatusCode::CONFLICT, "Storage name already exists.")
         }
         _ => error.into(),
     }
 }
 fn limit(message: &str) -> Error {
-    Error(StatusCode::PAYLOAD_TOO_LARGE, message.into())
+    Error::new(StatusCode::PAYLOAD_TOO_LARGE, message)
 }
 fn regular(metadata: &cap_std::fs::Metadata) -> Result<()> {
     #[cfg(windows)]
@@ -383,7 +383,7 @@ mod tests {
                     &json!({"key":"prefs","value":"x".repeat(VALUE_BYTES as usize)})
                 )
                 .unwrap_err()
-                .0,
+                .status,
             StatusCode::PAYLOAD_TOO_LARGE
         );
         assert_eq!(
@@ -435,11 +435,11 @@ mod tests {
         write("a", b"12345").unwrap();
         write("b", b"12345").unwrap();
         assert_eq!(
-            write("c", b"1").unwrap_err().0,
+            write("c", b"1").unwrap_err().status,
             StatusCode::PAYLOAD_TOO_LARGE
         );
         assert_eq!(
-            write("a", b"123456").unwrap_err().0,
+            write("a", b"123456").unwrap_err().status,
             StatusCode::PAYLOAD_TOO_LARGE
         );
         write("a", b"1").unwrap();

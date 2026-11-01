@@ -77,9 +77,9 @@ pub async fn create(state: &State, ip: &auth::ClientIp, request: Request<'_>) ->
         }
         code = user_code();
     }
-    Err(Error(
+    Err(Error::new(
         StatusCode::SERVICE_UNAVAILABLE,
-        "Try signing in again.".into(),
+        "Try signing in again.",
     ))
 }
 
@@ -215,7 +215,7 @@ pub async fn decide(state: &State, user: &User, code: &str, approve: bool) -> Re
     let (code, (kind, client, ..)) = pending(state, user, code).await?;
     let (resource, service) = resource(state, &kind, &client).await?;
     if approve && !auth::allowed(state, Some(user), &resource, "access").await? {
-        return Err(Error(
+        return Err(Error::new(
             StatusCode::FORBIDDEN,
             format!("Your account cannot use {service}. Ask the server owner for access."),
         ));

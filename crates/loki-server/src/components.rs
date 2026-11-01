@@ -274,7 +274,8 @@ pub async fn start(
                         .await
                         .map(|v| v.to_string())
                         .map_err(|e| {
-                            json!({"loki_error":1,"status":e.0.as_u16(),"message":e.1}).to_string()
+                            json!({"loki_error":1,"status":e.status.as_u16(),"message":e.message})
+                                .to_string()
                         });
                     Ok((result,))
                 })
@@ -380,9 +381,9 @@ async fn execute(
 ) -> Result<Response> {
     let _cleanup = UploadCleanup(pending.clone());
     if !runtime.active.load(Ordering::SeqCst) {
-        return Err(Error(
+        return Err(Error::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "This application is stopped.".into(),
+            "This application is stopped.",
         ));
     }
     let limits = runtime.manifest.limits.clone();
@@ -439,7 +440,10 @@ async fn execute(
                 _ => "Component request exceeded its time limit".into(),
             };
             component_log(&runtime, &detail);
-            return Err(Error(StatusCode::BAD_GATEWAY,"The application request failed or exceeded its resource limit. LOKI is still available.".into()));
+            return Err(Error::new(
+                StatusCode::BAD_GATEWAY,
+                "The application request failed or exceeded its resource limit. LOKI is still available.",
+            ));
         }
     };
     if let Some((path, asset, options)) = store.data_mut().file.take()
@@ -527,7 +531,7 @@ fn link_files(linker: &mut Linker<Host>) -> Result<()> {
             Box::new(async move {
                 let result = match context.data_mut().open(source, &path).await {
                     Ok(file) => file.metadata().map(|m| m.len()).map_err(|e| e.to_string()),
-                    Err(e) => Err(e.1),
+                    Err(e) => Err(e.message),
                 };
                 Ok((result,))
             })
@@ -544,7 +548,7 @@ fn link_files(linker: &mut Linker<Host>) -> Result<()> {
                             .map_err(|e| e.to_string())
                             .and_then(|r| r.map_err(|e| e.to_string()))
                     }
-                    Err(e) => Err(e.1),
+                    Err(e) => Err(e.message),
                 };
                 Ok((result,))
             })
@@ -574,9 +578,9 @@ async fn enter(
     )
     .await
     .map_err(|_| {
-        Error(
+        Error::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "Components are busy; try again shortly.".into(),
+            "Components are busy; try again shortly.",
         )
     })??;
     let local = tokio::time::timeout(
@@ -585,15 +589,15 @@ async fn enter(
     )
     .await
     .map_err(|_| {
-        Error(
+        Error::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "This component is busy; try again shortly.".into(),
+            "This component is busy; try again shortly.",
         )
     })??;
     if !runtime.active.load(Ordering::SeqCst) {
-        return Err(Error(
+        return Err(Error::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "The component is stopped.".into(),
+            "The component is stopped.",
         ));
     }
     Ok((global, local))
@@ -684,7 +688,8 @@ impl Host {
         let value: Value = if input.is_empty() {
             Value::Null
         } else {
-            serde_json::from_str(input)?
+            serde_json::from_str(input)
+                .map_err(|_| Error::bad("Host request is not valid JSON."))?
         };
         let text = |key: &str| {
             value
@@ -798,9 +803,9 @@ impl Host {
                     .realtime
                     .get()
                     .ok_or_else(|| {
-                        Error(
+                        Error::new(
                             StatusCode::SERVICE_UNAVAILABLE,
-                            "The realtime instance is not running.".into(),
+                            "The realtime instance is not running.",
                         )
                     })?
                     .restart()
@@ -1226,9 +1231,9 @@ pub(crate) async fn running(state: &State, app: &str) -> Result<Arc<Runtime>> {
         .filter(|r| r.ready)
         .and_then(|r| r.component.clone())
         .ok_or_else(|| {
-            Error(
+            Error::new(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "The component is not running.".into(),
+                "The component is not running.",
             )
         })
 }
@@ -1305,27 +1310,22 @@ pub async fn panel(
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
         .await
-        .map_err(|_| {
-            Error(
-                StatusCode::BAD_GATEWAY,
-                "The app's panel is too large.".into(),
-            )
-        })?;
+        .map_err(|_| Error::new(StatusCode::BAD_GATEWAY, "The app's panel is too large."))?;
     if !status.is_success() {
         // The app's own error message, such as a missing role, when it gave one.
         let message = serde_json::from_slice::<Value>(&bytes)
             .ok()
             .and_then(|v| v["error"].as_str().map(str::to_string))
             .unwrap_or_else(|| "The app could not show its panel.".into());
-        return Err(Error(status, message));
+        return Err(Error::new(status, message));
     }
     let panel: loki_sdk::panel::PanelResponse = serde_json::from_slice(&bytes)
         .ok()
         .filter(loki_sdk::panel::PanelResponse::valid)
         .ok_or_else(|| {
-            Error(
+            Error::new(
                 StatusCode::BAD_GATEWAY,
-                "The app sent a panel LOKI can't show.".into(),
+                "The app sent a panel LOKI can't show.",
             )
         })?;
     Ok(serde_json::to_value(panel)?)

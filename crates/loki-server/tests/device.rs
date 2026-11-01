@@ -134,7 +134,7 @@ async fn devices_sign_in_to_apps_with_a_code() {
         device_codes::decide(&state, &member, &code, true)
             .await
             .unwrap_err()
-            .0,
+            .status,
         StatusCode::FORBIDDEN
     );
     device_codes::decide(&state, &owner, &code, true)

@@ -276,7 +276,7 @@ pub async fn import(state: &State, package: PathBuf, actor: &str) -> Result<Mani
         if existing.as_ref().is_some_and(|a| a.enabled)
             && let Err(error) = start_inner(state, &m.id).await
         {
-            let detail = error.1;
+            let detail = error.message;
             rollback_inner(state, &m.id).await?;
             caddy::apply(state).await?;
             return Err(Error::bad(format!(
@@ -650,7 +650,7 @@ pub async fn monitor(state: State) {
                     .is_some_and(|p| p.child.try_wait().ok().flatten().is_some())
             };
             if dead && let Err(e) = caddy::apply(&state).await {
-                tracing::warn!(error=%e.1,"could not restart Caddy");
+                tracing::warn!(error=%e.message,"could not restart Caddy");
             }
         }
         let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM apps WHERE enabled=1")
@@ -719,7 +719,7 @@ pub async fn monitor(state: State) {
                             },
                         );
                         let _ = sqlx::query("UPDATE apps SET error=? WHERE id=?")
-                            .bind(e.1)
+                            .bind(e.message)
                             .bind(&id)
                             .execute(&state.0.db)
                             .await;

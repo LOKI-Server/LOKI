@@ -202,9 +202,9 @@ pub async fn rate(state: &State, key: String, max: u32, seconds: i64) -> Result<
     if limits.len() >= 10000 {
         limits.retain(|_, v| v.1 > now());
         if limits.len() >= 10000 {
-            return Err(Error(
+            return Err(Error::new(
                 StatusCode::TOO_MANY_REQUESTS,
-                "Try again later.".into(),
+                "Try again later.",
             ));
         }
     }
@@ -214,9 +214,9 @@ pub async fn rate(state: &State, key: String, max: u32, seconds: i64) -> Result<
     }
     value.0 += 1;
     if value.0 > max {
-        return Err(Error(
+        return Err(Error::new(
             StatusCode::TOO_MANY_REQUESTS,
-            "Too many attempts. Try again later.".into(),
+            "Too many attempts. Try again later.",
         ));
     }
     Ok(())
@@ -347,15 +347,15 @@ pub struct Setup {
 }
 fn check_setup_token(expected: Option<&str>, provided: &str) -> Result<()> {
     let Some(expected) = expected else {
-        return Err(Error(
+        return Err(Error::new(
             StatusCode::CONFLICT,
-            "LOKI is already set up. Sign in with the owner account you created.".into(),
+            "LOKI is already set up. Sign in with the owner account you created.",
         ));
     };
     if !equal(expected, provided.trim()) {
-        return Err(Error(
+        return Err(Error::new(
             StatusCode::FORBIDDEN,
-            "The setup token is invalid or no longer current. Use Open LOKI from the tray, or copy the current token from setup-token.txt.".into(),
+            "The setup token is invalid or no longer current. Use Open LOKI from the tray, or copy the current token from setup-token.txt.",
         ));
     }
     Ok(())
@@ -424,9 +424,9 @@ pub async fn setup(
     drop(_guard);
     if !input.data_dir.trim().is_empty() {
         if let Err(error) = crate::storage::switch_home(&state, input.data_dir.trim(), None).await {
-            tracing::error!(error = %error.1, "owner created but setup data relocation failed");
+            tracing::error!(error = %error.message, "owner created but setup data relocation failed");
             return Ok(Json(
-                serde_json::json!({"ok":true,"warning":format!("Your owner account was created, but the data directory could not be moved: {} Sign in and retry the move from Server settings.",error.1)}),
+                serde_json::json!({"ok":true,"warning":format!("Your owner account was created, but the data directory could not be moved: {} Sign in and retry the move from Server settings.",error.message)}),
             ));
         }
         return Ok(Json(serde_json::json!({"ok":true,"restarting":true})));
@@ -471,18 +471,18 @@ pub async fn login(
     let stored=user.as_ref().map(|u|u.password.clone()).unwrap_or_else(||"$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
     let valid = verify(&state, input.password, stored).await?;
     let user = user.filter(|_| valid).ok_or_else(|| {
-        Error(
+        Error::new(
             StatusCode::UNAUTHORIZED,
-            "Incorrect credentials or authentication code.".into(),
+            "Incorrect credentials or authentication code.",
         )
     })?;
     if user.status == "suspended" || user.status == "rejected" {
         return Err(Error::forbidden());
     }
     if user.totp.is_some() && !second_factor(&state, &user, &input.code).await? {
-        return Err(Error(
+        return Err(Error::new(
             StatusCode::UNAUTHORIZED,
-            "Incorrect credentials or authentication code.".into(),
+            "Incorrect credentials or authentication code.",
         ));
     }
     if let Ok(ctx) = context(&state, &headers).await {

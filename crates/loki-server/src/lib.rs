@@ -28,52 +28,59 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
-pub struct Error(pub StatusCode, pub String);
+pub struct Error {
+    pub status: StatusCode,
+    /// Shown to people, so it says what to do rather than what broke inside.
+    pub message: String,
+    /// A stable machine-readable code for API clients, when they need one.
+    pub code: Option<&'static str>,
+}
 impl Error {
+    pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            code: None,
+        }
+    }
     pub fn bad(message: impl Into<String>) -> Self {
-        Self(StatusCode::BAD_REQUEST, message.into())
+        Self::new(StatusCode::BAD_REQUEST, message)
     }
     pub fn forbidden() -> Self {
-        Self(
+        Self::new(
             StatusCode::FORBIDDEN,
-            "You do not have access to this resource.".into(),
+            "You do not have access to this resource.",
         )
     }
     pub fn unauthorized() -> Self {
-        Self(StatusCode::UNAUTHORIZED, "Please sign in.".into())
+        Self::new(StatusCode::UNAUTHORIZED, "Please sign in.")
     }
     pub fn not_found() -> Self {
-        Self(StatusCode::NOT_FOUND, "Not found.".into())
+        Self::new(StatusCode::NOT_FOUND, "Not found.")
     }
-    /// An error that also carries a stable machine-readable code for API clients.
-    /// The code travels inside the message and is split out in the response.
-    pub fn coded(status: StatusCode, code: &str, message: impl Into<String>) -> Self {
-        Self(status, format!("{code}{CODE_SEPARATOR}{}", message.into()))
-    }
-    pub fn code(&self) -> Option<&str> {
-        self.1.split_once(CODE_SEPARATOR).map(|(code, _)| code)
+    pub fn coded(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code: Some(code),
+            ..Self::new(status, message)
+        }
     }
 }
-const CODE_SEPARATOR: char = '\u{1f}';
 impl<E: Into<anyhow::Error>> From<E> for Error {
     fn from(value: E) -> Self {
         tracing::error!(error = %value.into(), "operation failed");
-        Self(
+        Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "The operation failed. See the local server log for details.".into(),
+            "The operation failed. See the local server log for details.",
         )
     }
 }
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        match self.1.split_once(CODE_SEPARATOR) {
-            Some((code, message)) => (
-                self.0,
-                Json(serde_json::json!({"error": message, "code": code})),
-            )
-                .into_response(),
-            None => (self.0, Json(serde_json::json!({"error": self.1}))).into_response(),
-        }
+        let body = match self.code {
+            Some(code) => serde_json::json!({"error": self.message, "code": code}),
+            None => serde_json::json!({"error": self.message}),
+        };
+        (self.status, Json(body)).into_response()
     }
 }
 

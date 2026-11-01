@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
                 serde_json::to_string_pretty(
                     &web::diagnostics(&state)
                         .await
-                        .map_err(|e| anyhow::anyhow!(e.1))?
+                        .map_err(|e| anyhow::anyhow!(e.message))?
                 )?
             );
             return Ok(());
@@ -155,7 +155,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let listener = tokio::net::TcpListener::bind(cli.bind).await?;
     if let Err(e) = caddy::apply(&state).await {
-        tracing::error!(error=%e.1,"Caddy reconciliation failed; dashboard remains available locally");
+        tracing::error!(error=%e.message,"Caddy reconciliation failed; dashboard remains available locally");
     }
     let monitor = tokio::spawn(apps::monitor(state.clone()));
     let sync_maintenance = tokio::spawn(loki_server::sync::maintain(state.clone()));

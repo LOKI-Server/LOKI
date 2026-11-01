@@ -196,13 +196,13 @@ pub async fn device(
         .split(' ')
         .all(|s| matches!(s, "openid" | "profile" | "email"))
     {
-        return Err(Error(StatusCode::BAD_REQUEST, "invalid_scope".into()));
+        return Err(Error::new(StatusCode::BAD_REQUEST, "invalid_scope"));
     }
     let short = |value: &str, max: usize| {
         let value = value.trim();
         (value.chars().count() <= max && !value.chars().any(char::is_control))
             .then(|| value.to_string())
-            .ok_or_else(|| Error(StatusCode::BAD_REQUEST, "invalid_request".into()))
+            .ok_or_else(|| Error::new(StatusCode::BAD_REQUEST, "invalid_request"))
     };
     let name = short(&input.name, 80)?;
     let platform = short(&input.platform, 40)?;
@@ -222,7 +222,7 @@ async fn public_client(state: &State, id: &str) -> Result<Client> {
         .bind(id)
         .fetch_optional(&state.0.db)
         .await?
-        .ok_or_else(|| Error(StatusCode::UNAUTHORIZED, "invalid_client".into()))
+        .ok_or_else(|| Error::new(StatusCode::UNAUTHORIZED, "invalid_client"))
 }
 pub async fn client_auth(state: &State, headers: &HeaderMap, input: &TokenInput) -> Result<Client> {
     let mut id = input.client_id.clone();
@@ -265,7 +265,7 @@ struct Token {
     used: i64,
 }
 fn invalid_grant() -> Error {
-    Error(StatusCode::BAD_REQUEST, "invalid_grant".into())
+    Error::new(StatusCode::BAD_REQUEST, "invalid_grant")
 }
 pub async fn token(
     ExtractState(state): ExtractState<State>,
@@ -291,7 +291,7 @@ pub async fn token(
                 &input.device_code,
             )
             .await?
-            .map_err(|waiting| Error(StatusCode::BAD_REQUEST, waiting.code().into()))?;
+            .map_err(|waiting| Error::new(StatusCode::BAD_REQUEST, waiting.code()))?;
             state
                 .audit(
                     &approved.user.id,

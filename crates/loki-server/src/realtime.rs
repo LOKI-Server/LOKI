@@ -296,7 +296,7 @@ impl Live {
             Vec::new(),
             Some(connections.clone()),
         )
-        .map_err(|e| anyhow::anyhow!(e.1))?;
+        .map_err(|e| anyhow::anyhow!(e.message))?;
         store.set_fuel(runtime.manifest().limits.fuel)?;
         let instance = runtime
             .pre()
@@ -596,7 +596,7 @@ pub(crate) async fn upgrade(
         .on_upgrade(move |socket| handle.accept(socket, info, permit)))
 }
 fn busy(message: &str) -> Error {
-    Error(StatusCode::SERVICE_UNAVAILABLE, message.into())
+    Error::new(StatusCode::SERVICE_UNAVAILABLE, message)
 }
 
 /// The app's own LAN port: its realtime endpoint and health check, nothing else.
@@ -652,7 +652,7 @@ pub(crate) fn link(linker: &mut Linker<Host>) -> Result<()> {
                             }
                             Err(e) => Err(e.to_string()),
                         },
-                        Err(e) => Err(e.1),
+                        Err(e) => Err(e.message),
                     },
                 };
                 Ok((result,))

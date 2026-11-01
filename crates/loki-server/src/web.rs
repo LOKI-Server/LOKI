@@ -163,9 +163,9 @@ async fn guard(
             || path.starts_with("/_loki/")
             || path.starts_with("/sync/v1"))
     {
-        return Error(
+        return Error::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "LOKI is restarting after a storage operation. Reconnect shortly.".into(),
+            "LOKI is restarting after a storage operation. Reconnect shortly.",
         )
         .into_response();
     }
@@ -187,8 +187,8 @@ async fn guard(
     {
         let valid = async {
             let ctx = auth::context(&state, &request_headers).await.map_err(|error| {
-                if error.0 == StatusCode::UNAUTHORIZED {
-                    Error(StatusCode::UNAUTHORIZED, "Your browser session expired. Refresh this page and try again.".into())
+                if error.status == StatusCode::UNAUTHORIZED {
+                    Error::new(StatusCode::UNAUTHORIZED, "Your browser session expired. Refresh this page and try again.")
                 } else {
                     error
                 }
@@ -198,7 +198,7 @@ async fn guard(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
             if !auth::equal(csrf, &ctx.session.csrf) {
-                return Err(Error(StatusCode::FORBIDDEN, "This page's security token is no longer current. Refresh this page and try again.".into()));
+                return Err(Error::new(StatusCode::FORBIDDEN, "This page's security token is no longer current. Refresh this page and try again."));
             }
             if let Some(origin) = request_headers.get("origin").and_then(|v| v.to_str().ok()) {
                 let public = state.0.settings.read().await.public_url.clone();
@@ -1364,7 +1364,7 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
     .await;
     for id in enabled.into_iter().filter(|_| resume || result.is_err()) {
         if let Err(e) = apps::start_inner(state, &id).await {
-            tracing::error!(app=%id,error=%e.1,"could not resume app after backup");
+            tracing::error!(app=%id,error=%e.message,"could not resume app after backup");
         }
     }
     let _ = caddy::apply(state).await;

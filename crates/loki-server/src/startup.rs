@@ -59,7 +59,7 @@ impl Drop for Registration {
             match self.store.read() {
                 Ok(current) if current == self.replacement => {
                     if let Err(error) = self.store.write(self.previous.as_ref()) {
-                        tracing::error!(error=%error.1,"Could not roll back startup registration");
+                        tracing::error!(error=%error.message,"Could not roll back startup registration");
                     }
                 }
                 _ => {}

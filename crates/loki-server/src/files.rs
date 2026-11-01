@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(
             check_opened_file(&file, Path::new("ARCHIV~1.GZ"), &extensions)
                 .unwrap_err()
-                .0,
+                .status,
             StatusCode::NOT_FOUND
         );
         assert!(check_opened_file(&file, Path::new("ARCHIV~1.GZ"), &[]).is_ok());

@@ -242,7 +242,7 @@ async fn realtime_apps_hold_state_and_connections_without_holding_loki() {
         components::panel(&state, APP, &owner, Some(broken))
             .await
             .unwrap_err()
-            .0,
+            .status,
         StatusCode::BAD_GATEWAY
     );
     sqlx::query("INSERT INTO users(id,username,display_name,password,status,created) VALUES('member-id','member','Member','x','approved',0)")
@@ -268,7 +268,7 @@ async fn realtime_apps_hold_state_and_connections_without_holding_loki() {
         components::panel(&state, APP, &member, None)
             .await
             .unwrap_err()
-            .0,
+            .status,
         StatusCode::FORBIDDEN
     );
     sqlx::query("UPDATE resources SET visibility='public' WHERE id=?")

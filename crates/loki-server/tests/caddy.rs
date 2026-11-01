@@ -30,13 +30,13 @@ async fn unreachable_existing_caddy_reports_the_cause_and_can_be_disabled() {
     state.save_settings(settings.clone()).await.unwrap();
 
     let error = caddy::apply_settings(&state, &settings).await.unwrap_err();
-    assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(error.1.contains(&settings.caddy_admin));
-    assert!(error.1.contains("already running Caddy"));
-    assert!(error.1.contains("disable Caddy management and save"));
+    assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(error.message.contains(&settings.caddy_admin));
+    assert!(error.message.contains("already running Caddy"));
+    assert!(error.message.contains("disable Caddy management and save"));
     assert!(state.0.settings.read().await.caddy_enabled);
     assert_eq!(
-        caddy::preview(&state, &settings).await.unwrap_err().0,
+        caddy::preview(&state, &settings).await.unwrap_err().status,
         StatusCode::SERVICE_UNAVAILABLE
     );
 
@@ -79,8 +79,8 @@ async fn disabling_existing_caddy_does_not_ignore_http_or_invalid_json_errors() 
         let api = Router::new().route("/config/", get(move || async move { (status, body) }));
         let server = tokio::spawn(async move { axum::serve(listener, api).await.unwrap() });
         let error = caddy::apply_settings(&state, &settings).await.unwrap_err();
-        assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert!(error.1.contains(expected), "{}", error.1);
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains(expected), "{}", error.message);
         server.abort();
     }
     state.0.db.close().await;

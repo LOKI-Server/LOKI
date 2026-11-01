@@ -320,7 +320,7 @@ pub async fn maintain(state: State) {
     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     loop {
         if let Err(error) = blobs::collect(&state).await {
-            tracing::error!(error = %error.1, "sync garbage collection failed");
+            tracing::error!(error = %error.message, "sync garbage collection failed");
         }
         interval.tick().await;
     }

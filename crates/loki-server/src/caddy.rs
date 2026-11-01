@@ -124,7 +124,7 @@ async fn current_config(settings: &Settings) -> Result<Value> {
             } else {
                 "Check the Caddy logs and management address."
             };
-            Error(
+            Error::new(
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 format!("Cannot reach Caddy at {admin}. {guidance}"),
             )
@@ -270,7 +270,7 @@ pub async fn apply_settings(state: &State, settings: &Settings) -> Result<()> {
             Ok(value) => Some(value),
             Err(error)
                 if !settings.caddy_enabled
-                    && error.0 == axum::http::StatusCode::SERVICE_UNAVAILABLE =>
+                    && error.status == axum::http::StatusCode::SERVICE_UNAVAILABLE =>
             {
                 // Let the owner leave existing mode when its external process is
                 // gone. We cannot update routes, but disabling local management
