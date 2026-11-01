@@ -752,15 +752,11 @@ async fn action(
                 }
                 "settings" => {
                     let _guard = state.0.operations.lock().await;
-                    let mut settings: Settings = serde_json::from_value(data.clone())?;
+                    let mut settings: Settings = serde_json::from_value(data.clone())
+                        .map_err(|_| Error::bad("Invalid settings."))?;
                     settings.public_url = auth::validate_public_url(&settings.public_url)?;
                     if settings.name.is_empty()
                         || settings.name.len() > 80
-                        || !matches!(
-                            settings.registration.as_str(),
-                            "open" | "approval" | "closed"
-                        )
-                        || !matches!(settings.caddy_mode.as_str(), "managed" | "existing")
                         || !(1..=100_000_000).contains(&settings.sync_quota_mb)
                         || !(1..=1_048_576).contains(&settings.sync_max_file_mb)
                     {

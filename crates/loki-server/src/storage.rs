@@ -137,7 +137,7 @@ pub async fn switch_home(state: &State, target: &str, selected_backup: Option<&s
     let result = async {
         // The caller owns one request permit. Drain all other in-flight handlers
         // before snapshotting; new API requests are rejected by maintenance mode.
-        let _drain = state.0.requests.acquire_many(1023).await?;
+        let _drain = state.0.requests.acquire_many(crate::REQUESTS - 1).await?;
         // No further requests may mutate identity state while the snapshot is made.
         let safety = crate::web::snapshot(state, false).await?;
         let archive = state

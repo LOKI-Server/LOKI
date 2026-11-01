@@ -259,7 +259,20 @@ async fn registration_grants_and_revocation() {
     );
     assert!(member.session().await["user"].is_null());
     let mut settings = state.0.settings.read().await.clone();
-    settings.registration = "closed".into();
+    let mut unknown = json!(settings);
+    unknown["registration"] = json!("invite");
+    assert_eq!(
+        owner
+            .request(
+                "POST",
+                "/api/action",
+                Some(json!({"action":"settings","data":unknown}))
+            )
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    settings.registration = loki_server::Registration::Closed;
     owner.action("settings", "", json!(settings)).await;
     assert_eq!(
         anon.request(
@@ -271,7 +284,7 @@ async fn registration_grants_and_revocation() {
         .0,
         StatusCode::FORBIDDEN
     );
-    settings.registration = "open".into();
+    settings.registration = loki_server::Registration::Open;
     owner.action("settings", "", json!(settings)).await;
     let created = anon
         .post(

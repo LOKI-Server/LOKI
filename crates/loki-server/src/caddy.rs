@@ -1,4 +1,4 @@
-use crate::{Error, Result, Settings, State, auth, platform};
+use crate::{CaddyMode, Error, Result, Settings, State, auth, platform};
 use serde_json::{Value, json};
 use tokio::process::Command;
 
@@ -119,7 +119,7 @@ async fn current_config(settings: &Settings) -> Result<Value> {
         .await
         .map_err(|error| {
             tracing::warn!(%error, %admin, "Could not reach Caddy management");
-            let guidance = if settings.caddy_mode == "existing" {
+            let guidance = if settings.caddy_mode == CaddyMode::Existing {
                 "Existing mode requires an already running Caddy. Start it separately, or disable Caddy management and save, then select LOKI-managed Caddy process and enable it."
             } else {
                 "Check the Caddy logs and management address."
@@ -265,7 +265,7 @@ pub async fn apply_settings(state: &State, settings: &Settings) -> Result<()> {
             return Ok(());
         }
     }
-    let live = if settings.caddy_mode == "existing" {
+    let live = if settings.caddy_mode == CaddyMode::Existing {
         match current_config(settings).await {
             Ok(value) => Some(value),
             Err(error)
@@ -288,7 +288,7 @@ pub async fn apply_settings(state: &State, settings: &Settings) -> Result<()> {
     let value = candidate(state, settings, live.as_ref()).await?;
     let admin = admin_origin(settings)?;
     let client = platform::http();
-    if settings.caddy_mode == "managed" {
+    if settings.caddy_mode == CaddyMode::Managed {
         let mut running = state.0.caddy.lock().await;
         if let Some(p) = running.as_mut()
             && p.child.try_wait()?.is_some()
@@ -394,7 +394,7 @@ pub async fn apply_settings(state: &State, settings: &Settings) -> Result<()> {
     }
 }
 pub async fn preview(state: &State, settings: &Settings) -> Result<Value> {
-    let live = if settings.caddy_mode == "existing" {
+    let live = if settings.caddy_mode == CaddyMode::Existing {
         Some(current_config(settings).await?)
     } else {
         None

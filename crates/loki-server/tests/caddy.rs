@@ -23,7 +23,7 @@ async fn unreachable_existing_caddy_reports_the_cause_and_can_be_disabled() {
         }
     });
     let mut settings = state.0.settings.read().await.clone();
-    settings.caddy_mode = "existing".into();
+    settings.caddy_mode = loki_server::CaddyMode::Existing;
     settings.caddy_admin = format!("http://{address}");
     settings.caddy_binary = "__missing_loki_test_caddy__".into();
     settings.caddy_enabled = true;
@@ -66,7 +66,7 @@ async fn disabling_existing_caddy_does_not_ignore_http_or_invalid_json_errors() 
         .await
         .unwrap();
     let mut settings = state.0.settings.read().await.clone();
-    settings.caddy_mode = "existing".into();
+    settings.caddy_mode = loki_server::CaddyMode::Existing;
     settings.caddy_enabled = true;
     state.save_settings(settings.clone()).await.unwrap();
     settings.caddy_enabled = false;
@@ -131,7 +131,7 @@ async fn invalid_apply_restores_active_caddy_configuration() {
     let server = tokio::spawn(async move { axum::serve(listener, api).await.unwrap() });
     let mut settings = state.0.settings.read().await.clone();
     settings.caddy_binary = binary;
-    settings.caddy_mode = "existing".into();
+    settings.caddy_mode = loki_server::CaddyMode::Existing;
     settings.caddy_admin = format!("http://{address}");
     settings.caddy_enabled = true;
     let result = caddy::apply_settings(&state, &settings).await;
@@ -260,7 +260,7 @@ async fn existing_caddy_can_start_fresh_without_rebinding_its_admin_listener() {
             .unwrap();
         let mut settings = state.0.settings.read().await.clone();
         settings.caddy_binary = binary.clone();
-        settings.caddy_mode = "existing".into();
+        settings.caddy_mode = loki_server::CaddyMode::Existing;
         settings.caddy_admin = admin.clone();
         settings.caddy_enabled = true;
         // No base: old HTTP sites must disappear, but the management endpoint

@@ -535,14 +535,14 @@ pub async fn register(
 ) -> Result<Json<serde_json::Value>> {
     rate(&state, format!("registrations:{}", ip.0), 10, 3600).await?;
     rate(&state, "registrations".into(), 60, 3600).await?;
-    let mode = state.0.settings.read().await.registration.clone();
-    if state.0.setup_token.lock().await.is_some() || mode == "closed" {
+    let mode = state.0.settings.read().await.registration;
+    if state.0.setup_token.lock().await.is_some() || mode == crate::Registration::Closed {
         return Err(Error::forbidden());
     }
     validate_identity(&input.username, &input.email, &input.display_name)?;
     let password = hash(&state, input.password).await?;
     let user = id();
-    let status = if mode == "open" {
+    let status = if mode == crate::Registration::Open {
         "approved"
     } else {
         "pending"

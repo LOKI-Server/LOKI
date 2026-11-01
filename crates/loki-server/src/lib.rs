@@ -84,13 +84,34 @@ impl IntoResponse for Error {
     }
 }
 
+/// Who may create an account from the sign-in page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Registration {
+    /// Accounts are approved as soon as they are created.
+    Open,
+    /// Accounts wait for the owner's approval.
+    #[default]
+    Approval,
+    /// Only the owner creates accounts.
+    Closed,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaddyMode {
+    /// LOKI starts and stops its own Caddy.
+    #[default]
+    Managed,
+    /// LOKI loads its routes into a Caddy that is already running.
+    Existing,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub name: String,
     pub public_url: String,
-    pub registration: String,
-    pub caddy_mode: String,
+    pub registration: Registration,
+    pub caddy_mode: CaddyMode,
     pub caddy_binary: String,
     pub caddy_admin: String,
     pub caddy_base: String,
@@ -104,8 +125,8 @@ impl Default for Settings {
         Self {
             name: "LOKI".into(),
             public_url: "http://127.0.0.1:7070".into(),
-            registration: "approval".into(),
-            caddy_mode: "managed".into(),
+            registration: Registration::default(),
+            caddy_mode: CaddyMode::default(),
             caddy_binary: std::env::current_exe()
                 .ok()
                 .and_then(|p| {
@@ -124,6 +145,17 @@ impl Default for Settings {
         }
     }
 }
+
+/// Argon2 hashes at once; each one uses about 19 MiB.
+const PASSWORD_HASHES: usize = 2;
+/// Requests LOKI handles at once. Storage operations drain all but their own.
+pub(crate) const REQUESTS: u32 = 1024;
+/// WASI component requests running at once across every app.
+const COMPONENT_REQUESTS: usize = 8;
+/// Sync long polls waiting at once.
+const SYNC_WAITERS: usize = 256;
+/// Open realtime WebSocket connections across every app.
+const SOCKETS: usize = 512;
 
 #[derive(Clone)]
 pub struct State(pub Arc<Inner>);
@@ -227,17 +259,17 @@ impl State {
             operations: Mutex::new(()),
             runtimes: Mutex::new(HashMap::new()),
             caddy: Mutex::new(None),
-            passwords: Semaphore::new(2),
+            passwords: Semaphore::new(PASSWORD_HASHES),
             limits: Mutex::new(HashMap::new()),
             shutdown: tokio::sync::Notify::new(),
             maintenance: std::sync::atomic::AtomicBool::new(false),
-            requests: Semaphore::new(1024),
+            requests: Semaphore::new(REQUESTS as usize),
             wasm_engine: tokio::sync::OnceCell::new(),
-            component_slots: Arc::new(Semaphore::new(8)),
+            component_slots: Arc::new(Semaphore::new(COMPONENT_REQUESTS)),
             startup,
             sync_wake: tokio::sync::watch::Sender::new(0),
-            sync_waiters: Semaphore::new(256),
-            sockets: Arc::new(Semaphore::new(512)),
+            sync_waiters: Semaphore::new(SYNC_WAITERS),
+            sockets: Arc::new(Semaphore::new(SOCKETS)),
             sync_blobs: RwLock::new(()),
         }));
         Ok(http)
