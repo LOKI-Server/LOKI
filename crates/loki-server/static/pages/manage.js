@@ -67,5 +67,7 @@ export function routeManage(id) {
 export async function folderPicker(path = "") {
   const result = await api(`/api/folders?path=${encodeURIComponent(path)}`);
   const parent = result.parent !== undefined && result.parent !== null;
-  modal("Choose a folder on this server", `<p class="mono path-display">${icon("folder")}${esc(result.path || "Available roots")}</p><div class="actions">${result.path ? button("Use this folder", "folder-select", "", `data-path="${esc(result.path)}"`, "primary", "check") : ""}${parent ? button("Parent folder", "folder-open", "", `data-path="${esc(result.parent)}"`, "subtle", "up") : ""}</div><div class="folder-list">${result.folders.map(p => button(p, "folder-open", "", `data-path="${esc(p)}"`, "subtle", "folder")).join("") || '<p class="help">No folders inside.</p>'}</div>`);
+  // Inside a folder, list each subfolder by its own name; the full path is above.
+  const label = p => result.path ? p.split(/[\\/]/).filter(Boolean).pop() || p : p;
+  modal("Choose a folder on this server", `<p class="mono path-display">${icon("folder")}${esc(result.path || "Available roots")}</p><div class="actions">${result.path ? button("Use this folder", "folder-select", "", `data-path="${esc(result.path)}"`, "primary", "check") : ""}${parent ? button("Parent folder", "folder-open", "", `data-path="${esc(result.parent)}"`, "subtle", "up") : ""}</div><div class="folder-list">${result.folders.map(p => button(label(p), "folder-open", "", `data-path="${esc(p)}"`, "subtle", "folder")).join("") || '<p class="help">No folders inside.</p>'}</div>`);
 }

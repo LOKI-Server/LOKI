@@ -101,7 +101,7 @@ pub async fn prepare_destination(state: &State, target: &str) -> Result<PathBuf>
         return Err(Error::bad("Choose an absolute server directory."));
     }
     tokio::fs::create_dir_all(&target).await?;
-    let target = tokio::fs::canonicalize(target).await?;
+    let target = crate::files::canonical(target).await?;
     if target.starts_with(&state.0.data)
         || state.0.data.starts_with(&target)
         || std::fs::read_dir(&target)?.next().is_some()

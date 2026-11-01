@@ -46,6 +46,12 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
             .execute(&pool)
             .await?;
     }
+    // Share roots chosen before paths were simplified kept Windows' `\\?\D:\` form.
+    sqlx::query(
+        r"UPDATE shares SET root=substr(root,5) WHERE root LIKE '\\?\%' AND substr(root,6,2)=':\'",
+    )
+    .execute(&pool)
+    .await?;
     if !sqlx::query("PRAGMA table_info(apps)")
         .fetch_all(&pool)
         .await?
@@ -138,5 +144,38 @@ mod tests {
                 .unwrap();
         assert_eq!(excluded, "[\"tmp\"]");
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn verbatim_share_roots_become_plain_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("loki.db");
+        let pool = open(&path).await.unwrap();
+        for (id, root) in [
+            ("a", r"\\?\D:\Games"),
+            ("b", r"\\?\UNC\nas\media"),
+            ("c", r"E:\Music"),
+        ] {
+            sqlx::query("INSERT INTO resources(id,kind,name) VALUES(?,'share',?)")
+                .bind(id)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO shares(id,root) VALUES(?,?)")
+                .bind(id)
+                .bind(root)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        pool.close().await;
+        let pool = open(&path).await.unwrap();
+        let roots: Vec<String> = sqlx::query_scalar("SELECT root FROM shares ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        // Network shares are left alone; only drive paths are shortened.
+        assert_eq!(roots, [r"D:\Games", r"\\?\UNC\nas\media", r"E:\Music"]);
     }
 }

@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         .data_dir
         .unwrap_or_else(loki_server::storage::default_home);
     std::fs::create_dir_all(&data)?;
-    let data = std::fs::canonicalize(data)?;
+    let data = dunce::canonicalize(data)?;
     platform::private_directory(&data)?;
     let lock = std::fs::OpenOptions::new()
         .create(true)

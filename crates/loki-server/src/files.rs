@@ -422,7 +422,7 @@ pub async fn folders(
         let roots = vec!["/".to_string()];
         return Ok(Json(serde_json::json!({"path":"","folders":roots})));
     }
-    let path = tokio::fs::canonicalize(query.path).await?;
+    let path = canonical(query.path).await?;
     let display = path.to_string_lossy().to_string();
     let folders = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
         let mut dirs = Vec::new();
@@ -446,6 +446,13 @@ pub async fn folders(
         serde_json::json!({"path":display,"parent":Path::new(&display).parent().map(|p|p.to_string_lossy().to_string()),"folders":folders}),
     ))
 }
+/// The absolute path, as people write it. On Windows `canonicalize` returns the
+/// `\\?\` form, which still works but reads badly wherever a path is shown or saved.
+pub async fn canonical(path: impl AsRef<Path>) -> std::io::Result<std::path::PathBuf> {
+    let path = tokio::fs::canonicalize(path).await?;
+    Ok(dunce::simplified(&path).to_path_buf())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

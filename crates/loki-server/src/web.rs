@@ -648,7 +648,7 @@ async fn action(
                     };
                     let excluded =
                         serde_json::to_string(&files::parse_excluded_extensions(excluded)?)?;
-                    let root = tokio::fs::canonicalize(text(data, "root")?).await?;
+                    let root = files::canonical(text(data, "root")?).await?;
                     if !root.is_dir() {
                         return Err(Error::bad("Choose a readable directory."));
                     }

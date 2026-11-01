@@ -50,6 +50,8 @@ wasmtime-wasi = { version = "=47.0.4", default-features = false, features = ["p2
 wasmtime-wasi-http = { version = "=47.0.4", default-features = false, features = ["p2"] }
 http-body-util = "0.1"
 bytes = "1"
+# Plain Windows paths (C:\x, not \\?\C:\x) wherever they can be shown or stored.
+dunce = "1"
 multer = "3"
 http-body = "1"
 libsqlite3-sys = "0.30.1"
