@@ -115,9 +115,9 @@ kind = "text"
 default = "Hello"
 ```
 
-Before registry publication, add `path = "PATH_TO_LOKI/crates/loki-sdk"` to the
-SDK dependency. `cargo loki new --sdk-path PATH` does this for you. These crates
-have not been published. App versions come from `[package].version`.
+To build against a local copy of the SDK instead of crates.io, add
+`path = "PATH_TO_LOKI/crates/loki-sdk"` to the dependency; `cargo loki new
+--sdk-path PATH` does this for you. App versions come from `[package].version`.
 
 `package` builds a release `wasm32-wasip2` component and includes declared assets
 with generated checksums. Asset paths stay relative to the plugin directory;

@@ -3,8 +3,8 @@
 Rust development tools for LOKI plugins. No Python or handwritten WIT bindings.
 
 ```sh
-cargo install --path crates/cargo-loki --locked
-cargo loki new hello --sdk-path ../LOKI/crates/loki-sdk
+cargo install cargo-loki --locked
+cargo loki new hello
 cd hello
 rustup target add wasm32-wasip2
 cargo loki check
@@ -13,13 +13,12 @@ cargo loki package
 cargo loki dev --server /path/to/loki-server
 ```
 
-`new` creates a plain Rust plugin using `loki-sdk`. Until the SDK is published,
-pass its local source path with `--sdk-path` (or `LOKI_SDK_PATH`). Published
-projects can use the default versioned dependency without a local path.
-Developer bundles created with `cargo xtask bundle --developer-tools` include
-the tool executable and SDK sources at `crates/loki-sdk`; pass that directory to
-`new --sdk-path`. The runtime bundle and Windows installer contain no developer
-tools. Publishing the SDK/tool to crates.io is independent of server releases.
+`new` creates a plain Rust plugin that depends on `loki-sdk` from crates.io, at
+the version matching the tool. To work against a local copy of the SDK, such as a
+LOKI checkout, pass its path with `--sdk-path` (or `LOKI_SDK_PATH`). Developer
+bundles created with `cargo xtask bundle --developer-tools` include the SDK
+sources at `crates/loki-sdk`. The runtime bundle and Windows installer contain no
+developer tools.
 
 `build` and `check` target WASIp2 automatically. `package` defaults to release,
 reads `[package.metadata.loki]`, includes declared assets, validates the component,

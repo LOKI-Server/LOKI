@@ -99,15 +99,12 @@ for generating Kotlin, C#, or TypeScript bindings, and the standard-library
 
 ## Install Bigshot Voter
 
-Install the development tool from this checkout first:
+Download its package from the
+[Bigshot Voter releases](https://github.com/LOKI-Server/bigshot-voter/releases), or build
+it from that repository:
 
 ```powershell
-cargo install --path crates/cargo-loki --locked
-```
-
-In the separate `bigshot-voter` repository (a sibling of this checkout):
-
-```powershell
+cargo install cargo-loki --locked
 rustup target add wasm32-wasip2
 cargo loki package
 ```
@@ -119,8 +116,8 @@ public hostname, Bigshot uses `http://bigshot-voter.localhost:7070` (with your
 actual LOKI port), sharing LOKI's listener while retaining a separate browser
 origin. For public hosting, set a hostname and enable Caddy.
 
-Bigshot 0.5 uses LOKI exclusively. Accounts, panels, and files from older
-standalone installations are not imported by this fresh-install release.
+Bigshot uses LOKI exclusively. Accounts, panels, and files from its older
+standalone installations are not imported.
 
 ## Build a plugin
 
@@ -132,22 +129,19 @@ The workspace contains four crates:
 - [xtask](crates/xtask): local `cargo xtask` commands for portable bundles, idle benchmarks, and smoke checks. It is not included in release builds.
 
 ```powershell
-cargo build -p loki-server -p cargo-loki
-cargo install --path crates/cargo-loki --locked
+cargo install cargo-loki --locked
 rustup target add wasm32-wasip2
-cargo loki new my-app --path ../my-app --sdk-path ./crates/loki-sdk
-cd ../my-app
+cargo loki new my-app
+cd my-app
 cargo loki build
 cargo loki package
-cargo loki dev --server ../LOKI/target/debug/loki-server.exe
+cargo loki dev --server PATH_TO_LOKI_SERVER
 ```
 
-These commands assume the checkout is named `LOKI`; omit `.exe` on Linux/macOS.
-These crates are local source packages;
-they have not been published to crates.io. `--sdk-path` (or `LOKI_SDK_PATH`)
-selects the local SDK until publication. The default scaffold names the SDK version
-it was built with for eventual registry use. Plugin metadata lives in `Cargo.toml`; no
-app-specific packaging script or handwritten bindings are needed.
+`loki-sdk` and `cargo-loki` come from crates.io. To build an app against this
+checkout's SDK instead, pass `--sdk-path crates/loki-sdk` to `cargo loki new` (or
+set `LOKI_SDK_PATH`). Plugin metadata lives in `Cargo.toml`; no app-specific
+packaging script or handwritten bindings are needed.
 
 `cargo loki dev` runs a separate loopback-only installation in the plugin's
 `target/loki/dev/APP_ID` directory, creates development credentials, installs the
