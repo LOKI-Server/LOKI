@@ -43,7 +43,7 @@ pub async fn jwks(ExtractState(state): ExtractState<State>) -> Json<Value> {
 pub async fn discovery(ExtractState(state): ExtractState<State>) -> Json<Value> {
     let issuer = state.0.settings.read().await.public_url.clone();
     Json(
-        json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/oidc/authorize"),"token_endpoint":format!("{issuer}/oidc/token"),"userinfo_endpoint":format!("{issuer}/oidc/userinfo"),"jwks_uri":format!("{issuer}/oidc/jwks"),"introspection_endpoint":format!("{issuer}/oidc/introspect"),"revocation_endpoint":format!("{issuer}/oidc/revoke"),"response_types_supported":["code"],"grant_types_supported":["authorization_code","refresh_token"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post"],"code_challenge_methods_supported":["S256"],"scopes_supported":["openid","profile","email"],"claims_supported":["sub","iss","aud","exp","iat","nonce","preferred_username","name","email","email_verified","picture"]}),
+        json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/oidc/authorize"),"token_endpoint":format!("{issuer}/oidc/token"),"userinfo_endpoint":format!("{issuer}/oidc/userinfo"),"jwks_uri":format!("{issuer}/oidc/jwks"),"introspection_endpoint":format!("{issuer}/oidc/introspect"),"revocation_endpoint":format!("{issuer}/oidc/revoke"),"response_types_supported":["code"],"device_authorization_endpoint":format!("{issuer}/oidc/device"),"grant_types_supported":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:device_code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post"],"code_challenge_methods_supported":["S256"],"scopes_supported":["openid","profile","email"],"claims_supported":["sub","iss","aud","exp","iat","nonce","preferred_username","name","email","email_verified","picture"]}),
     )
 }
 #[derive(FromRow)]
@@ -163,6 +163,63 @@ pub struct TokenInput {
     pub refresh_token: String,
     #[serde(default)]
     pub token: String,
+    #[serde(default)]
+    pub device_code: String,
+}
+const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+#[derive(Default, Deserialize)]
+pub struct DeviceInput {
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub scope: String,
+    /// LOKI extensions: what the approval page calls the device.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub platform: String,
+}
+/// Starts signing in a device with a code (RFC 8628). Clients need no secret here,
+/// since apps on phones, consoles and desktops cannot keep one.
+pub async fn device(
+    ExtractState(state): ExtractState<State>,
+    Form(input): Form<DeviceInput>,
+) -> Result<Json<Value>> {
+    let client = public_client(&state, &input.client_id).await?;
+    let scope = if input.scope.trim().is_empty() {
+        "openid".to_string()
+    } else {
+        input.scope.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    if !scope
+        .split(' ')
+        .all(|s| matches!(s, "openid" | "profile" | "email"))
+    {
+        return Err(Error(StatusCode::BAD_REQUEST, "invalid_scope".into()));
+    }
+    let short = |value: &str, max: usize| {
+        let value = value.trim();
+        (value.chars().count() <= max && !value.chars().any(char::is_control))
+            .then(|| value.to_string())
+            .ok_or_else(|| Error(StatusCode::BAD_REQUEST, "invalid_request".into()))
+    };
+    let name = short(&input.name, 80)?;
+    let platform = short(&input.platform, 40)?;
+    let request = crate::device_codes::Request {
+        kind: crate::device_codes::OIDC,
+        client: &client.id,
+        scope: &scope,
+        name: if name.is_empty() { "A device" } else { &name },
+        platform: &platform,
+    };
+    Ok(Json(crate::device_codes::create(&state, request).await?))
+}
+async fn public_client(state: &State, id: &str) -> Result<Client> {
+    sqlx::query_as("SELECT * FROM clients WHERE id=?")
+        .bind(id)
+        .fetch_optional(&state.0.db)
+        .await?
+        .ok_or_else(|| Error(StatusCode::UNAUTHORIZED, "invalid_client".into()))
 }
 pub async fn client_auth(state: &State, headers: &HeaderMap, input: &TokenInput) -> Result<Client> {
     let mut id = input.client_id.clone();
@@ -212,8 +269,44 @@ pub async fn token(
     headers: HeaderMap,
     Form(input): Form<TokenInput>,
 ) -> Result<Json<Value>> {
-    let client = client_auth(&state, &headers, &input).await?;
+    // Devices signed in with a code have no secret, so their sign-in and refreshes
+    // name the client without proving it. Their refresh tokens are marked as such.
+    let secretless = input.client_secret.is_empty() && !headers.contains_key("authorization");
+    let public =
+        input.grant_type == DEVICE_GRANT || (input.grant_type == "refresh_token" && secretless);
+    let client = if public {
+        public_client(&state, &input.client_id).await?
+    } else {
+        client_auth(&state, &headers, &input).await?
+    };
     let (user_id, scope, nonce, family, auth_version) = match input.grant_type.as_str() {
+        DEVICE_GRANT => {
+            let approved = crate::device_codes::poll(
+                &state,
+                crate::device_codes::OIDC,
+                &client.id,
+                &input.device_code,
+            )
+            .await?
+            .map_err(|waiting| Error(StatusCode::BAD_REQUEST, waiting.code().into()))?;
+            state
+                .audit(
+                    &approved.user.id,
+                    "device-signed-in",
+                    &format!(
+                        "{} ({}) for {}",
+                        approved.name, approved.platform, client.id
+                    ),
+                )
+                .await?;
+            (
+                approved.user.id,
+                approved.scope,
+                None,
+                auth::id(),
+                approved.user.auth_version,
+            )
+        }
         "authorization_code" => {
             if !(43..=128).contains(&input.code_verifier.len())
                 || !input
@@ -238,7 +331,7 @@ pub async fn token(
         }
         "refresh_token" => {
             let mut tx = state.0.db.begin().await?;
-            let old:Token=sqlx::query_as("UPDATE tokens SET used=used+1 WHERE id=? AND client=? AND kind='refresh' AND expires>? RETURNING user_id,scope,family,used,auth_version").bind(auth::digest(&input.refresh_token)).bind(&client.id).bind(auth::now()).fetch_optional(&mut *tx).await?.ok_or_else(invalid_grant)?;
+            let old:Token=sqlx::query_as("UPDATE tokens SET used=used+1 WHERE id=? AND client=? AND kind='refresh' AND expires>? AND (?=0 OR family IN(SELECT id FROM token_families WHERE public=1)) RETURNING user_id,scope,family,used,auth_version").bind(auth::digest(&input.refresh_token)).bind(&client.id).bind(auth::now()).bind(public).fetch_optional(&mut *tx).await?.ok_or_else(invalid_grant)?;
             if old.used > 1 {
                 sqlx::query("UPDATE token_families SET revoked=1 WHERE id=?")
                     .bind(&old.family)
@@ -268,10 +361,11 @@ pub async fn token(
     let access = auth::random();
     let refresh = auth::random();
     let mut tx = state.0.db.begin().await?;
-    if input.grant_type == "authorization_code" {
-        sqlx::query("INSERT INTO token_families(id,expires) VALUES(?,?)")
+    if input.grant_type == "authorization_code" || input.grant_type == DEVICE_GRANT {
+        sqlx::query("INSERT INTO token_families(id,expires,public) VALUES(?,?,?)")
             .bind(&family)
             .bind(auth::now() + 604800)
+            .bind(input.grant_type == DEVICE_GRANT)
             .execute(&mut *tx)
             .await?;
     }

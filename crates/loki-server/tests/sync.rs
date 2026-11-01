@@ -297,7 +297,7 @@ async fn pairing_with_a_code_issues_a_single_device_token() {
     owner
         .action("sync-pair-approve", "", json!({"code":code}))
         .await;
-    sqlx::query("UPDATE sync_pairings SET polled=0")
+    sqlx::query("UPDATE device_codes SET polled=0")
         .execute(&state.0.db)
         .await
         .unwrap();

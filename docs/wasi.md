@@ -86,6 +86,13 @@ current app session and returns to LOKI. This does not log out other app hosts.
 Restricted access is the default. Public apps can serve anonymous reads; state
 changing browser requests require an approved signed-in account.
 
+Devices can also sign in to a WASI app with a code, through the
+[device sign-in](app-protocol.md#device-sign-in) flow with the client
+`component-APP_ID`. They then send `Authorization: Bearer ACCESS_TOKEN`, and
+LOKI fills `context.user` (and `info.user` on realtime sockets) as for a browser
+session. Bearer requests need no CSRF token. The header itself still never
+reaches the guest.
+
 ## Host operations
 
 `platform.call(operation, input)` takes JSON text and returns JSON text or an

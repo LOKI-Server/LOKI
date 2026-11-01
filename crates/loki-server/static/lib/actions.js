@@ -119,7 +119,7 @@ export async function onSubmit(event) {
     }
     else if (kind === "sync-device-rename") { await act(kind, id, data); close(); toast("Device renamed."); }
     else if (kind === "sync-quota") { await act(kind, id, { mb: data.mb === "" ? null : Number(data.mb) }); toast("Quota saved."); }
-    else if (kind === "sync-pair") { pairDialog(await act("sync-pair-lookup", "", data)); return; }
+    else if (kind === "device-code") { pairDialog(await act("device-lookup", "", data)); return; }
     await refresh({ session });
   } catch (error) {
     toast(error.message, true);
@@ -242,12 +242,12 @@ export async function onClick(event) {
     else if (action === "share-delete") { await act("resource-delete", id); close(); }
     else if (action === "session-revoke") await act(action, id);
     else if (action === "sync-device-revoke") await act(action, id);
-    else if (action === "sync-pair-approve" || action === "sync-pair-deny") {
+    else if (action === "device-approve" || action === "device-deny") {
       await act(action, "", { code: b.dataset.code });
       close();
-      toast(action === "sync-pair-approve" ? "Device approved. It will finish signing in by itself." : "Pairing declined.");
+      toast(action === "device-approve" ? "Device approved. It will finish signing in by itself." : "Sign-in declined.");
       await refresh();
-      return await navigate("/sync");
+      return await navigate(b.dataset.kind === "sync" ? "/sync" : "/");
     }
     else if (action === "sync-restore" || action === "sync-conflict-resolve") {
       await act(action, id, { history_id: Number(b.dataset.history), keep: b.dataset.keep });

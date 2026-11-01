@@ -35,6 +35,17 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
             .await?;
         }
     }
+    // Families started by device sign-in refresh without a client secret.
+    if !sqlx::query("PRAGMA table_info(token_families)")
+        .fetch_all(&pool)
+        .await?
+        .iter()
+        .any(|r| r.get::<String, _>("name") == "public")
+    {
+        sqlx::query("ALTER TABLE token_families ADD COLUMN public INTEGER NOT NULL DEFAULT 0")
+            .execute(&pool)
+            .await?;
+    }
     if !sqlx::query("PRAGMA table_info(apps)")
         .fetch_all(&pool)
         .await?

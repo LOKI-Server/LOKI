@@ -121,14 +121,17 @@ export function deviceRename(id) {
   modal("Rename device", `<form data-form="sync-device-rename" data-id="${esc(id)}">${field("name", "Device name", d.name, "text", "required maxlength=80")}<div class="actions"><button>Save</button></div></form>`);
 }
 
+// Any device that signs in with a code comes here: sync clients, and apps on
+// consoles, phones and desktops.
 export function pairPage() {
-  if (!store.state.sync) return disabled();
   const code = new URLSearchParams(location.search).get("code") || "";
-  return heading("Pair a device", "Connect a sync client to your account without typing your password on it.", linkButton("Back to Save sync", "/sync", "subtle", "left"), "sync")
-    + `<section class="card narrow"><form data-form="sync-pair">${field("code", "Code shown on your device", code, "text", "required autocomplete=off autocapitalize=characters placeholder=ABCD-EFGH maxlength=12")}<p class="help">Codes expire after ten minutes. Only approve devices you are setting up yourself.</p><div class="actions"><button>${icon("check")}Continue</button></div></form></section>`;
+  return heading("Sign in a device", "Approve a code shown on a device, so it can use your account without your password.", store.state.sync ? linkButton("Back to Save sync", "/sync", "subtle", "left") : "", "sync")
+    + `<section class="card narrow"><form data-form="device-code">${field("code", "Code shown on your device", code, "text", "required autocomplete=off autocapitalize=characters placeholder=ABCD-EFGH maxlength=12")}<p class="help">Codes expire after ten minutes. Only approve devices you are setting up yourself.</p><div class="actions"><button>${icon("check")}Continue</button></div></form></section>`;
 }
 export function pairDialog(device) {
-  modal("Approve this device?", `<div class="session-row"><span class="session-icon" aria-hidden="true">${icon("server")}</span><div><strong>${esc(device.name)}</strong>${device.platform ? tag(device.platform, "dim") : ""}<small>Code ${esc(device.code)}</small></div></div><p>This device will be able to read and change everything in your sync folders until you sign it out.</p><div class="actions">${button("Approve", "sync-pair-approve", "", `data-code="${esc(device.code)}"`, "primary", "check")}${button("Decline", "sync-pair-deny", "", `data-code="${esc(device.code)}"`, "danger", "close")}</div>`);
+  const sync = device.kind === "sync";
+  const reach = sync ? "read and change everything in your sync folders until you sign it out" : `use ${esc(device.service)} as you until you sign out of it there`;
+  modal(sync ? "Approve this device?" : `Sign in to ${device.service}?`, `<div class="session-row"><span class="session-icon" aria-hidden="true">${icon("server")}</span><div><strong>${esc(device.name)}</strong>${device.platform ? tag(device.platform, "dim") : ""}<small>Code ${esc(device.code)}${sync ? "" : ` · ${esc(device.service)}`}</small></div></div><p>This device will be able to ${reach}.</p><div class="actions">${button("Approve", "device-approve", "", `data-code="${esc(device.code)}" data-kind="${esc(device.kind)}"`, "primary", "check")}${button("Decline", "device-deny", "", `data-code="${esc(device.code)}" data-kind="${esc(device.kind)}"`, "danger", "close")}</div>`);
 }
 
 export function quotaSection(userId) {

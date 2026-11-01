@@ -178,6 +178,40 @@ async fn realtime_apps_hold_state_and_connections_without_holding_loki() {
     assert_eq!(get(&router, "/size").await.1, blob.len().to_string());
     assert_eq!(get(&router, "/escape").await.1, "true");
 
+    // A device signed in with a code is a known user, over HTTP and on the socket.
+    assert_eq!(get(&router, "/whoami").await.1, "anonymous");
+    let access = device_token(&state, &router, &uid).await;
+    let request = Request::builder()
+        .uri("/whoami")
+        .header(header::HOST, &host)
+        .header(header::AUTHORIZATION, format!("Bearer {access}"))
+        .body(Body::empty())
+        .unwrap();
+    let body = router
+        .clone()
+        .oneshot(request)
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(body, "owner");
+    let mut request = format!("ws://127.0.0.1:{port}/ws")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert(header::HOST, host.parse().unwrap());
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {access}").parse().unwrap(),
+    );
+    let (mut known, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(text(&mut known).await, "open true as owner");
+    known.close(None).await.unwrap();
+
     // Connection and message limits.
     let mut c = connect(port, &host).await.unwrap();
     assert_eq!(text(&mut c).await, "open true");
@@ -253,6 +287,47 @@ async fn realtime_apps_hold_state_and_connections_without_holding_loki() {
         "the LAN listener outlived the app"
     );
     assert!(connect(port, &host).await.is_err());
+}
+
+/// Signs a device in to the app with a code, approved by the owner.
+async fn device_token(state: &State, router: &axum::Router, uid: &str) -> String {
+    async fn form(router: &axum::Router, path: &str, body: String) -> serde_json::Value {
+        let request = Request::post(path)
+            .header(header::HOST, "127.0.0.1:7070")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let body = router
+            .clone()
+            .oneshot(request)
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        serde_json::from_slice(&body).unwrap()
+    }
+    let client = format!("component-{APP}");
+    let started = form(router, "/oidc/device", format!("client_id={client}")).await;
+    let owner: auth::User = sqlx::query_as("SELECT * FROM users WHERE id=?")
+        .bind(uid)
+        .fetch_one(&state.0.db)
+        .await
+        .unwrap();
+    loki_server::device_codes::decide(state, &owner, started["user_code"].as_str().unwrap(), true)
+        .await
+        .unwrap();
+    let grant = "urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code";
+    let device = started["device_code"].as_str().unwrap();
+    let tokens = form(
+        router,
+        "/oidc/token",
+        format!("grant_type={grant}&client_id={client}&device_code={device}"),
+    )
+    .await;
+    tokens["access_token"].as_str().unwrap().to_string()
 }
 
 /// Connects once the instance is back, after a failure or restart.

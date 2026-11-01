@@ -238,7 +238,7 @@ pub async fn upload(
 pub async fn collect(state: &State) -> Result<u64> {
     let _operations = state.0.operations.lock().await;
     let _blobs = state.0.sync_blobs.write().await;
-    sqlx::query("DELETE FROM sync_pairings WHERE expires<?")
+    sqlx::query("DELETE FROM device_codes WHERE expires<?")
         .bind(auth::now())
         .execute(&state.0.db)
         .await?;

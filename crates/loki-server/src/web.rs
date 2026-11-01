@@ -64,6 +64,7 @@ pub fn router(state: State) -> Router {
         .route("/oidc/jwks", get(identity::jwks))
         .route("/oidc/authorize", get(identity::authorize))
         .route("/oidc/token", post(identity::token))
+        .route("/oidc/device", post(identity::device))
         .route("/oidc/userinfo", get(identity::userinfo))
         .route("/oidc/introspect", post(identity::introspect))
         .route("/oidc/revoke", post(identity::revoke))
@@ -517,6 +518,16 @@ async fn action(
             }
             tx.commit().await?;
             output = json!({"recovery_codes":codes});
+        }
+        "device-lookup" => {
+            output =
+                crate::device_codes::lookup(&state, ctx.approved()?, text(data, "code")?).await?;
+        }
+        "device-approve" | "device-deny" => {
+            let user = ctx.approved()?;
+            let approve = input.action == "device-approve";
+            output =
+                crate::device_codes::decide(&state, user, text(data, "code")?, approve).await?;
         }
         name if name.starts_with("sync-") => {
             output = crate::sync::action(&state, ctx.approved()?, name, id, data).await?;

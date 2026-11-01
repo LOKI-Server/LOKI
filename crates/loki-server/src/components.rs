@@ -1004,10 +1004,25 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
     if path == "/_loki/callback" {
         return login_callback(state, &app, request).await;
     }
+    // A device signed in with a code sends its access token instead of a cookie.
+    let bearer = match request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+    {
+        Some(token) => {
+            crate::identity::token_user(state, token, Some(&format!("component-{}", app.id)))
+                .await?
+                .map(|(user, ..)| user)
+        }
+        None => None,
+    };
     let jar = axum_extra::extract::cookie::CookieJar::from_headers(request.headers());
     let raw = jar
         .get(session_cookie(&origin))
-        .map(|c| c.value().to_string());
+        .map(|c| c.value().to_string())
+        .filter(|_| bearer.is_none());
     let uid = if let Some(raw) = &raw {
         sqlx::query_scalar::<_, String>(
             "SELECT user_id FROM gateway_sessions WHERE id=? AND resource=? AND expires>?",
@@ -1026,7 +1041,7 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
             .fetch_optional(&state.0.db)
             .await?
     } else {
-        None
+        bearer.clone()
     };
     let manifest: apps::Manifest = serde_json::from_str(&app.manifest)?;
     let allowed = auth::allowed(state, user.as_ref(), &app.id, "access").await?;
@@ -1042,7 +1057,10 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
             .get(header::ORIGIN)
             .and_then(|h| h.to_str().ok())
             .is_some_and(|o| o == origin);
-        let user = match user.as_ref().filter(|_| allowed && same_origin) {
+        let user = match user
+            .as_ref()
+            .filter(|_| allowed && (same_origin || bearer.is_some()))
+        {
             Some(user) => user_info(state, user, &app.id, &manifest).await?,
             None => Value::Null,
         };
@@ -1076,11 +1094,14 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
         if user.is_none() {
             return Err(Error::unauthorized());
         }
-        if request
-            .headers()
-            .get(header::ORIGIN)
-            .and_then(|h| h.to_str().ok())
-            .is_some_and(|o| o != origin)
+        // Bearer tokens are never sent by browsers on their own, so need no CSRF token.
+        let cookie = bearer.is_none();
+        if cookie
+            && request
+                .headers()
+                .get(header::ORIGIN)
+                .and_then(|h| h.to_str().ok())
+                .is_some_and(|o| o != origin)
         {
             return Err(Error::forbidden());
         }
@@ -1104,19 +1125,21 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
             form = parsed.0;
             pending = parsed.1;
             let mut cleanup = UploadCleanup(pending.clone());
-            if !auth::equal(form["fields"]["csrf_token"].as_str().unwrap_or(""), &csrf) {
+            if cookie && !auth::equal(form["fields"]["csrf_token"].as_str().unwrap_or(""), &csrf) {
                 return Err(Error::forbidden());
             }
             cleanup.0.clear();
             request = Request::from_parts(parts, Body::empty());
-        } else if !auth::equal(
-            request
-                .headers()
-                .get("x-csrf-token")
-                .and_then(|h| h.to_str().ok())
-                .unwrap_or(""),
-            &csrf,
-        ) {
+        } else if cookie
+            && !auth::equal(
+                request
+                    .headers()
+                    .get("x-csrf-token")
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or(""),
+                &csrf,
+            )
+        {
             return Err(Error::forbidden());
         }
     }

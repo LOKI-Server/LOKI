@@ -5,6 +5,7 @@ pub mod auth;
 pub mod caddy;
 pub mod components;
 pub mod db;
+pub mod device_codes;
 pub mod files;
 pub mod identity;
 pub mod platform;

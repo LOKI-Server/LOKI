@@ -236,9 +236,9 @@ pub async fn action(
     }
     let text = |key: &str| data[key].as_str().unwrap_or("");
     match name {
-        "sync-pair-lookup" => devices::lookup(state, user, text("code")).await,
-        "sync-pair-approve" => devices::decide(state, user, text("code"), true).await,
-        "sync-pair-deny" => devices::decide(state, user, text("code"), false).await,
+        "sync-pair-lookup" => crate::device_codes::lookup(state, user, text("code")).await,
+        "sync-pair-approve" => crate::device_codes::decide(state, user, text("code"), true).await,
+        "sync-pair-deny" => crate::device_codes::decide(state, user, text("code"), false).await,
         "sync-device-revoke" => {
             sqlx::query("DELETE FROM sync_devices WHERE id=? AND user_id=?")
                 .bind(id)

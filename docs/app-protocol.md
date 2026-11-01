@@ -113,6 +113,32 @@ LOKI grants. Public resource visibility does not bypass an app's own decision to
 require authentication for private features. Owner access includes app admin;
 ordinary members are administrators only when explicitly granted that role.
 
+## Device sign-in
+
+Devices that cannot open a browser comfortably, such as consoles, TVs, handhelds
+and desktop clients, can sign in with a code instead (RFC 8628). Discovery lists
+`device_authorization_endpoint`.
+
+1. The device POSTs `client_id` (and optionally `scope`, plus `name` and `platform`
+   to show on the approval page) as a form to `/oidc/device`. No client secret is
+   needed, because such devices cannot keep one. The response has `device_code`,
+   `user_code`, `verification_uri`, `verification_uri_complete`, `interval` (5)
+   and `expires_in` (600).
+2. The device shows `user_code`, or a QR code of `verification_uri_complete`. The
+   person opens `/pair` in LOKI, checks the device and app, and approves. Only
+   people with access to the app can approve.
+3. The device POSTs `grant_type=urn:ietf:params:oauth:grant-type:device_code`,
+   `client_id` and `device_code` to `/oidc/token` every `interval` seconds. Until
+   approval it gets `400 {"error":"authorization_pending"}`; polling too fast gives
+   `slow_down`, a declined code `access_denied`, and an expired or spent one
+   `expired_token`. Approval returns the usual access, refresh and ID tokens.
+
+The tokens belong to the app's client and are checked with introspection like any
+others. A password change, suspension or revoked access ends them. The device
+refreshes with `grant_type=refresh_token`, `refresh_token` and `client_id`, without
+a secret; only refresh tokens that came from device sign-in work that way. Refresh
+tokens rotate, and reusing a spent one ends the device's sign-in.
+
 Bigshot uses host-managed WASI identity through the Rust SDK; it no longer
 ships a standalone native server or independent account adapter.
 

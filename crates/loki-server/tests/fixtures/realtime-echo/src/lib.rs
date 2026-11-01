@@ -6,6 +6,13 @@ use std::collections::BTreeSet;
 fn handle(request: Request) -> Result<Response> {
     match request.path() {
         "/health" => Ok(Response::text("ready")),
+        "/whoami" => Ok(Response::text(
+            request
+                .context()
+                .user
+                .as_ref()
+                .map_or("anonymous".into(), |u| u.username.clone()),
+        )),
         "/restart" => {
             loki_sdk::realtime::restart()?;
             Ok(Response::text("restarted"))
@@ -36,7 +43,8 @@ impl RealtimeApp for Echo {
     }
     fn open(&mut self, connection: Connection, info: OpenInfo) {
         self.connections.insert(connection);
-        let _ = connection.send(format!("open {}", !info.remote.is_empty()).as_bytes());
+        let user = info.user.map(|u| format!(" as {}", u.username)).unwrap_or_default();
+        let _ = connection.send(format!("open {}{user}", !info.remote.is_empty()).as_bytes());
     }
     fn message(&mut self, connection: Connection, data: Vec<u8>) {
         let text = String::from_utf8_lossy(&data).to_string();
