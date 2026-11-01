@@ -38,6 +38,12 @@ pub struct User {
     pub username: String,
     pub name: String,
     pub email: String,
+    /// Profile text from the LOKI account. Empty when the host does not send it.
+    #[serde(default)]
+    pub bio: String,
+    /// Whether this account has a profile picture at `{dashboard}/avatars/{id}`.
+    #[serde(default)]
+    pub avatar: bool,
     pub roles: Vec<String>,
 }
 impl User {
@@ -651,7 +657,10 @@ mod tests {
             limit: u32,
         }
         let ctx = context();
-        assert_eq!(ctx.require_user().unwrap().id, "stable-id");
+        let user = ctx.require_user().unwrap();
+        assert_eq!(user.id, "stable-id");
+        assert_eq!(user.bio, "");
+        assert!(!user.avatar);
         assert_eq!(ctx.config::<Config>().unwrap().limit, 12);
         assert_eq!(ctx.require_role("admin").unwrap_err().status(), 403);
         let mut anonymous = ctx;

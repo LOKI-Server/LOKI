@@ -1212,7 +1212,7 @@ async fn user_info(
         }
     }
     Ok(
-        json!({"id":user.id,"username":user.username,"name":user.display_name,"email":user.email,"roles":roles}),
+        json!({"id":user.id,"username":user.username,"name":user.display_name,"email":user.email,"bio":user.bio,"avatar":user.avatar,"roles":roles}),
     )
 }
 /// The app's runtime, if it is ready to serve.

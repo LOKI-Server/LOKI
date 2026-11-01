@@ -105,7 +105,7 @@ installed app, not a guest-supplied app ID or filesystem root.
 
 | Operation | Input | Result |
 | --- | --- | --- |
-| `context` | `null` | `{app_id, origin, issuer, dashboard_url, config, csrf, user}`; `user` is null or `{id, username, name, email, roles}` |
+| `context` | `null` | `{app_id, origin, issuer, dashboard_url, config, csrf, user}`; `user` is null or `{id, username, name, email, bio, avatar, roles}` |
 | `form` | `null` | `{fields:{...}, files:[{field,name,token,content_type,size}]}`; requires `forms` |
 | `database` | `{statements:[{sql,params:[...]}]}` | `[{rows:[{column:value}],affected}]`; requires `database` |
 | `retain-upload` | `{token,path}` | `{path}`; move a request's temporary upload to an unused path under this app's uploads; requires `uploads` |

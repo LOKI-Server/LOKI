@@ -41,7 +41,7 @@ interface realtime {
 interface realtime-handler {
     /// The instance started, or restarted with a fresh state.
     on-start: func();
-    /// `info` is JSON: `{"remote": "IP:port", "user": null | {id, username, name, email, roles}}`.
+    /// `info` is JSON: `{"remote": "IP:port", "user": null | {id, username, name, email, bio, avatar, roles}}`.
     on-open: func(connection: u64, info: string);
     on-message: func(connection: u64, data: list<u8>);
     on-close: func(connection: u64);
