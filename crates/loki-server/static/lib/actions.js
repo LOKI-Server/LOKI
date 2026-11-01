@@ -8,6 +8,7 @@ import { userManage } from "../pages/people.js";
 import { passwordProof } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
 import { conflictsDialog, deviceRename, folderForm, folderManage, historyDialog, pairDialog } from "../pages/sync.js";
+import { panelAction, panelDialog } from "../pages/panel.js";
 
 let busy = false;
 
@@ -120,6 +121,17 @@ export async function onSubmit(event) {
     else if (kind === "sync-device-rename") { await act(kind, id, data); close(); toast("Device renamed."); }
     else if (kind === "sync-quota") { await act(kind, id, { mb: data.mb === "" ? null : Number(data.mb) }); toast("Quota saved."); }
     else if (kind === "device-code") { pairDialog(await act("device-lookup", "", data)); return; }
+    else if (kind === "panel-upload") {
+      const body = new FormData(form);
+      body.set("action", form.dataset.name);
+      await panelAction(id, body);
+      return;
+    }
+    else if (kind === "panel-form") {
+      const fields = Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)]));
+      await panelAction(id, { action: form.dataset.name, value: "", fields });
+      return;
+    }
     await refresh({ session });
   } catch (error) {
     toast(error.message, true);
@@ -185,6 +197,11 @@ export async function onClick(event) {
   const id = b.dataset.id, action = b.dataset.action;
   try {
     if (dialogs[action]) return dialogs[action](id);
+    if (action === "app-panel") return await panelDialog(id);
+    if (action === "panel-action") {
+      if (b.dataset.confirm && !(await ask([b.dataset.confirm, "", b.dataset.label]))) return;
+      return await panelAction(id, { action: b.dataset.name, value: b.dataset.value, fields: {} });
+    }
     if (action === "reload") return location.reload();
     if (action === "grant-remove") { b.closest(".grant-row").remove(); return; }
     if (action === "grant-add") { $("#grants").insertAdjacentHTML("beforeend", grantRow(subjects(), roles(resource(id)))); return; }

@@ -209,6 +209,63 @@ retain the previous package/configuration for rollback. During initial
 development, owner-initiated replacement may keep the same app version; older
 versions are rejected. LOKI is at version **0.2.0** and has not had a stable release yet.
 
+## App panels
+
+An app with `"panel": true` in its manifest describes a panel, and LOKI draws it
+inside the dashboard with its own components. Apps that are services rather than
+sites, such as game servers and bots, then need no pages of their own. Their
+panels work wherever the dashboard does, including other devices on the network,
+where `APP_ID.localhost` addresses don't resolve. Add `"site": false` when the app
+has no pages at all, so the dashboard offers no link to it.
+
+**Who sees it.** Everyone with access to the app gets an **Open panel** button on
+its card. The app decides what each person sees from `context.user` and its roles,
+for example management controls only for `admin`.
+
+**The conversation.** LOKI calls the app's HTTP handler itself; browsers can't
+reach `/_loki/*` on the app's own origin.
+
+| Request | Meaning |
+| --- | --- |
+| `GET /_loki/panel` | Show the panel |
+| `POST /_loki/panel` | Perform `context.panel_action`, then show the panel |
+
+`panel_action` is `{action, value, fields, files}`: a button's action and value,
+a form's fields as text, or uploaded files, which the app keeps with `retain-upload`
+(requires `uploads`). The app answers with JSON, at most 256 KiB:
+
+```json
+{"panel":{"sections":[{"title":"Dreams","items":[
+  {"type":"stats","items":[{"label":"Players","value":"2"}]},
+  {"type":"list","empty":"No dreams yet.","items":[{"title":"Poolrooms","detail":"0.3 MB","badge":"Playing",
+    "actions":[{"action":"remove","label":"Remove","value":"a1","style":"danger","confirm":"Remove this dream?"}]}]},
+  {"type":"upload","action":"upload","label":"Add a dream","accept":".dream","button":"Upload"}
+]}]},"notice":"Uploaded.","error":""}
+```
+
+| Item | Fields |
+| --- | --- |
+| `text` | `text`, `tone`: `normal`, `muted` or `warning` |
+| `stats` | `items`: up to 16 `{label, value}` |
+| `list` | `items`: up to 500 rows of `{title, detail, badge, actions}` (at most 4 actions), `empty` |
+| `upload` | `action`, `label`, `accept`, `button` |
+| `buttons` | `items`: up to 8 actions |
+| `form` | `action`, `button`, `fields`: up to 16 `{key, label, kind, value, options}`; `kind` is `text`, `number`, `bool` or `select` |
+| `code` | `label`, `text`: a value to copy, such as an address |
+
+An action is `{action, label, value, style, confirm}`, where `style` is `primary`,
+`subtle` or `danger` and `confirm` asks a question first. A panel has at most 16
+sections of 32 items. Everything is shown as plain text. A panel LOKI can't show
+fails with 502, and an error response's `error` message is shown to the person.
+`notice` confirms an action briefly; `error` explains why it failed. Each action is
+audited by name.
+
+The Rust SDK has typed builders (`loki_sdk::panel`) and `Router::panel(handler)`.
+
+Every request's `context` also has `lan_bind`, the owner's LAN address for a
+realtime app (or empty), and `lan_ips`, this server's address on that network, so
+an app can tell people where to connect.
+
 ## Ranged file reads
 
 The `loki:app/files` WIT interface reads the app's own files in pieces, so a large

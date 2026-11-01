@@ -65,6 +65,27 @@ pub struct Context {
     pub csrf: String,
     #[serde(default)]
     pub config: Value,
+    /// Set when LOKI's dashboard sends an action from the app's panel.
+    #[serde(default)]
+    pub panel_action: Option<PanelAction>,
+    /// The owner's LAN address for a realtime app, such as `0.0.0.0:4767`, if any.
+    #[serde(default)]
+    pub lan_bind: String,
+    /// This server's own IPv4 addresses on its networks, for telling people where to connect.
+    #[serde(default)]
+    pub lan_ips: Vec<String>,
+}
+/// One action from the app's panel: a button's `action` and `value`, a form's fields,
+/// or an uploaded file to `retain`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PanelAction {
+    pub action: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub fields: BTreeMap<String, String>,
+    #[serde(default)]
+    pub files: Vec<Upload>,
 }
 impl Context {
     pub fn current() -> Result<Self> {
@@ -467,6 +488,12 @@ impl Router {
     }
     pub fn post(self, path: &str, handler: Handler) -> Self {
         self.route(Method::Post, path, handler)
+    }
+    /// The app's panel in LOKI's dashboard: one handler for showing it and for its
+    /// actions (see [`crate::panel`]).
+    pub fn panel(self, handler: Handler) -> Self {
+        self.get("/_loki/panel", handler)
+            .post("/_loki/panel", handler)
     }
     pub fn handle(&self, mut request: Request) -> Result<Response> {
         let mut path_matched = false;

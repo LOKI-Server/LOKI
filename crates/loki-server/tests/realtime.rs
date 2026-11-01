@@ -9,7 +9,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
-use loki_server::{State, apps, auth, web};
+use loki_server::{State, apps, auth, components, web};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{io::Write, net::SocketAddr, time::Duration};
@@ -113,7 +113,7 @@ async fn realtime_apps_hold_state_and_connections_without_holding_loki() {
         .fetch_one(&state.0.db)
         .await
         .unwrap();
-    let manifest = json!({"protocol":1,"id":APP,"name":"Realtime echo","version":"0.1.0","runtime":"wasi","target":"wasm32-wasip2","entry":"echo.wasm","health":"/health","capabilities":["realtime"],
+    let manifest = json!({"protocol":1,"id":APP,"name":"Realtime echo","version":"0.1.0","runtime":"wasi","target":"wasm32-wasip2","entry":"echo.wasm","health":"/health","capabilities":["realtime","storage","uploads"],"roles":["admin"],"panel":true,
         "limits":{"fuel":50_000_000,"memory_mib":32,"timeout_seconds":5,"realtime":{"path":"/ws","tick_ms":50,"max_connections":3,"max_message_bytes":65536,"event_fuel":5_000_000}},
         "files":{"echo.wasm":hex::encode(Sha256::digest(&bytes)),"blob.bin":hex::encode(Sha256::digest(&blob))}});
     let package = directory.path().join("echo.loki-app");
@@ -177,6 +177,106 @@ async fn realtime_apps_hold_state_and_connections_without_holding_loki() {
     assert_eq!(text(&mut a).await, format!("sent {}", blob.len()));
     assert_eq!(get(&router, "/size").await.1, blob.len().to_string());
     assert_eq!(get(&router, "/escape").await.1, "true");
+
+    // The app's panel, drawn by LOKI's dashboard: everyone with access sees it, the
+    // app decides what each role gets, and browsers can't reach it on the app itself.
+    let owner: auth::User = sqlx::query_as("SELECT * FROM users WHERE id=?")
+        .bind(&uid)
+        .fetch_one(&state.0.db)
+        .await
+        .unwrap();
+    let shown = components::panel(&state, APP, &owner, None).await.unwrap();
+    assert_eq!(shown["panel"]["sections"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        shown["panel"]["sections"][0]["items"][0]["items"][0]["value"],
+        "0"
+    );
+    let bump = Request::post("/")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"action":"bump","value":"2"}).to_string()))
+        .unwrap();
+    let bumped = components::panel(&state, APP, &owner, Some(bump))
+        .await
+        .unwrap();
+    assert_eq!(bumped["notice"], "Bumped.");
+    assert_eq!(
+        bumped["panel"]["sections"][0]["items"][0]["items"][0]["value"],
+        "2"
+    );
+    let upload = Request::post("/")
+        .header(header::CONTENT_TYPE, "multipart/form-data; boundary=XX")
+        .body(Body::from(
+            [
+                "--XX",
+                "Content-Disposition: form-data; name=\"action\"",
+                "",
+                "upload",
+                "--XX",
+                "Content-Disposition: form-data; name=\"file\"; filename=\"note.txt\"",
+                "Content-Type: text/plain",
+                "",
+                "hello",
+                "--XX--",
+                "",
+            ]
+            .join("\r\n"),
+        ))
+        .unwrap();
+    let stored = components::panel(&state, APP, &owner, Some(upload))
+        .await
+        .unwrap();
+    assert_eq!(stored["notice"], "Stored.");
+    let kept = directory
+        .path()
+        .join("app-data")
+        .join(APP)
+        .join("uploads")
+        .join("panel")
+        .join("note.txt");
+    assert_eq!(std::fs::read_to_string(kept).unwrap(), "hello");
+    let broken = Request::post("/")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"action":"broken"}).to_string()))
+        .unwrap();
+    assert_eq!(
+        components::panel(&state, APP, &owner, Some(broken))
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::BAD_GATEWAY
+    );
+    sqlx::query("INSERT INTO users(id,username,display_name,password,status,created) VALUES('member-id','member','Member','x','approved',0)")
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    let member: auth::User = sqlx::query_as("SELECT * FROM users WHERE id='member-id'")
+        .fetch_one(&state.0.db)
+        .await
+        .unwrap();
+    let seen = components::panel(&state, APP, &member, None).await.unwrap();
+    assert_eq!(
+        seen["panel"]["sections"].as_array().unwrap().len(),
+        1,
+        "members see no admin section"
+    );
+    sqlx::query("UPDATE resources SET visibility='restricted' WHERE id=?")
+        .bind(APP)
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        components::panel(&state, APP, &member, None)
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    sqlx::query("UPDATE resources SET visibility='public' WHERE id=?")
+        .bind(APP)
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    assert_eq!(get(&router, "/_loki/panel").await.0, StatusCode::NOT_FOUND);
 
     // A device signed in with a code is a known user, over HTTP and on the socket.
     assert_eq!(get(&router, "/whoami").await.1, "anonymous");
@@ -263,6 +363,12 @@ async fn realtime_apps_hold_state_and_connections_without_holding_loki() {
     assert_eq!(closed(&mut a).await, 1001);
     let mut on_lan = connect(lan, &format!("192.168.1.5:{lan}")).await.unwrap();
     assert_eq!(text(&mut on_lan).await, "open true");
+    // The app learns its LAN address, to tell players where to connect.
+    let shown = components::panel(&state, APP, &owner, None).await.unwrap();
+    assert_eq!(
+        shown["panel"]["sections"][0]["items"][1]["text"],
+        format!("127.0.0.1:{lan} 127.0.0.1")
+    );
     let client = reqwest_get(lan, "/health").await;
     assert_eq!(client, (200, "ready".into()));
     assert_eq!(reqwest_get(lan, "/size").await.0, 404);

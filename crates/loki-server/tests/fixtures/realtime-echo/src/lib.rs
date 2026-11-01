@@ -1,11 +1,13 @@
 //! Test component for LOKI's realtime instances. Commands arrive as text messages.
 use loki_sdk::realtime::{Connection, FileSource, OpenInfo, RealtimeApp};
+use loki_sdk::panel::{Action, Panel, PanelResponse, Section};
 use loki_sdk::{Request, Response, Result};
 use std::collections::BTreeSet;
 
 fn handle(request: Request) -> Result<Response> {
     match request.path() {
         "/health" => Ok(Response::text("ready")),
+        "/_loki/panel" => panel(request),
         "/whoami" => Ok(Response::text(
             request
                 .context()
@@ -27,6 +29,43 @@ fn handle(request: Request) -> Result<Response> {
         )),
         _ => Ok(Response::empty(404)),
     }
+}
+
+/// A counter everyone with access can see; admins can bump it and upload a file.
+fn panel(request: Request) -> Result<Response> {
+    let context = request.context();
+    let storage = context.storage();
+    let mut count: u64 = storage.get_json("count")?.unwrap_or(0);
+    let mut notice = None;
+    if let Some(action) = &context.panel_action {
+        match action.action.as_str() {
+            "bump" => {
+                count += action.value.parse::<u64>().unwrap_or(1);
+                storage.set_json("count", &count)?;
+                notice = Some("Bumped.");
+            }
+            "upload" => {
+                let file = action.files.first().ok_or_else(|| loki_sdk::Error::bad("No file."))?;
+                file.retain(format!("panel/{}", file.name))?;
+                notice = Some("Stored.");
+            }
+            "broken" => return Panel::new().section(Section::new("x".repeat(500))).respond(),
+            _ => return PanelResponse::error(Panel::new(), "Unknown action.").respond(),
+        }
+    }
+    let mut panel = Panel::new().section(
+        Section::new("Echo")
+            .stats([("Count", count.to_string())])
+            .code("LAN", format!("{} {}", context.lan_bind, context.lan_ips.join(","))),
+    );
+    if context.user.as_ref().is_some_and(|u| u.has_role("admin")) {
+        panel = panel.section(
+            Section::new("Admin")
+                .buttons([Action::new("bump", "Bump").value("2").primary()])
+                .upload("upload", "File", "", "Upload"),
+        );
+    }
+    panel.respond_with(notice)
 }
 
 /// Every connection, and how many ticks this instance has seen.

@@ -29,6 +29,19 @@ pub struct Manifest {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub limits: Limits,
+    /// The app describes a panel that LOKI draws in its dashboard (`/_loki/panel`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub panel: bool,
+    /// False for apps with no pages of their own, such as a game server managed
+    /// entirely from its panel. The dashboard then offers no link to the app.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub site: bool,
+}
+fn yes() -> bool {
+    true
+}
+fn is_yes(value: &bool) -> bool {
+    *value
 }
 impl Manifest {
     /// The realtime settings of an app that declares the `realtime` capability.
@@ -179,6 +192,7 @@ pub fn validate_manifest(m: &Manifest, native_target: &str) -> Result<()> {
         || m.roles.len() > 32
         || m.fields.len() > 32
         || m.realtime().is_some_and(|r| r.path == m.health)
+        || ((m.panel || !m.site) && m.runtime != "wasi")
     {
         return Err(Error::bad(format!(
             "Invalid or incompatible app manifest. This server accepts protocol 1 WASI components (wasm32-wasip2) and native packages for {}.",

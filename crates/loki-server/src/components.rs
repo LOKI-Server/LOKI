@@ -48,6 +48,10 @@ pub struct Runtime {
     package: PathBuf,
     config: Value,
     origin: String,
+    /// The owner's LAN address for a realtime app, and this server's own address
+    /// there, so the app can tell people where to connect.
+    lan_bind: String,
+    lan_ips: Vec<String>,
     pub(crate) realtime: std::sync::OnceLock<Arc<realtime::Handle>>,
 }
 impl Runtime {
@@ -303,6 +307,8 @@ pub async fn start(
         package: state.0.data.join("apps").join(&app.id),
         config: serde_json::from_str(&app.config)?,
         origin: apps::public_url(app),
+        lan_bind: app.lan_bind.clone(),
+        lan_ips: lan_ips(&app.lan_bind),
         realtime: std::sync::OnceLock::new(),
     });
     register_client(state, app).await?;
@@ -338,6 +344,26 @@ pub async fn start(
         }
     }
     Ok(runtime)
+}
+/// The address LAN devices reach for `lan_bind`: its own IP, or for a wildcard this
+/// machine's address on its default route. Connecting a UDP socket sends nothing.
+fn lan_ips(lan_bind: &str) -> Vec<String> {
+    let Ok(bind) = lan_bind.parse::<std::net::SocketAddr>() else {
+        return Vec::new();
+    };
+    if !bind.ip().is_unspecified() {
+        return vec![bind.ip().to_string()];
+    }
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|socket| {
+            socket.connect("192.0.2.1:9")?;
+            socket.local_addr()
+        })
+        .ok()
+        .map(|address| address.ip())
+        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
+        .map(|ip| vec![ip.to_string()])
+        .unwrap_or_default()
 }
 pub async fn register_client(state: &State, app: &apps::App) -> Result<()> {
     sqlx::query("INSERT INTO clients(id,secret,resource,redirect) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET redirect=excluded.redirect")
@@ -444,6 +470,8 @@ pub(crate) fn new_store(
     info["config"] = runtime.config.clone();
     info["origin"] = json!(runtime.origin);
     info["app_id"] = json!(runtime.manifest.id);
+    info["lan_bind"] = json!(runtime.lan_bind);
+    info["lan_ips"] = json!(runtime.lan_ips);
     let limits = &runtime.manifest.limits;
     let mut wasi = WasiCtx::builder();
     // No inherited environment, stdio, preopened directories, or network access.
@@ -1004,6 +1032,10 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
     if path == "/_loki/callback" {
         return login_callback(state, &app, request).await;
     }
+    // The rest of /_loki/ is LOKI's own conversation with the app, such as its panel.
+    if path.starts_with("/_loki/") {
+        return Err(Error::not_found());
+    }
     // A device signed in with a code sends its access token instead of a cookie.
     let bearer = match request
         .headers()
@@ -1199,6 +1231,104 @@ pub(crate) async fn running(state: &State, app: &str) -> Result<Arc<Runtime>> {
                 "The component is not running.".into(),
             )
         })
+}
+/// Asks the app for its dashboard panel, sending one action first when given. Uploads
+/// come as a multipart form; buttons and forms as JSON.
+pub async fn panel(
+    state: &State,
+    app: &str,
+    user: &auth::User,
+    request: Option<Request<Body>>,
+) -> Result<Value> {
+    let runtime = running(state, app).await?;
+    if !runtime.manifest.panel || !auth::allowed(state, Some(user), app, "access").await? {
+        return Err(Error::forbidden());
+    }
+    let mut info = json!({"user":user_info(state, user, app, &runtime.manifest).await?,"csrf":"","issuer":state.0.settings.read().await.public_url});
+    let _permit = enter(state, &runtime).await?;
+    let mut pending = Vec::new();
+    let method = if let Some(request) = request {
+        let (parts, body) = request.into_parts();
+        let multipart = parts
+            .headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .is_some_and(|t| t.starts_with("multipart/form-data"));
+        let (mut fields, files) = if multipart {
+            let (form, files) = tokio::time::timeout(
+                Duration::from_secs(runtime.manifest.limits.timeout_seconds),
+                parse_form(&runtime, &parts.headers, body),
+            )
+            .await
+            .map_err(|_| Error::bad("Upload timed out."))??;
+            pending = files;
+            (form["fields"].clone(), form["files"].clone())
+        } else {
+            let bytes = axum::body::to_bytes(body, 65536)
+                .await
+                .map_err(|_| Error::bad("Panel action is too large."))?;
+            let value: Value = serde_json::from_slice(&bytes)?;
+            let mut fields = value["fields"].clone();
+            if !fields.is_object() {
+                fields = json!({});
+            }
+            fields["action"] = value["action"].clone();
+            fields["value"] = value["value"].clone();
+            (fields, json!([]))
+        };
+        let text = |key: &str| fields[key].as_str().unwrap_or("").to_string();
+        let (action, value) = (text("action"), text("value"));
+        if action.is_empty() || action.len() > 64 {
+            return Err(Error::bad("Choose a panel action."));
+        }
+        if let Some(fields) = fields.as_object_mut() {
+            fields.remove("action");
+            fields.remove("value");
+            if fields.values().any(|v| !v.is_string()) {
+                return Err(Error::bad("Panel fields must be text."));
+            }
+        }
+        info["panel_action"] = json!({"action":action,"value":value,"fields":fields,"files":files});
+        state
+            .audit(&user.id, "app-panel-action", &format!("{app}: {action}"))
+            .await?;
+        axum::http::Method::POST
+    } else {
+        axum::http::Method::GET
+    };
+    let request = Request::builder()
+        .method(method)
+        .uri("/_loki/panel")
+        .header(header::HOST, url::Url::parse(&runtime.origin)?.authority())
+        .body(Body::empty())?;
+    let response = execute(state, runtime, request, info, Value::Null, pending).await?;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
+        .await
+        .map_err(|_| {
+            Error(
+                StatusCode::BAD_GATEWAY,
+                "The app's panel is too large.".into(),
+            )
+        })?;
+    if !status.is_success() {
+        // The app's own error message, such as a missing role, when it gave one.
+        let message = serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or_else(|| "The app could not show its panel.".into());
+        return Err(Error(status, message));
+    }
+    let panel: loki_sdk::panel::PanelResponse = serde_json::from_slice(&bytes)
+        .ok()
+        .filter(loki_sdk::panel::PanelResponse::valid)
+        .ok_or_else(|| {
+            Error(
+                StatusCode::BAD_GATEWAY,
+                "The app sent a panel LOKI can't show.".into(),
+            )
+        })?;
+    Ok(serde_json::to_value(panel)?)
 }
 /// Serves the app's health path anonymously, for the app's LAN listener.
 pub(crate) async fn health(

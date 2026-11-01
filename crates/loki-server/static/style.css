@@ -287,6 +287,12 @@ main { width: 100%; max-width: 1240px; margin: 0 auto; padding: 44px; flex: 1; o
 
 /* Notices */
 .notice { padding: 13px 16px; border: 1px solid #4d4a2c; background: #1f1e12; border-radius: var(--radius-s); font-size: .86rem; color: #d9d0aa; margin: 16px 0; }
+.panel-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 8px 0 12px; }
+.panel-stats > div { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-s); background: #0c1510; }
+.panel-stats span { display: block; color: var(--muted); font-size: .78rem; }
+.panel-stats strong { font-size: 1.15rem; overflow-wrap: anywhere; }
+.panel-section .session-row .actions { margin: 0; flex-wrap: wrap; justify-content: flex-end; }
+.panel-upload input[type="file"] { display: block; margin-top: 6px; }
 .notice.error, .error { color: #ffc3bb; background: var(--danger-bg); border-color: var(--danger-border); }
 .error-text { display: flex; gap: 6px; align-items: flex-start; color: var(--danger); }
 .secret { user-select: all; color: #ccedb2; font-size: .9rem; }

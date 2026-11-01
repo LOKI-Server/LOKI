@@ -48,6 +48,12 @@ pub fn router(state: State) -> Router {
         )
         .route("/avatars/{id}", get(serve_avatar))
         .route("/api/folders", get(files::folders))
+        .route(
+            "/api/apps/{id}/panel",
+            get(panel_view)
+                .post(panel_action)
+                .layer(DefaultBodyLimit::disable()),
+        )
         .route("/api/shares/{id}", get(files::list))
         .route("/api/shares/{id}/file", get(files::download))
         .route("/api/shares/{id}/info", get(files::info))
@@ -1033,6 +1039,29 @@ async fn route_action(state: &State, id: &str, action: &str) -> Result<()> {
     Ok(())
 }
 /// Checks a realtime app's LAN listener address, such as `0.0.0.0:4767`. Empty turns it off.
+async fn panel_view(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Value>> {
+    let ctx = auth::context(&state, &headers).await?;
+    let user = ctx.approved()?;
+    Ok(Json(
+        crate::components::panel(&state, &id, user, None).await?,
+    ))
+}
+async fn panel_action(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    request: Request,
+) -> Result<Json<Value>> {
+    let ctx = auth::context(&state, &headers).await?;
+    let user = ctx.approved()?;
+    Ok(Json(
+        crate::components::panel(&state, &id, user, Some(request)).await?,
+    ))
+}
 async fn lan_bind(state: &State, id: &str, value: &str) -> Result<String> {
     if value.is_empty() {
         return Ok(String::new());

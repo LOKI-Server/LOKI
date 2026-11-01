@@ -229,6 +229,33 @@ so check your own credentials in the protocol if you need them.
 For native tests, `realtime::testing::with_host(files, test)` installs fake files
 and returns what each connection was sent.
 
+## Panels in the LOKI dashboard
+
+Set `panel = true` in `[package.metadata.loki]` and route the panel with
+`Router::panel(handler)`. LOKI draws it inside its dashboard for everyone with
+access to the app, so service-like apps need no pages of their own (add
+`site = false` if they have none). Actions arrive in `context().panel_action`:
+
+```rust
+use loki_sdk::panel::{Action, Panel, Section};
+
+fn panel(request: Request) -> Result<Response> {
+    let context = request.context();
+    let mut notice = None;
+    if let Some(action) = &context.panel_action {
+        if action.action == "restart" {
+            loki_sdk::realtime::restart()?;
+            notice = Some("Restarted.");
+        }
+    }
+    let mut panel = Panel::new().section(Section::new("Status").text("Running."));
+    if context.user.as_ref().is_some_and(|u| u.has_role("admin")) {
+        panel = panel.section(Section::new("").buttons([Action::new("restart", "Restart").confirm("Restart now?")]));
+    }
+    panel.respond_with(notice)
+}
+```
+
 ## Native tests
 
 Enable `loki-sdk`'s `testing` feature in dev-dependencies. Use
