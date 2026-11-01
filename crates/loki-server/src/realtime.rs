@@ -555,12 +555,15 @@ pub(crate) fn is_upgrade(headers: &HeaderMap) -> bool {
         .is_some_and(|h| h.eq_ignore_ascii_case("websocket"))
 }
 
-/// Accepts a WebSocket connection to an app's realtime endpoint.
+/// Accepts a WebSocket connection to an app's realtime endpoint. `proxied` is
+/// true on LOKI's own listener, where Caddy may forward connections; never on an
+/// app's LAN listener.
 pub(crate) async fn upgrade(
     state: &State,
     app: &str,
     request: Request<Body>,
     user: Value,
+    proxied: bool,
 ) -> Result<Response> {
     let runtime = components::running(state, app).await?;
     let handle = runtime
@@ -568,10 +571,12 @@ pub(crate) async fn upgrade(
         .get()
         .cloned()
         .ok_or_else(|| busy("The app's realtime instance is not running."))?;
+    // Behind Caddy every connection comes from loopback; tell the app who it really is.
+    let behind_caddy = proxied && state.0.settings.read().await.caddy_enabled;
     let remote = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|c| c.0.to_string())
+        .map(|c| crate::auth::client_addr(c.0, request.headers(), behind_caddy).to_string())
         .unwrap_or_default();
     let (mut parts, _) = request.into_parts();
     let socket = WebSocketUpgrade::from_request_parts(&mut parts, &())
@@ -620,7 +625,7 @@ async fn lan(
         let path = request.uri().path().to_string();
         let realtime = runtime.manifest().realtime().unwrap_or_default();
         if path == realtime.path && is_upgrade(request.headers()) {
-            return upgrade(&lan.state, &lan.app, request, Value::Null).await;
+            return upgrade(&lan.state, &lan.app, request, Value::Null, false).await;
         }
         if path == runtime.manifest().health && request.method() == Method::GET {
             return components::health(&lan.state, runtime, request).await;

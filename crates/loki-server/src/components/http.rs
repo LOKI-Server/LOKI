@@ -322,7 +322,7 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
             Some(user) => user_info(state, user, &app.id, &manifest).await?,
             None => Value::Null,
         };
-        return realtime::upgrade(state, &app.id, request, user).await;
+        return realtime::upgrade(state, &app.id, request, user, true).await;
     }
     if !allowed {
         // A browser gets a page of the app's own to sign in from, not an instant

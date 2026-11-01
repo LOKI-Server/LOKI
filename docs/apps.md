@@ -273,7 +273,7 @@ component also exports `realtime-handler`:
 | Export | When LOKI calls it |
 | --- | --- |
 | `on-start` | The instance started, or restarted with a fresh state |
-| `on-open(connection, peer)` | A WebSocket connected; `peer` has its address and, for a signed-in browser, the user |
+| `on-open(connection, peer)` | A WebSocket connected; `peer` has its `IP:port` (port 0 behind Caddy) and, for a signed-in browser, the user |
 | `on-message(connection, data)` | A message arrived |
 | `on-close(connection)` | The connection closed, from either side |
 | `on-tick` | Every `tick_ms`, when set |

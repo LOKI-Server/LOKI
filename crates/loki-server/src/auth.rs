@@ -235,18 +235,31 @@ pub fn client_ip(
     let Some(peer) = peer else {
         return "local".into();
     };
+    match client_addr(peer, headers, behind_caddy).ip() {
+        IpAddr::V6(ip) => {
+            let s = ip.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+        ip => ip.to_string(),
+    }
+}
+/// The client's address, as `client_ip` finds it. Caddy doesn't pass on the
+/// client's port, so a forwarded address has port 0.
+pub fn client_addr(
+    peer: std::net::SocketAddr,
+    headers: &HeaderMap,
+    behind_caddy: bool,
+) -> std::net::SocketAddr {
+    use std::net::{IpAddr, SocketAddr};
     let forwarded = (behind_caddy && peer.ip().is_loopback())
         .then(|| headers.get_all("x-forwarded-for").iter().next_back())
         .flatten()
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.rsplit(',').next())
         .and_then(|v| v.trim().parse::<IpAddr>().ok());
-    match forwarded.unwrap_or(peer.ip()).to_canonical() {
-        IpAddr::V6(ip) => {
-            let s = ip.segments();
-            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
-        }
-        ip => ip.to_string(),
+    match forwarded {
+        Some(ip) => SocketAddr::new(ip.to_canonical(), 0),
+        None => SocketAddr::new(peer.ip().to_canonical(), peer.port()),
     }
 }
 /// Counts a password guess against this client and against the account. The
@@ -757,10 +770,23 @@ mod tests {
             headers.insert("x-forwarded-for", value.parse().unwrap());
             headers
         };
-        let loopback = Some("127.0.0.1:50000".parse().unwrap());
-        let remote = Some("203.0.113.9:50000".parse().unwrap());
+        let (peer, outside): (std::net::SocketAddr, std::net::SocketAddr) = (
+            "127.0.0.1:50000".parse().unwrap(),
+            "203.0.113.9:50000".parse().unwrap(),
+        );
+        let (loopback, remote) = (Some(peer), Some(outside));
         let spoofed = forwarded("198.51.100.1, 192.0.2.7");
         assert_eq!(client_ip(loopback, &spoofed, true), "192.0.2.7");
+        assert_eq!(client_addr(peer, &spoofed, true).to_string(), "192.0.2.7:0");
+        assert_eq!(client_addr(peer, &spoofed, false), peer);
+        assert_eq!(
+            client_addr(outside, &spoofed, true).to_string(),
+            "203.0.113.9:50000"
+        );
+        assert_eq!(
+            client_addr(peer, &forwarded("2001:db8::7"), true).to_string(),
+            "[2001:db8::7]:0"
+        );
         assert_eq!(client_ip(loopback, &spoofed, false), "127.0.0.1");
         assert_eq!(client_ip(remote, &spoofed, true), "203.0.113.9");
         assert_eq!(client_ip(loopback, &forwarded("junk"), true), "127.0.0.1");

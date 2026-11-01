@@ -224,7 +224,8 @@ interface realtime-handler {
 
     /// Who opened a connection.
     record peer {
-        /// The client's `IP:port`.
+        /// The client's `IP:port`, parseable as a socket address. Behind LOKI's
+        /// Caddy the port is unknown and given as 0.
         remote: string,
         /// Absent on the app's LAN listener, which has no sign-in.
         user: option<user>,
