@@ -85,18 +85,19 @@ package` writes:
 **An app built with `loki-sdk` 0.3 or later keeps running on later LOKI
 releases.** You don't need to rebuild it when LOKI updates.
 
-`built_with` records the SDK version the app resolved to. LOKI runs an app when
-that SDK is at least the oldest it supports (0.3.0) and no newer than LOKI's own
-minor version. Otherwise the import, or the start of an installed app, fails with
-what to do: update LOKI for an app built with a newer SDK, or rebuild an app built
-before 0.3. Packages without `built_with` predate LOKI 0.3.
+LOKI, `loki-sdk` and `cargo-loki` share one version number, so an app built
+with SDK X runs on LOKI X or newer. `built_with` records the SDK version the app
+resolved to. LOKI runs an app when that SDK is at least the oldest it supports
+(0.3.0) and no newer than LOKI itself. Otherwise the import, or the start of an
+installed app, fails with what to do: update LOKI for an app built with a newer
+SDK, or rebuild an app built before 0.3. Packages without `built_with` predate
+LOKI 0.3.
 
 LOKI keeps that promise by:
 
 - only adding to the `loki:app@0.3` host interfaces, as 0.3.x versions, never
   changing or removing what an app imports;
 - providing any breaking new interface version alongside the old one;
-- adding manifest fields only with a new SDK minor version;
 - testing every change against apps frozen at each supported SDK.
 
 Support for an SDK ends only by a deliberate release that raises the oldest

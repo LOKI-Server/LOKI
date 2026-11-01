@@ -68,10 +68,11 @@ pub fn unsupported(runtime: Option<&str>, sdk: Option<&str>) -> Option<String> {
         Some(format!(
             "This app was built with loki-sdk {sdk}, which LOKI {loki} no longer runs. Rebuild it with loki-sdk {oldest} or newer, then import the new package."
         ))
-    } else if (sdk.major, sdk.minor) > (loki.major, loki.minor) {
+    } else if sdk > loki {
+        // LOKI, loki-sdk and cargo-loki share one version, and any release may add
+        // host functions, so an app needs at least the LOKI matching its SDK.
         Some(format!(
-            "This app was built with loki-sdk {sdk}, which needs LOKI {}.{} or newer. Update LOKI to run it.",
-            sdk.major, sdk.minor
+            "This app was built with loki-sdk {sdk}, which needs LOKI {sdk} or newer. Update LOKI to run it."
         ))
     } else {
         None
@@ -679,8 +680,14 @@ mod tests {
         );
         assert_eq!(unsupported(wasi, Some("0.3.0")), None);
         let loki = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
-        let patch = format!("{}.{}.{}", loki.major, loki.minor, loki.patch + 7);
-        assert_eq!(unsupported(wasi, Some(&patch)), None);
+        assert_eq!(unsupported(wasi, Some(env!("CARGO_PKG_VERSION"))), None);
+        // Any newer SDK may use host functions this LOKI lacks, even a patch.
+        let patch = format!("{}.{}.{}", loki.major, loki.minor, loki.patch + 1);
+        let refused = unsupported(wasi, Some(&patch)).unwrap();
+        assert!(
+            refused.contains(&format!("needs LOKI {patch} or newer")),
+            "{refused}"
+        );
         let next = format!("{}.{}.0", loki.major, loki.minor + 1);
         assert!(
             unsupported(wasi, Some(&next))

@@ -13,7 +13,8 @@ test('the package preview asks for a rebuild exactly when the server would refus
   assert.match(sdkProblem('soon'), /not a valid version/);
   assert.match(sdkProblem('0.2.9'), /no longer runs/);
   assert.equal(sdkProblem('0.3.0'), '');
-  assert.equal(sdkProblem('0.3.9'), '');
-  assert.match(sdkProblem('0.4.0'), /needs LOKI 0\.4 or newer/);
-  assert.match(sdkProblem('1.0.0'), /needs LOKI 1\.0 or newer/);
+  assert.equal(sdkProblem('0.3.2'), '');
+  assert.match(sdkProblem('0.3.3'), /needs LOKI 0\.3\.3 or newer/);
+  assert.match(sdkProblem('0.4.0'), /needs LOKI 0\.4\.0 or newer/);
+  assert.match(sdkProblem('1.0.0'), /needs LOKI 1\.0\.0 or newer/);
 });

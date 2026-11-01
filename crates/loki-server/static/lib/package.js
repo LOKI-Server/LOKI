@@ -74,14 +74,13 @@ function compareVersions(a, b) {
   return Math.sign(p.length - q.length);
 }
 
-// Mirrors apps::unsupported: apps need a loki-sdk from oldest_sdk up to this LOKI's own minor version.
+// Mirrors apps::unsupported: apps need a loki-sdk from oldest_sdk up to this LOKI's own version.
 export function sdkProblem(sdk) {
   const { loki_version: loki, oldest_sdk: oldest } = store.state, [, major, minor] = SEMVER.exec(oldest);
   if (typeof sdk !== "string") return `This app was built for a LOKI older than ${major}.${minor}. Rebuild it with loki-sdk ${esc(oldest)} or newer (update its loki-sdk dependency and run cargo loki package), then import the new package.`;
   if (!SEMVER.test(sdk)) return "The package's loki-sdk version is not a valid version.";
   if (compareVersions(sdk, oldest) < 0) return `This app was built with loki-sdk ${esc(sdk)}, which LOKI ${esc(loki)} no longer runs. Rebuild it with loki-sdk ${esc(oldest)} or newer, then import the new package.`;
-  const [, a, b] = SEMVER.exec(sdk), [, c, d] = SEMVER.exec(loki);
-  if (Number(a) > Number(c) || (a === c && Number(b) > Number(d))) return `This app was built with loki-sdk ${esc(sdk)}, which needs LOKI ${a}.${b} or newer. Update LOKI to run it.`;
+  if (compareVersions(sdk, loki) > 0) return `This app was built with loki-sdk ${esc(sdk)}, which needs LOKI ${esc(sdk)} or newer. Update LOKI to run it.`;
   return "";
 }
 
