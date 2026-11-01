@@ -47,7 +47,7 @@ fn flags(command: &mut Command, options: &Build) {
 impl Project {
     pub fn load(options: &Build) -> Result<Self> {
         let manifest =
-            std::fs::canonicalize(&options.manifest_path).context("Cannot locate Cargo.toml")?;
+            dunce::canonicalize(&options.manifest_path).context("Cannot locate Cargo.toml")?;
         let mut command = cargo();
         command
             .args([
@@ -72,7 +72,7 @@ impl Project {
             .packages
             .iter()
             .find(|package| {
-                std::fs::canonicalize(&package.manifest_path).is_ok_and(|path| path == manifest)
+                dunce::canonicalize(&package.manifest_path).is_ok_and(|path| path == manifest)
             })
             .map(|package| package.id.clone());
         let mut candidates: Vec<_> = metadata

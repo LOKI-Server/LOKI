@@ -189,9 +189,9 @@ fn collect(root: &Path, relative: &Path, files: &mut BTreeMap<String, PathBuf>) 
             path.display()
         );
     }
-    let canonical = std::fs::canonicalize(&path)?;
+    let canonical = dunce::canonicalize(&path)?;
     ensure!(
-        canonical.starts_with(std::fs::canonicalize(root)?),
+        canonical.starts_with(dunce::canonicalize(root)?),
         "Asset escapes the plugin directory"
     );
     if metadata.is_dir() {

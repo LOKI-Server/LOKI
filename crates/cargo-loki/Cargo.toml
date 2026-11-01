@@ -10,6 +10,8 @@ readme = "README.md"
 
 [dependencies]
 anyhow = "1"
+# Plain Windows paths in output and generated Cargo.toml files.
+dunce = "1"
 clap = { version = "4", features = ["derive", "env"] }
 loki-sdk = { workspace = true, features = ["manifest"] }
 serde = { version = "1", features = ["derive"] }

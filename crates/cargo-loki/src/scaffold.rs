@@ -19,7 +19,7 @@ pub fn create(name: &str, path: Option<&Path>, sdk: Option<&Path>) -> Result<()>
     let dependency = if let Some(sdk) = sdk {
         format!(
             "{{ version = \"{sdk_version}\", path = {} }}",
-            toml::Value::String(std::fs::canonicalize(sdk)?.to_string_lossy().into_owned())
+            toml::Value::String(dunce::canonicalize(sdk)?.to_string_lossy().into_owned())
         )
     } else {
         format!("\"{sdk_version}\"")
