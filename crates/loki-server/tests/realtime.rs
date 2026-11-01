@@ -115,7 +115,7 @@ async fn realtime_apps_hold_state_and_connections_without_holding_loki() {
         .unwrap();
     let manifest = json!({"protocol":1,"id":APP,"name":"Realtime echo","version":"0.1.0","runtime":"wasi","target":"wasm32-wasip2","entry":"echo.wasm","health":"/health","capabilities":["realtime","storage","uploads"],"roles":["admin"],"panel":true,
         "limits":{"fuel":50_000_000,"memory_mib":32,"timeout_seconds":5,"realtime":{"path":"/ws","tick_ms":50,"max_connections":3,"max_message_bytes":65536,"event_fuel":5_000_000}},
-        "files":{"echo.wasm":hex::encode(Sha256::digest(&bytes)),"blob.bin":hex::encode(Sha256::digest(&blob))}});
+        "files":{"echo.wasm":hex::encode(Sha256::digest(&bytes)),"blob.bin":hex::encode(Sha256::digest(&blob))},"built_with":{"sdk":env!("CARGO_PKG_VERSION"),"cargo_loki":env!("CARGO_PKG_VERSION")}});
     let package = directory.path().join("echo.loki-app");
     let mut archive = zip::ZipWriter::new(std::fs::File::create(&package).unwrap());
     for (name, data) in [

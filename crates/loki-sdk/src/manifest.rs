@@ -38,6 +38,18 @@ pub struct Manifest {
     /// entirely from its panel. The dashboard then offers no link to the app.
     #[serde(default = "yes", skip_serializing_if = "is_yes")]
     pub site: bool,
+    /// What built the package. LOKI checks the SDK version to tell whether it can
+    /// run the app. Packages from before LOKI 0.3 have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_with: Option<BuiltWith>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuiltWith {
+    /// The `loki-sdk` version the app was compiled against.
+    pub sdk: String,
+    /// The `cargo-loki` version that packaged it.
+    pub cargo_loki: String,
 }
 fn yes() -> bool {
     true

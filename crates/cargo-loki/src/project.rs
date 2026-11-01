@@ -27,11 +27,23 @@ struct Metadata {
     packages: Vec<CargoPackage>,
     target_directory: PathBuf,
     workspace_default_members: Vec<String>,
+    resolve: Resolve,
+}
+#[derive(Deserialize)]
+struct Resolve {
+    nodes: Vec<Node>,
+}
+#[derive(Deserialize)]
+struct Node {
+    id: String,
+    dependencies: Vec<String>,
 }
 pub struct Project {
     pub package: CargoPackage,
     pub root: PathBuf,
     pub target: PathBuf,
+    /// The `loki-sdk` version the plugin resolves to, recorded in its package.
+    pub sdk: Option<String>,
 }
 pub fn cargo() -> Command {
     Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
@@ -50,13 +62,7 @@ impl Project {
             dunce::canonicalize(&options.manifest_path).context("Cannot locate Cargo.toml")?;
         let mut command = cargo();
         command
-            .args([
-                "metadata",
-                "--format-version",
-                "1",
-                "--no-deps",
-                "--manifest-path",
-            ])
+            .args(["metadata", "--format-version", "1", "--manifest-path"])
             .arg(&manifest);
         flags(&mut command, options);
         let output = command
@@ -68,6 +74,12 @@ impl Project {
             String::from_utf8_lossy(&output.stderr)
         );
         let metadata: Metadata = serde_json::from_slice(&output.stdout)?;
+        let sdk_versions: Vec<(String, String)> = metadata
+            .packages
+            .iter()
+            .filter(|p| p.name == "loki-sdk")
+            .map(|p| (p.id.clone(), p.version.clone()))
+            .collect();
         let current = metadata
             .packages
             .iter()
@@ -94,6 +106,15 @@ impl Project {
             "Select one plugin containing [package.metadata.loki]. Run inside its directory or use --manifest-path and -p NAME."
         );
         let package = candidates.remove(0);
+        let sdk = metadata
+            .resolve
+            .nodes
+            .iter()
+            .find(|node| node.id == package.id)
+            .into_iter()
+            .flat_map(|node| &node.dependencies)
+            .find_map(|id| sdk_versions.iter().find(|(sdk, _)| sdk == id))
+            .map(|(_, version)| version.clone());
         ensure!(
             package
                 .targets
@@ -110,6 +131,7 @@ impl Project {
             package,
             root,
             target: metadata.target_directory,
+            sdk,
         })
     }
     pub fn command(&self, options: &Build, operation: &str) -> Command {
@@ -228,6 +250,18 @@ mod tests {
             std::fs::write(path.join("src/lib.rs"), "").unwrap();
             std::fs::write(path.join("Cargo.toml"),format!("[package]\nname={name:?}\nversion=\"0.1.0\"\nedition=\"2024\"\n[lib]\ncrate-type=[\"cdylib\"]\n[package.metadata.loki]\nid={name:?}\n")).unwrap();
         }
+        // Only the second plugin uses the SDK, so only it records an SDK version.
+        let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../loki-sdk");
+        let manifest = temp.path().join("second/Cargo.toml");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(
+            &manifest,
+            text + &format!(
+                "[dependencies]\nloki-sdk = {{ path = {:?}, default-features = false }}\n",
+                sdk.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .unwrap();
         let mut options = Build {
             manifest_path: temp.path().join("second/Cargo.toml"),
             package: None,
@@ -235,9 +269,13 @@ mod tests {
             offline: true,
             locked: false,
         };
-        assert_eq!(Project::load(&options).unwrap().package.name, "second");
+        let second = Project::load(&options).unwrap();
+        assert_eq!(second.package.name, "second");
+        assert_eq!(second.sdk.as_deref(), Some(env!("CARGO_PKG_VERSION")));
         options.manifest_path = temp.path().join("Cargo.toml");
-        assert_eq!(Project::load(&options).unwrap().package.name, "first");
+        let first = Project::load(&options).unwrap();
+        assert_eq!(first.package.name, "first");
+        assert_eq!(first.sdk, None);
         options.package = Some("second".into());
         assert_eq!(Project::load(&options).unwrap().package.name, "second");
     }

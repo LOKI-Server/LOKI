@@ -58,6 +58,13 @@ pub fn create(project: &Project, component: &Path, output: Option<&Path>) -> Res
     object.insert("version".into(), json!(project.package.version));
     object.insert("entry".into(), json!(entry));
     object.entry("health").or_insert_with(|| json!("/health"));
+    let sdk = project.sdk.as_ref().context(
+        "The plugin must depend on loki-sdk. Its package records the SDK version so LOKI can tell whether it can run the app.",
+    )?;
+    object.insert(
+        "built_with".into(),
+        json!({"sdk":sdk,"cargo_loki":env!("CARGO_PKG_VERSION")}),
+    );
     let mut total = 0u64;
     let mut checksums = BTreeMap::new();
     for (name, path) in &files {
@@ -244,6 +251,7 @@ mod tests {
             },
             root: root.clone(),
             target: root.join("target"),
+            sdk: Some("0.3.0".into()),
         };
         (temp, project, wasm)
     }
@@ -258,6 +266,9 @@ mod tests {
         assert_eq!(manifest.runtime, "wasi");
         assert_eq!(manifest.id, "rust-style");
         assert_eq!(manifest.version, "0.1.0");
+        let built_with = manifest.built_with.as_ref().unwrap();
+        assert_eq!(built_with.sdk, "0.3.0");
+        assert_eq!(built_with.cargo_loki, env!("CARGO_PKG_VERSION"));
         for (name, expected) in manifest.files {
             let mut bytes = Vec::new();
             zip.by_name(&name).unwrap().read_to_end(&mut bytes).unwrap();

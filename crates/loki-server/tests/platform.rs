@@ -714,13 +714,18 @@ fn malformed_packages_do_not_escape() {
     let package = tmp.path().join("bad.loki-app");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&package).unwrap());
     let options = zip::write::SimpleFileOptions::default();
-    let manifest = json!({"protocol":1,"id":"test","name":"Test","version":"1.0.0","target":loki_server::apps::target(),"entry":"app","health":"/health","files":{"app":"a".repeat(64)}});
+    let manifest = json!({"protocol":1,"id":"test","name":"Test","version":"1.0.0","runtime":"wasi","target":"wasm32-wasip2","entry":"app.wasm","health":"/health","files":{"app.wasm":"a".repeat(64)},"built_with":{"sdk":env!("CARGO_PKG_VERSION"),"cargo_loki":env!("CARGO_PKG_VERSION")}});
     zip.start_file("manifest.json", options).unwrap();
     zip.write_all(manifest.to_string().as_bytes()).unwrap();
     zip.start_file("../escape", options).unwrap();
     zip.write_all(b"bad").unwrap();
     zip.finish().unwrap();
-    assert!(loki_server::apps::extract(&package, &tmp.path().join("out")).is_err());
+    let error = loki_server::apps::extract(&package, &tmp.path().join("out")).unwrap_err();
+    assert!(
+        error.message.contains("safe relative paths"),
+        "{}",
+        error.message
+    );
     assert!(!tmp.path().join("escape").exists());
 }
 #[tokio::test]

@@ -40,10 +40,44 @@ pub fn target() -> String {
 pub fn validate_manifest(m: &Manifest) -> Result<()> {
     loki_sdk::manifest::validate_manifest(m).map_err(|error| Error::bad(error.to_string()))
 }
-/// Why an app installed by an earlier LOKI cannot start, if it can't.
-pub fn unsupported(m: &Manifest) -> Option<&'static str> {
-    (m.runtime != "wasi").then_some(
-        "LOKI 0.3 runs WASI components only, so this native app can no longer start. Its data is kept; import a WASI build of the app to update it.",
+/// The oldest `loki-sdk` whose apps this LOKI runs. Raise it with each breaking
+/// change to the host API, so older apps are asked to rebuild instead of failing.
+pub const OLDEST_SDK: semver::Version = semver::Version::new(0, 3, 0);
+/// Why this LOKI can't run an app with this runtime, built with this `loki-sdk`.
+/// Checked on the raw manifest at import, before fields a newer SDK may add are
+/// rejected, and on installed apps before they start.
+pub fn unsupported(runtime: Option<&str>, sdk: Option<&str>) -> Option<String> {
+    if runtime != Some("wasi") {
+        return Some("This is a native app. LOKI 0.3 and later run WASI components only; import a WASI build of the app.".into());
+    }
+    let oldest = OLDEST_SDK;
+    let Some(sdk) = sdk else {
+        return Some(format!(
+            "This app was built for a LOKI older than {}.{}. Rebuild it with loki-sdk {oldest} or newer (update its loki-sdk dependency and run cargo loki package), then import the new package.",
+            oldest.major, oldest.minor
+        ));
+    };
+    let Ok(sdk) = semver::Version::parse(sdk) else {
+        return Some("The package's loki-sdk version is not a valid version.".into());
+    };
+    let loki = semver::Version::parse(env!("CARGO_PKG_VERSION")).expect("LOKI's own version");
+    if sdk < oldest {
+        Some(format!(
+            "This app was built with loki-sdk {sdk}, which LOKI {loki} no longer runs. Rebuild it with loki-sdk {oldest} or newer, then import the new package."
+        ))
+    } else if (sdk.major, sdk.minor) > (loki.major, loki.minor) {
+        Some(format!(
+            "This app was built with loki-sdk {sdk}, which needs LOKI {}.{} or newer. Update LOKI to run it.",
+            sdk.major, sdk.minor
+        ))
+    } else {
+        None
+    }
+}
+fn unsupported_manifest(m: &Manifest) -> Option<String> {
+    unsupported(
+        Some(&m.runtime),
+        m.built_with.as_ref().map(|b| b.sdk.as_str()),
     )
 }
 pub fn extract(package: &Path, dest: &Path) -> Result<Manifest> {
@@ -58,7 +92,16 @@ pub fn extract(package: &Path, dest: &Path) -> Result<Manifest> {
         }
         let mut data = String::new();
         file.read_to_string(&mut data)?;
-        serde_json::from_str(&data)?
+        let raw: Value = serde_json::from_str(&data)
+            .map_err(|_| Error::bad("The package manifest is not valid JSON."))?;
+        if let Some(reason) = unsupported(
+            Some(raw["runtime"].as_str().unwrap_or("native")),
+            raw.pointer("/built_with/sdk").and_then(Value::as_str),
+        ) {
+            return Err(Error::bad(reason));
+        }
+        serde_json::from_value(raw)
+            .map_err(|e| Error::bad(format!("Invalid app manifest: {e}.")))?
     };
     validate_manifest(&manifest)?;
     let mut seen = HashSet::new();
@@ -255,7 +298,12 @@ pub async fn import(state: &State, package: PathBuf, actor: &str) -> Result<Mani
             && let Err(error) = start_inner(state, &m.id).await
         {
             let detail = error.message;
-            rollback_inner(state, &m.id).await?;
+            if let Err(restore) = rollback_inner(state, &m.id).await {
+                return Err(Error::bad(format!(
+                    "Update failed: {detail} {}",
+                    restore.message
+                )));
+            }
             caddy::apply(state).await?;
             return Err(Error::bad(format!(
                 "Update failed and the prior version/data were restored. {detail}"
@@ -329,7 +377,7 @@ pub async fn start_inner(state: &State, id: &str) -> Result<()> {
     let app = get(state, id).await?;
     let m: Manifest = serde_json::from_str(&app.manifest)?;
     validate_config(&m, &serde_json::from_str(&app.config)?)?;
-    if let Some(reason) = unsupported(&m) {
+    if let Some(reason) = unsupported_manifest(&m) {
         return Err(Error::bad(reason));
     }
     sqlx::query("UPDATE apps SET port=? WHERE id=?")
@@ -420,6 +468,13 @@ async fn rollback_inner(state: &State, id: &str) -> Result<()> {
     let previous = state.0.data.join("apps").join(format!("{id}.previous"));
     if !previous.exists() {
         return Err(Error::bad("Previous package is unavailable."));
+    }
+    let old: Manifest =
+        serde_json::from_str(&tokio::fs::read_to_string(previous.join("manifest.json")).await?)?;
+    if let Some(reason) = unsupported_manifest(&old) {
+        return Err(Error::bad(format!(
+            "The previous version can't run on this LOKI. {reason}"
+        )));
     }
     stop_inner(state, id).await?;
     if install.exists() {
@@ -599,6 +654,36 @@ mod tests {
             assert!(!safe_relative(s), "{s}");
         }
         assert!(safe_relative("bin/app.exe"));
+    }
+    #[test]
+    fn apps_must_be_wasi_built_with_a_supported_sdk() {
+        let wasi = Some("wasi");
+        assert!(
+            unsupported(Some("native"), Some("0.3.0"))
+                .unwrap()
+                .contains("native app")
+        );
+        assert!(unsupported(wasi, None).unwrap().contains("older than 0.3"));
+        assert!(
+            unsupported(wasi, Some("soon"))
+                .unwrap()
+                .contains("not a valid")
+        );
+        assert!(
+            unsupported(wasi, Some("0.2.9"))
+                .unwrap()
+                .contains("no longer runs")
+        );
+        assert_eq!(unsupported(wasi, Some("0.3.0")), None);
+        let loki = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let patch = format!("{}.{}.{}", loki.major, loki.minor, loki.patch + 7);
+        assert_eq!(unsupported(wasi, Some(&patch)), None);
+        let next = format!("{}.{}.0", loki.major, loki.minor + 1);
+        assert!(
+            unsupported(wasi, Some(&next))
+                .unwrap()
+                .contains("Update LOKI")
+        );
     }
     #[tokio::test]
     async fn native_apps_from_earlier_versions_say_why_they_cannot_start() {

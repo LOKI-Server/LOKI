@@ -54,9 +54,18 @@ persist between runs, under `target/loki/dev/APP_ID`.
     "request_bytes": 16777216
   },
   "fields": [],
-  "files": {"my_app.wasm": "SHA256_HEX", "static/style.css": "SHA256_HEX"}
+  "files": {"my_app.wasm": "SHA256_HEX", "static/style.css": "SHA256_HEX"},
+  "built_with": {"sdk": "0.3.0", "cargo_loki": "0.3.0"}
 }
 ```
+
+`cargo loki package` records `built_with`: the `loki-sdk` version the app
+resolved to and its own version. LOKI runs an app only when its SDK is at least
+the oldest one it supports (0.3.0 for LOKI 0.3) and no newer than LOKI's own
+minor version, since 0.x minor releases may change the host API. Otherwise the
+import, or the start of an installed app, fails with what to do: rebuild the app
+with a newer SDK, or update LOKI. Packages without `built_with` predate LOKI 0.3
+and have to be rebuilt.
 
 Limits accept `memory_mib` 16–256, `fuel` 100,000–10,000,000,000 per request,
 `timeout_seconds` 1–120, `concurrent_requests` 1–8 and `request_bytes` 1 KiB–1 GiB.
@@ -207,7 +216,7 @@ Disable/restart/update waits for active component requests, closes the app's SQL
 pool, and releases its compiled runtime. Updates snapshot stopped app data and
 retain the previous package/configuration for rollback. During initial
 development, owner-initiated replacement may keep the same app version; older
-versions are rejected. LOKI is at version **0.2.0** and has not had a stable release yet.
+versions are rejected. LOKI is at version **0.3.0** and has not had a stable release yet.
 
 ## App panels
 

@@ -50,7 +50,7 @@ async fn wasi_guests_are_scoped_bounded_and_stop_without_stopping_loki() {
         .fetch_one(&state.0.db)
         .await
         .unwrap();
-    let mut manifest = json!({"protocol":1,"id":"wasi-probe","name":"WASI probe","version":"0.1.0","runtime":"wasi","target":"wasm32-wasip2","entry":"probe.wasm","health":"/health","roles":["admin"],"capabilities":["database"],"limits":{"fuel":1000000,"memory_mib":16,"timeout_seconds":2},"files":{"probe.wasm":hex::encode(Sha256::digest(&bytes))}});
+    let mut manifest = json!({"protocol":1,"id":"wasi-probe","name":"WASI probe","version":"0.1.0","runtime":"wasi","target":"wasm32-wasip2","entry":"probe.wasm","health":"/health","roles":["admin"],"capabilities":["database"],"limits":{"fuel":1000000,"memory_mib":16,"timeout_seconds":2},"files":{"probe.wasm":hex::encode(Sha256::digest(&bytes))},"built_with":{"sdk":env!("CARGO_PKG_VERSION"),"cargo_loki":env!("CARGO_PKG_VERSION")}});
     let package = directory.path().join("probe.loki-app");
     let mut archive = zip::ZipWriter::new(std::fs::File::create(&package).unwrap());
     archive

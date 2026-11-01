@@ -74,6 +74,17 @@ function compareVersions(a, b) {
   return Math.sign(p.length - q.length);
 }
 
+// Mirrors apps::unsupported: apps need a loki-sdk from oldest_sdk up to this LOKI's own minor version.
+export function sdkProblem(sdk) {
+  const { loki_version: loki, oldest_sdk: oldest } = store.state, [, major, minor] = SEMVER.exec(oldest);
+  if (typeof sdk !== "string") return `This app was built for a LOKI older than ${major}.${minor}. Rebuild it with loki-sdk ${esc(oldest)} or newer (update its loki-sdk dependency and run cargo loki package), then import the new package.`;
+  if (!SEMVER.test(sdk)) return "The package's loki-sdk version is not a valid version.";
+  if (compareVersions(sdk, oldest) < 0) return `This app was built with loki-sdk ${esc(sdk)}, which LOKI ${esc(loki)} no longer runs. Rebuild it with loki-sdk ${esc(oldest)} or newer, then import the new package.`;
+  const [, a, b] = SEMVER.exec(sdk), [, c, d] = SEMVER.exec(loki);
+  if (Number(a) > Number(c) || (a === c && Number(b) > Number(d))) return `This app was built with loki-sdk ${esc(sdk)}, which needs LOKI ${a}.${b} or newer. Update LOKI to run it.`;
+  return "";
+}
+
 // The checks from validate_manifest a person can act on, plus the ones that need this server.
 function problems(m, names, file, installed) {
   const out = [], runtime = m.runtime ?? "native", files = m.files && typeof m.files === "object" ? Object.keys(m.files) : [];
@@ -85,6 +96,8 @@ function problems(m, names, file, installed) {
   if (runtime !== "wasi") out.push("This is a native package. LOKI 0.3 runs WASI components only; import a WASI build of the app.");
   else if (m.target !== "wasm32-wasip2") out.push("WASI packages must target wasm32-wasip2.");
   if (runtime === "wasi" && !String(m.entry).endsWith(".wasm")) out.push("The WASI entry must be a .wasm component.");
+  const sdk = runtime === "wasi" ? sdkProblem(m.built_with?.sdk) : "";
+  if (sdk) out.push(sdk);
   if (!files.includes(m.entry)) out.push("The entry file is not listed in the manifest.");
   if (files.some(f => !names.has(f))) out.push("The package is missing a declared file.");
   const unknown = (m.capabilities || []).filter(c => !CAPABILITIES.includes(c));
@@ -100,7 +113,7 @@ function summary(m, names, file, installed, issues) {
   const order = installed && SEMVER.test(m.version) ? compareVersions(m.version, installed.manifest.version) : 1, was = installed?.manifest.version;
   const change = !installed ? tag("New app") : order === 0 ? tag(`Reinstalls v${was}`, "warn") : order < 0 ? tag(`Older than v${was}`, "bad") : tag(`Updates v${was}`);
   return `<div class="package-preview"><h3>${esc(m.name || m.id || "Unnamed app")}</h3><div class="tags">${tag(`v${m.version}`)}${change}</div>${m.description ? `<p>${esc(m.description)}</p>` : ""}`
-    + `<dl class="kv">${row("App ID", `<span class="kv-str">${esc(m.id)}</span>`)}${row("Target", `<span class="kv-str">${esc(m.target)}</span>`)}${row("Capabilities", list(m.capabilities || []))}${row("Roles", list(m.roles || []))}${row("Settings", m.fields?.length ? esc(m.fields.map(f => f.label || f.key).join(", ")) : '<span class="kv-none">None</span>')}${row("Panel", m.panel ? "Yes" : "No")}${row("Package", `${esc(fmt(file.size))}, ${names.size} files`)}</dl>`
+    + `<dl class="kv">${row("App ID", `<span class="kv-str">${esc(m.id)}</span>`)}${row("Built with", m.built_with ? `loki-sdk ${esc(m.built_with.sdk)} · cargo-loki ${esc(m.built_with.cargo_loki)}` : '<span class="kv-none">Unknown (before LOKI 0.3)</span>')}${row("Capabilities", list(m.capabilities || []))}${row("Roles", list(m.roles || []))}${row("Settings", m.fields?.length ? esc(m.fields.map(f => f.label || f.key).join(", ")) : '<span class="kv-none">None</span>')}${row("Panel", m.panel ? "Yes" : "No")}${row("Package", `${esc(fmt(file.size))}, ${names.size} files`)}</dl>`
     + (installed && !issues.length ? '<p class="help">LOKI stops the installed version and snapshots its data before updating.</p>' : "")
     + (issues.length ? `<div class="notice error">LOKI cannot import this package:<ul>${issues.map(i => `<li>${i}</li>`).join("")}</ul></div>` : "")
     + "</div>";
