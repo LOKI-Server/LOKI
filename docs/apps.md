@@ -121,7 +121,27 @@ client secrets never reach the app, and app responses cannot set cookies.
   from a browser need a signed-in, approved account.
 - The owner has every app role. Other people get a role such as `admin` only
   when granted it.
-- `/_loki/*` belongs to LOKI. A POST to `/logout` ends the app session.
+- `/_loki/*` belongs to LOKI.
+
+### Signing in and out
+
+People sign in with their LOKI account, and type their password only on LOKI's
+own address, never the app's.
+
+- **Signing in.** Opening a page of a restricted app without being signed in
+  shows LOKI's "Sign in to APP" page on the app's own address. Its button opens
+  LOKI's sign-in in a small window, like "Sign in with Google", which closes
+  itself and returns the person to the page they asked for; if the browser blocks
+  the window, the sign-in happens in the page instead. Someone already signed in
+  to LOKI just clicks through. Requests from scripts redirect to `/_loki/start`.
+- **Your own sign-in link**, for example in a public app: `/_loki/start?next=/path`
+  returns to `/path`, and adding `&popup=1` finishes in a window opened by your
+  page.
+- **Signing out.** A POST to `/logout` (with the CSRF token) signs out of the
+  app and shows a "signed out" page on its address, which also offers signing
+  out of LOKI. The app stays signed out until the person signs in again.
+- **Signing out of LOKI** signs out of every app and gated route opened from that
+  sign-in. App sessions last at most seven days and never outlive it.
 
 ### Device sign-in
 

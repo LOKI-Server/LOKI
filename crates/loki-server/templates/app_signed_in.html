@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Signed in to {{ app }}</title><link rel="stylesheet" href="{{ dashboard }}{{ assets }}/style.css"></head><body class="standalone"><main><section class="card auth-card"><h1>Signed in to {{ app }}.</h1><p><a class="button full" href="{{ next }}">Continue to {{ app }}</a></p></section></main>
+<script nonce="{{ nonce }}">
+// The sign-in window hands the app's page the new session, then closes.
+const next = {{ next_json|safe }};
+try {
+  if (window.opener && !window.opener.closed) { window.opener.location.replace(next); window.close(); }
+  else location.replace(next);
+} catch { location.replace(next); }
+</script></body></html>

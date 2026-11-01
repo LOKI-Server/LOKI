@@ -249,7 +249,11 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
         return Err(Error::not_found());
     }
     if path == "/_loki/start" {
-        return login_start(state, &app, request.headers()).await;
+        let query = request.uri().query().unwrap_or("").to_string();
+        return login_start(state, &app, &query, request.headers()).await;
+    }
+    if path == "/_loki/signed-out" {
+        return sign_in_page(state, &app, "/", true).await;
     }
     if path == "/_loki/callback" {
         return login_callback(state, &app, request).await;
@@ -321,10 +325,15 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
         return realtime::upgrade(state, &app.id, request, user).await;
     }
     if !allowed {
-        return if user.is_none() {
-            Ok(Redirect::to("/_loki/start").into_response())
-        } else {
-            Err(Error::forbidden())
+        // A browser gets a page of the app's own to sign in from, not an instant
+        // trip to LOKI, so signing out of the app sticks until you sign in again.
+        return match &user {
+            None if opens_page(&request) => {
+                let here = safe_next(request.uri().path_and_query().map_or("/", |p| p.as_str()));
+                sign_in_page(state, &app, &here, false).await
+            }
+            None => Ok(Redirect::to("/_loki/start").into_response()),
+            Some(_) => Err(Error::forbidden()),
         };
     }
     let csrf = raw
@@ -405,7 +414,7 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
                 .execute(&state.0.db)
                 .await?;
         }
-        return Ok(Redirect::to(&dashboard_url(state, &origin).await).into_response());
+        return Ok(Redirect::to("/_loki/signed-out").into_response());
     }
     request.headers_mut().remove("x-loki-head");
     if method == axum::http::Method::HEAD {
@@ -646,20 +655,37 @@ async fn dashboard_url(state: &State, origin: &str) -> String {
         state.0.settings.read().await.public_url.clone()
     }
 }
-async fn login_start(state: &State, app: &apps::App, headers: &HeaderMap) -> Result<Response> {
+/// Starts signing in at LOKI. `next` is where to return; `popup` means a small
+/// sign-in window opened by the app's page.
+async fn login_start(
+    state: &State,
+    app: &apps::App,
+    query: &str,
+    headers: &HeaderMap,
+) -> Result<Response> {
     use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use sha2::{Digest, Sha256};
+    let query: std::collections::HashMap<String, String> =
+        url::form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+    let next = safe_next(query.get("next").map_or("/", String::as_str));
+    let popup = query.get("popup").is_some_and(|v| v == "1");
     let raw = auth::random();
     let verifier = auth::random();
     let origin = apps::public_url(app);
-    sqlx::query("INSERT INTO gateway_flows(id,resource,verifier,expires) VALUES(?,?,?,?)")
-        .bind(auth::digest(&raw))
-        .bind(&app.id)
-        .bind(&verifier)
-        .bind(auth::now() + 300)
-        .execute(&state.0.db)
-        .await?;
+    sqlx::query(
+        "INSERT INTO gateway_flows(id,resource,verifier,expires,next,popup) VALUES(?,?,?,?,?,?)",
+    )
+    .bind(auth::digest(&raw))
+    .bind(&app.id)
+    .bind(&verifier)
+    .bind(auth::now() + 300)
+    .bind(&next)
+    .bind(popup)
+    .execute(&state.0.db)
+    .await?;
     let mut url = url::Url::parse(&format!(
         "{}/oidc/authorize",
         dashboard_url(state, &origin).await
@@ -723,8 +749,8 @@ async fn login_callback(
         return Err(Error::forbidden());
     }
     let mut tx = state.0.db.begin().await?;
-    let verifier: String = sqlx::query_scalar(
-        "DELETE FROM gateway_flows WHERE id=? AND resource=? AND expires>? RETURNING verifier",
+    let (verifier, next, popup): (String, String, bool) = sqlx::query_as(
+        "DELETE FROM gateway_flows WHERE id=? AND resource=? AND expires>? RETURNING verifier,next,popup",
     )
     .bind(auth::digest(raw))
     .bind(&app.id)
@@ -733,9 +759,11 @@ async fn login_callback(
     .await?
     .ok_or_else(Error::forbidden)?;
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let uid:String=sqlx::query_scalar("DELETE FROM codes WHERE id=? AND client=? AND redirect=? AND challenge=? AND expires>? AND auth_version=(SELECT auth_version FROM users WHERE users.id=codes.user_id) RETURNING user_id").bind(auth::digest(code)).bind(format!("component-{}",app.id)).bind(format!("{origin}/_loki/callback")).bind(challenge).bind(auth::now()).fetch_optional(&mut *tx).await?.ok_or_else(Error::forbidden)?;
+    let (uid, login_session): (String, Option<String>) = sqlx::query_as("DELETE FROM codes WHERE id=? AND client=? AND redirect=? AND challenge=? AND expires>? AND auth_version=(SELECT auth_version FROM users WHERE users.id=codes.user_id) RETURNING user_id,login_session").bind(auth::digest(code)).bind(format!("component-{}",app.id)).bind(format!("{origin}/_loki/callback")).bind(challenge).bind(auth::now()).fetch_optional(&mut *tx).await?.ok_or_else(Error::forbidden)?;
     let session = auth::random();
-    sqlx::query("INSERT INTO gateway_sessions(id,resource,user_id,expires) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM users WHERE id=? AND status='approved')").bind(auth::digest(&session)).bind(&app.id).bind(&uid).bind(auth::now()+604800).bind(&uid).execute(&mut *tx).await?;
+    let expires =
+        crate::auth::app_session(&mut tx, &session, &app.id, &uid, login_session.as_deref())
+            .await?;
     tx.commit().await?;
     let user: auth::User = sqlx::query_as("SELECT * FROM users WHERE id=?")
         .bind(&uid)
@@ -749,12 +777,120 @@ async fn login_callback(
         .secure(origin.starts_with("https:"))
         .same_site(SameSite::Lax)
         .path("/")
-        .max_age(time::Duration::days(7))
+        .max_age(time::Duration::seconds(expires - auth::now()))
         .build();
+    let jar = jar
+        .remove(Cookie::build((flow_name, "")).path("/").build())
+        .add(cookie);
+    let next = safe_next(&next);
+    if !popup {
+        return Ok((jar, Redirect::to(&next)).into_response());
+    }
+    let dashboard = dashboard_url(state, &origin).await;
+    let nonce = auth::random();
+    let page = SignedInPage {
+        app: resource_name(state, &app.id).await?,
+        dashboard: dashboard.clone(),
+        assets: crate::assets::base(),
+        // JSON in a script must not be able to close the element.
+        next_json: serde_json::to_string(&next)?
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e")
+            .replace('&', "\\u0026"),
+        next,
+        nonce: nonce.clone(),
+    };
     Ok((
-        jar.remove(Cookie::build((flow_name, "")).path("/").build())
-            .add(cookie),
-        Redirect::to("/"),
+        jar,
+        host_page(askama::Template::render(&page)?, &nonce, &dashboard),
     )
         .into_response())
+}
+/// LOKI's own pages on an app's address: signing in, and having signed out.
+#[derive(askama::Template)]
+#[template(path = "app_sign_in.html")]
+struct SignInPage {
+    app: String,
+    server: String,
+    dashboard: String,
+    assets: &'static str,
+    /// Where to return after signing in, URL-encoded.
+    next: String,
+    signed_out: bool,
+    nonce: String,
+}
+/// Ends a sign-in made in a small window by handing the session to the app's page.
+#[derive(askama::Template)]
+#[template(path = "app_signed_in.html")]
+struct SignedInPage {
+    app: String,
+    dashboard: String,
+    assets: &'static str,
+    next: String,
+    next_json: String,
+    nonce: String,
+}
+/// A page LOKI draws on an app's address. Only its own inline script may run.
+fn host_page(html: String, nonce: &str, dashboard: &str) -> Response {
+    let policy = format!(
+        "default-src 'none'; style-src {dashboard}; img-src {dashboard}; font-src {dashboard}; script-src 'nonce-{nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    );
+    let mut response = axum::response::Html(html).into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    headers.insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
+    if let Ok(policy) = policy.parse() {
+        headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+    }
+    response
+}
+async fn sign_in_page(
+    state: &State,
+    app: &apps::App,
+    next: &str,
+    signed_out: bool,
+) -> Result<Response> {
+    let origin = apps::public_url(app);
+    let dashboard = dashboard_url(state, &origin).await;
+    let nonce = auth::random();
+    let page = SignInPage {
+        app: resource_name(state, &app.id).await?,
+        server: state.0.settings.read().await.name.clone(),
+        dashboard: dashboard.clone(),
+        assets: crate::assets::base(),
+        next: url::form_urlencoded::byte_serialize(next.as_bytes()).collect(),
+        signed_out,
+        nonce: nonce.clone(),
+    };
+    Ok(host_page(
+        askama::Template::render(&page)?,
+        &nonce,
+        &dashboard,
+    ))
+}
+async fn resource_name(state: &State, id: &str) -> Result<String> {
+    Ok(sqlx::query_scalar("SELECT name FROM resources WHERE id=?")
+        .bind(id)
+        .fetch_one(&state.0.db)
+        .await?)
+}
+/// A path on the app to return to after signing in. Anything else is `/`.
+fn safe_next(value: &str) -> String {
+    let safe = value.starts_with('/')
+        && !value.starts_with("//")
+        && !value.starts_with("/_loki/")
+        && value.len() <= 2048
+        && !value.chars().any(|c| c == '\\' || c.is_control());
+    if safe { value.into() } else { "/".into() }
+}
+/// Whether a browser is opening a page, rather than a script fetching data.
+fn opens_page(request: &Request<Body>) -> bool {
+    matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    ) && request
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/html"))
 }

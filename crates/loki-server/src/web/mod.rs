@@ -822,15 +822,9 @@ async fn gateway_callback(
     use sha2::{Digest, Sha256};
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(Sha256::digest(verifier.as_bytes()));
-    let uid:String=sqlx::query_scalar("DELETE FROM codes WHERE id=? AND client=? AND redirect=? AND challenge=? AND expires>? AND auth_version=(SELECT auth_version FROM users WHERE users.id=codes.user_id) RETURNING user_id").bind(auth::digest(&query.code)).bind(format!("gateway-{id}")).bind(format!("https://{host}/_loki/callback")).bind(challenge).bind(auth::now()).fetch_optional(&mut *tx).await?.ok_or_else(Error::forbidden)?;
+    let (uid, login_session): (String, Option<String>) = sqlx::query_as("DELETE FROM codes WHERE id=? AND client=? AND redirect=? AND challenge=? AND expires>? AND auth_version=(SELECT auth_version FROM users WHERE users.id=codes.user_id) RETURNING user_id,login_session").bind(auth::digest(&query.code)).bind(format!("gateway-{id}")).bind(format!("https://{host}/_loki/callback")).bind(challenge).bind(auth::now()).fetch_optional(&mut *tx).await?.ok_or_else(Error::forbidden)?;
     let raw = auth::random();
-    sqlx::query("INSERT INTO gateway_sessions(id,resource,user_id,expires) VALUES(?,?,?,?)")
-        .bind(auth::digest(&raw))
-        .bind(id)
-        .bind(&uid)
-        .bind(auth::now() + 604800)
-        .execute(&mut *tx)
-        .await?;
+    let expires = auth::app_session(&mut tx, &raw, id, &uid, login_session.as_deref()).await?;
     tx.commit().await?;
     let user: auth::User = sqlx::query_as("SELECT * FROM users WHERE id=?")
         .bind(uid)
@@ -844,7 +838,7 @@ async fn gateway_callback(
         .secure(true)
         .same_site(SameSite::Lax)
         .path("/")
-        .max_age(time::Duration::days(7))
+        .max_age(time::Duration::seconds(expires - auth::now()))
         .build();
     Ok((jar.add(cookie), Redirect::to("/")).into_response())
 }

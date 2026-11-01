@@ -60,6 +60,12 @@ const MIGRATIONS: &[Migration] = &[
     // Native apps signed people in with an OIDC client named after the app. WASI
     // apps use `component-APP_ID`, and LOKI 0.3 runs nothing else.
     Sql("DELETE FROM clients WHERE id IN (SELECT id FROM apps)"),
+    // App and gated-route sign-ins remember the LOKI session they came from, so
+    // signing out of LOKI signs out of them too.
+    Column("codes", "login_session", "TEXT"),
+    Column("gateway_sessions", "login_session", "TEXT"),
+    Column("gateway_flows", "next", "TEXT NOT NULL DEFAULT '/'"),
+    Column("gateway_flows", "popup", "INTEGER NOT NULL DEFAULT 0"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;

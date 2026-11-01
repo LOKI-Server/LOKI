@@ -1,6 +1,6 @@
 // Setup, sign-in, registration, password reset, and the Windows startup review.
 import { $, api, esc, modal, store } from "../lib/core.js";
-import { check, field, heading } from "../lib/ui.js";
+import { button, check, field, heading } from "../lib/ui.js";
 
 const futhark = "ᚠ ᚢ ᚦ ᚨ ᚱ ᚲ ᚷ ᚹ ᚺ ᚾ ᛁ ᛃ ᛇ ᛈ ᛉ ᛊ ᛏ ᛒ ᛖ ᛗ ᛚ ᛜ ᛞ ᛟ";
 // The twenty-four runes of the Elder Futhark, circling the Algiz rune of protection.
@@ -68,11 +68,25 @@ export async function submitSetup(data) {
 const titles = { setup: "The story starts here.", login: "Welcome to LOKI.", register: "Find your place.", reset: "A fresh beginning." };
 const submits = { setup: "Create your universe", login: "Sign in", register: "Request account", reset: "Set password" };
 
+/** The app a sign-in continues to, when LOKI's sign-in page was opened for one. */
+function signingInTo() {
+  const query = new URLSearchParams(location.search);
+  return query.get("next")?.startsWith("/oidc/authorize?") ? query.get("app") || "" : "";
+}
+
+/** Where an app's "Also sign out" leads: signing out here ends its apps' sessions too. */
+export function signOutPage() {
+  const { session } = store, server = esc(session.name || "LOKI");
+  if (!session.user) return `<section class="card auth-card">${sigil}<div class="eyebrow">${server}</div><h1>You’re signed out.</h1><p>You’re signed out of ${server} and its apps on this device.</p><div class="actions"><a class="button full" href="/login">Sign in</a></div></section>`;
+  return `<section class="card auth-card">${sigil}<div class="eyebrow">${server}</div><h1>Sign out of ${server}?</h1><p>This also signs you out of the apps you opened from this device.</p><div class="actions">${button("Sign out", "logout", "", "", "full", "logout")}</div><hr class="divider"><div class="auth-footer"><a href="/">Stay signed in</a></div></section>`;
+}
+
 export function authPage(kind) {
   const session = store.session;
+  const app = kind === "login" ? signingInTo() : "";
   let content = "";
   if (kind === "setup") content = `<p>Set up the owner of this LOKI installation. The setup token is shown in the local console and saved in the data directory.</p>${field("token", "One-time setup token", location.hash.slice(1), "password", "required autocomplete=off")}<div class="two"><div>${field("username", "Owner username", "", "text", "required autocomplete=username minlength=3 maxlength=32")}</div><div>${field("password", "Owner password", "", "password", "required autocomplete=new-password minlength=10 maxlength=128")}</div></div>${field("name", "Server name", "LOKI Server", "text", "required maxlength=80")}${field("public_url", "Public LOKI URL", session.public_url, "url", "required")}${field("data_dir", "Data directory (optional; blank uses the current location)", "", "text", "placeholder=F:\\Servers\\LOKI")}${check("startup", "Start LOKI when I sign in to this computer", true)}<p class="help">Use your HTTPS domain for public hosting. Local development may use http://127.0.0.1:7070. Configure Caddy and automatic startup after signing in.</p>`;
-  if (kind === "login") content = `<p>One account for the services in your universe.</p>${field("username", "Username or email", "", "text", "required autocomplete=username")}${field("password", "Password", "", "password", "required autocomplete=current-password")}${field("code", "Authentication or recovery code (if enabled)", "", "text", "autocomplete=one-time-code inputmode=numeric")}<p class="help">Forgot your password? Ask the server owner for a one-time reset link.</p>`;
+  if (kind === "login") content = `<p>${app ? `Sign in with your ${esc(session.name || "LOKI")} account to continue to <strong>${esc(app)}</strong>.` : "One account for the services in your universe."}</p>${field("username", "Username or email", "", "text", "required autocomplete=username")}${field("password", "Password", "", "password", "required autocomplete=current-password")}${field("code", "Authentication or recovery code (if enabled)", "", "text", "autocomplete=one-time-code inputmode=numeric")}<p class="help">Forgot your password? Ask the server owner for a one-time reset link.</p>`;
   if (kind === "register") content = session.registration === "closed" ? "<p>Accounts are created by this server’s owner. Ask them for an activation link.</p>" : `<p>${session.registration === "approval" ? "The owner will approve your account before you can access services." : "Create an account on this LOKI server."}</p>${field("username", "Username", "", "text", "required autocomplete=username minlength=3 maxlength=32")}${field("display_name", "Display name")}${field("email", "Email (optional, unverified)", "", "email")}${field("password", "Password", "", "password", "required autocomplete=new-password minlength=10 maxlength=128")}`;
   if (kind === "reset") content = `<p>Set a password using the single-use link your server owner gave you.</p>${field("token", "Reset token", location.hash.slice(1), "password", "required autocomplete=off")}${field("password", "New password", "", "password", "required minlength=10 maxlength=128 autocomplete=new-password")}`;
   // Tokens arrive in the URL fragment; drop them from history once they are in the form.
@@ -86,5 +100,5 @@ export function authPage(kind) {
   }
   const closed = kind === "register" && session.registration === "closed";
   const footer = kind === "login" ? `<a href="/register">${session.registration === "closed" ? "Account information" : "Create a LOKI account"}</a>` : kind !== "setup" ? '<a href="/login">Back to sign in</a>' : "";
-  return `<section class="card auth-card${kind === "setup" ? " wide" : ""}">${sigil}<div class="eyebrow">${esc(session.name || "LOKI Server")}</div><h1>${titles[kind]}</h1>${notice}<form data-form="${kind}">${content}${closed ? "" : `<div class="actions"><button class="full">${submits[kind]}</button></div>`}</form>${footer ? `<hr class="divider"><div class="auth-footer">${footer}</div>` : ""}</section>`;
+  return `<section class="card auth-card${kind === "setup" ? " wide" : ""}">${sigil}<div class="eyebrow">${esc(session.name || "LOKI Server")}</div><h1>${app ? `Continue to ${esc(app)}` : titles[kind]}</h1>${notice}<form data-form="${kind}">${content}${closed ? "" : `<div class="actions"><button class="full">${submits[kind]}</button></div>`}</form>${footer ? `<hr class="divider"><div class="auth-footer">${footer}</div>` : ""}</section>`;
 }

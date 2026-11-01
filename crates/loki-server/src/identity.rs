@@ -126,12 +126,18 @@ pub async fn authorize(
             ("code_challenge", &input.code_challenge),
             ("code_challenge_method", &input.code_challenge_method),
         ]);
+        // The sign-in page says which app it is for.
+        let app: String = sqlx::query_scalar("SELECT name FROM resources WHERE id=?")
+            .bind(&client.resource)
+            .fetch_one(&state.0.db)
+            .await?;
+        let encode =
+            |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+        let next = format!("{}?{}", url.path(), url.query().unwrap_or(""));
         return Ok(Redirect::to(&format!(
-            "/login?next={}",
-            url::form_urlencoded::byte_serialize(
-                format!("{}?{}", url.path(), url.query().unwrap_or("")).as_bytes()
-            )
-            .collect::<String>()
+            "/login?next={}&app={}",
+            encode(&next),
+            encode(&app)
         ))
         .into_response());
     };
@@ -159,7 +165,9 @@ pub async fn authorize(
             .into_response());
     }
     let raw = auth::random();
-    sqlx::query("INSERT INTO codes(id,client,user_id,redirect,challenge,nonce,scope,expires,auth_version) VALUES(?,?,?,?,?,?,?,?,?)").bind(auth::digest(&raw)).bind(&client.id).bind(&user.id).bind(&client.redirect).bind(input.code_challenge).bind(input.nonce).bind(input.scope).bind(auth::now()+120).bind(user.auth_version).execute(&state.0.db).await?;
+    // Remember the LOKI session, so signing out of it ends what this code signs in.
+    let login_session = ctx.as_ref().map(|c| c.session.id.clone());
+    sqlx::query("INSERT INTO codes(id,client,user_id,redirect,challenge,nonce,scope,expires,auth_version,login_session) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(auth::digest(&raw)).bind(&client.id).bind(&user.id).bind(&client.redirect).bind(input.code_challenge).bind(input.nonce).bind(input.scope).bind(auth::now()+120).bind(user.auth_version).bind(login_session).execute(&state.0.db).await?;
     let mut url = url::Url::parse(&client.redirect)?;
     url.query_pairs_mut()
         .append_pair("code", &raw)

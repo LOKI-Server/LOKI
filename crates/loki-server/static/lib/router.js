@@ -3,7 +3,7 @@
 import { $, api, enc, esc, morph, reducedMotion, store } from "./core.js";
 import { icon } from "./icons.js";
 import { button, heading, skeleton, tag } from "./ui.js";
-import { authPage } from "../pages/auth.js";
+import { authPage, signOutPage } from "../pages/auth.js";
 import { appsPage, overview, routesPage, sharesPage } from "../pages/services.js";
 import { accountsPage, activityPage, avatar } from "../pages/people.js";
 import { accountPage, settingsPage } from "../pages/account.js";
@@ -30,6 +30,7 @@ async function resolve() {
   const { session } = store, page = location.pathname;
   if (session.setup) return authPage("setup");
   if (page === "/reset") return authPage("reset");
+  if (page === "/sign-out") return signOutPage();
   if (!session.user) {
     if (page.startsWith("/shares/")) {
       const id = decodeURIComponent(page.split("/")[2]);

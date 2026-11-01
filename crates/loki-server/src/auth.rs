@@ -514,11 +514,59 @@ pub async fn logout(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>> {
     let ctx = context(&state, &headers).await?;
-    sqlx::query("DELETE FROM sessions WHERE id=?")
-        .bind(ctx.session.id)
-        .execute(&state.0.db)
-        .await?;
+    end_session(&state, &ctx.session.id).await?;
     Ok(Json(serde_json::json!({"ok":true})))
+}
+/// Ends a LOKI session and every app and gated-route session signed in from it.
+pub async fn end_session(state: &State, id: &str) -> Result<()> {
+    let mut tx = state.0.db.begin().await?;
+    sqlx::query("DELETE FROM gateway_sessions WHERE login_session=?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM sessions WHERE id=?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+/// Starts a session for an app or gated route, signed in from the LOKI session
+/// `login_session` when there is one. It lasts at most seven days, never outlives
+/// that LOKI session, and ends with it. Returns when it expires.
+pub async fn app_session(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    raw: &str,
+    resource: &str,
+    user: &str,
+    login_session: Option<&str>,
+) -> Result<i64> {
+    let mut expires = now() + 7 * 86400;
+    if let Some(id) = login_session {
+        let login: Option<i64> = sqlx::query_scalar(
+            "SELECT expires FROM sessions WHERE id=? AND user_id=? AND expires>?",
+        )
+        .bind(id)
+        .bind(user)
+        .bind(now())
+        .fetch_optional(&mut **tx)
+        .await?;
+        // Signing out of LOKI mid-way leaves nothing to sign in from.
+        expires = expires.min(login.ok_or_else(Error::unauthorized)?);
+    }
+    let added = sqlx::query("INSERT INTO gateway_sessions(id,resource,user_id,expires,login_session) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM users WHERE id=? AND status='approved')")
+        .bind(digest(raw))
+        .bind(resource)
+        .bind(user)
+        .bind(expires)
+        .bind(login_session)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?;
+    if added.rows_affected() == 0 {
+        return Err(Error::forbidden());
+    }
+    Ok(expires)
 }
 #[derive(Deserialize)]
 pub struct Registration {

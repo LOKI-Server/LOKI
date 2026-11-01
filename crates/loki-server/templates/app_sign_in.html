@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>{% if signed_out %}Signed out of {{ app }}{% else %}Sign in to {{ app }}{% endif %}</title><link rel="stylesheet" href="{{ dashboard }}{{ assets }}/style.css"><link rel="icon" sizes="32x32" href="{{ dashboard }}{{ assets }}/icon-32.png"></head><body class="standalone"><div class="yggdrasil" aria-hidden="true"></div><main><section class="card auth-card"><span class="rune" aria-hidden="true">ᛉ</span><div class="eyebrow">{{ server }}</div>
+{% if signed_out %}<h1>You’ve signed out of {{ app }}.</h1><p>You’re still signed in to {{ server }} on this device, so signing in again takes one click.</p><div class="actions"><a class="button full" href="/_loki/start?next=%2F" data-popup>Sign in again</a></div><hr class="divider"><div class="auth-footer"><a href="{{ dashboard }}/sign-out">Also sign out of {{ server }}</a></div>
+{% else %}<h1>Sign in to {{ app }}</h1><p>{{ app }} uses your account on {{ server }}. Your password stays with {{ server }}; {{ app }} never sees it.</p><div class="actions"><a class="button full" href="/_loki/start?next={{ next }}" data-popup>Sign in with {{ server }}</a></div><hr class="divider"><div class="auth-footer"><a href="{{ dashboard }}/">Go to {{ server }}</a></div>
+{% endif %}</section></main>
+<script nonce="{{ nonce }}">
+// Sign in in a small window, like "Sign in with Google". Without one, the link works as a page.
+for (const link of document.querySelectorAll("a[data-popup]")) link.addEventListener("click", event => {
+  const width = 460, height = 680;
+  const left = screenX + Math.max(0, (outerWidth - width) / 2), top = screenY + Math.max(0, (outerHeight - height) / 3);
+  const popup = open(link.href + "&popup=1", "loki-sign-in", `popup,width=${width},height=${height},left=${left},top=${top}`);
+  if (popup) { event.preventDefault(); popup.focus(); }
+});
+</script></body></html>

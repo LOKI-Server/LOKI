@@ -102,11 +102,15 @@ pub(super) async fn password(state: &State, user: &User, input: Password) -> Res
 }
 
 pub(super) async fn revoke_session(state: &State, user: &User, id: &str) -> Result<Value> {
-    sqlx::query("DELETE FROM sessions WHERE id=? AND user_id=?")
-        .bind(id)
-        .bind(&user.id)
-        .execute(&state.0.db)
-        .await?;
+    let own: Option<String> =
+        sqlx::query_scalar("SELECT id FROM sessions WHERE id=? AND user_id=?")
+            .bind(id)
+            .bind(&user.id)
+            .fetch_optional(&state.0.db)
+            .await?;
+    if let Some(id) = own {
+        auth::end_session(state, &id).await?;
+    }
     Ok(ok())
 }
 
