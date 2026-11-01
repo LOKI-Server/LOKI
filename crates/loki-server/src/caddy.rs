@@ -91,22 +91,16 @@ pub async fn render(state: &State, settings: &Settings) -> Result<String> {
         }
         text.push_str("}\n");
     }
-    let apps: Vec<(String, String, i64, String)> = sqlx::query_as(
-        "SELECT id,hostname,port,manifest FROM apps WHERE enabled=1 AND hostname!=''",
-    )
-    .fetch_all(&state.0.db)
-    .await?;
+    // Apps share LOKI's own listener and are told apart by hostname.
+    let apps: Vec<(String, String)> =
+        sqlx::query_as("SELECT id,hostname FROM apps WHERE enabled=1 AND hostname!=''")
+            .fetch_all(&state.0.db)
+            .await?;
     let runtimes = state.0.runtimes.lock().await;
-    for (id, host, port, manifest) in apps {
+    for (id, host) in apps {
         if runtimes.get(&id).is_some_and(|r| r.ready) {
             hostname(&host)?;
-            let upstream =
-                if serde_json::from_str::<crate::apps::Manifest>(&manifest)?.runtime == "wasi" {
-                    state.0.bind.to_string()
-                } else {
-                    format!("127.0.0.1:{port}")
-                };
-            text.push_str(&format!("{host} {{\n reverse_proxy {upstream}\n}}\n"));
+            text.push_str(&format!("{host} {{\n reverse_proxy {}\n}}\n", state.0.bind));
         }
     }
     Ok(text)

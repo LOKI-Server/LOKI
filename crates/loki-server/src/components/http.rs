@@ -235,12 +235,7 @@ pub async fn resolve(state: &State, headers: &HeaderMap) -> Result<Option<apps::
             .fetch_all(&state.0.db)
             .await?
     };
-    for app in candidates {
-        if serde_json::from_str::<apps::Manifest>(&app.manifest)?.runtime == "wasi" {
-            return Ok(Some(app));
-        }
-    }
-    Ok(None)
+    Ok(candidates.into_iter().next())
 }
 fn session_cookie(origin: &str) -> &'static str {
     if origin.starts_with("https:") {

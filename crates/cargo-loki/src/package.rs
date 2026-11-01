@@ -91,7 +91,7 @@ pub fn create(project: &Project, component: &Path, output: Option<&Path>) -> Res
     }
     object.insert("files".into(), serde_json::to_value(checksums)?);
     let manifest: Manifest = serde_json::from_value(metadata)?;
-    validate_manifest(&manifest, "unused-native-target")?;
+    validate_manifest(&manifest)?;
     let bytes = serde_json::to_vec_pretty(&manifest)?;
     ensure!(bytes.len() <= 131072, "Manifest exceeds 128 KiB");
     let output = absolute(

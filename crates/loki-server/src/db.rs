@@ -57,6 +57,9 @@ const MIGRATIONS: &[Migration] = &[
     ),
     // An early Save sync draft paired devices in its own table.
     Sql("DROP TABLE IF EXISTS sync_pairings"),
+    // Native apps signed people in with an OIDC client named after the app. WASI
+    // apps use `component-APP_ID`, and LOKI 0.3 runs nothing else.
+    Sql("DELETE FROM clients WHERE id IN (SELECT id FROM apps)"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;

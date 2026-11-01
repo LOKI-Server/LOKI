@@ -8,10 +8,10 @@ By [Aspenini](https://github.com/Aspenini) · [GitHub](https://github.com/Aspeni
 
 LOKI is a self-hosted Rust account server, application host, Caddy controller, and
 read-only file-sharing portal. Each installation owns its accounts. Your apps
-remain independent packages with their own repositories and data. Portable WASI
-components are the primary app format: LOKI supplies their HTTP server, identity,
-SQLite, uploads, and file streaming. Existing native process packages remain
-supported for compatibility.
+remain independent packages with their own repositories and data. Apps are
+portable WASI components: LOKI supplies their HTTP server, identity, SQLite,
+uploads, and file streaming. Native process packages are no longer supported as
+of LOKI 0.3.
 
 The SDK also provides app-scoped JSON values and generated files, stored under
 `app-data/APP_ID/storage` in the configured LOKI data directory. These participate
@@ -65,9 +65,8 @@ Caddy using loopback HTTP URLs.
   from LOKI ownership.
 - **Applications:** import a local `.loki-app`, configure it, enable/disable,
   restart, inspect logs, update, roll back, or uninstall while retaining data.
-  One instance per app is supported. WASI components have restricted host APIs
-  and bounded guest memory, CPU fuel, and request time. Native apps run as your
-  server user and are not sandboxed.
+  One instance per app is supported. Apps have restricted host APIs and bounded
+  guest memory, CPU fuel, and request time.
 - **Routes and services:** manage Caddy hostnames/upstreams and control existing
   Windows services, systemd units, or Homebrew services with the permissions of
   the user running LOKI. Jellyfin keeps its own authentication. The optional LOKI
@@ -158,9 +157,7 @@ next to `cargo-loki` or on PATH. Caddy and sign-in startup remain disabled in th
 profile. `--port 0` chooses an available port; `--no-watch` skips rebuilding.
 
 See the [SDK guide](crates/loki-sdk/README.md), [tool commands](crates/cargo-loki/README.md),
-[WASI host API](docs/wasi.md), and [app protocol](docs/app-protocol.md).
-The native [Branch example](crates/loki-server/examples/branch.rs) documents
-process compatibility.
+[WASI host API](docs/wasi.md), and [packages and identity](docs/app-protocol.md).
 
 ## Data and recovery
 

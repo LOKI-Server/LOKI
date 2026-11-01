@@ -504,14 +504,6 @@ pub fn run(options: Options) -> Result<()> {
         fs::copy(crate::root().join("README.md"), dest.join("README.md"))?;
         copy_tree(&crate::root().join("docs"), &dest.join("docs"))?;
         copy_tree(
-            &crate::root().join("crates/loki-server/examples"),
-            &dest.join("examples"),
-        )?;
-        copy_tree(
-            &crate::root().join("crates/loki-server/examples"),
-            &dest.join("crates/loki-server/examples"),
-        )?;
-        copy_tree(
             &crate::root().join("crates/loki-sdk/wit"),
             &dest.join("wit"),
         )?;

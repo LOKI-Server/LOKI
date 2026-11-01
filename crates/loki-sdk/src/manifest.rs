@@ -23,6 +23,8 @@ pub struct Manifest {
     #[serde(default)]
     pub fields: Vec<Field>,
     pub files: BTreeMap<String, String>,
+    /// Always `wasi`. Packages from before LOKI 0.3 may say `native`, which no
+    /// longer runs.
     #[serde(default = "native_runtime")]
     pub runtime: String,
     #[serde(default)]
@@ -165,23 +167,23 @@ pub fn valid_id(value: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && !value.starts_with('-')
 }
-pub fn validate_manifest(m: &Manifest, native_target: &str) -> Result<()> {
+/// Checks a manifest. LOKI runs only WASI components (`wasm32-wasip2`).
+pub fn validate_manifest(m: &Manifest) -> Result<()> {
     if m.protocol != 1
         || !valid_id(&m.id)
         || m.id.starts_with("loki-")
         || m.name.is_empty()
         || m.name.len() > 100
         || semver::Version::parse(&m.version).is_err()
-        || !matches!(m.runtime.as_str(), "native" | "wasi")
-        || (m.runtime == "native" && m.target != native_target)
-        || (m.runtime == "wasi" && (m.target != "wasm32-wasip2" || !m.entry.ends_with(".wasm")))
+        || m.runtime != "wasi"
+        || m.target != "wasm32-wasip2"
+        || !m.entry.ends_with(".wasm")
         || m.capabilities.iter().any(|s| {
             !matches!(
                 s.as_str(),
                 "database" | "uploads" | "forms" | "storage" | "realtime"
             )
         })
-        || (m.capabilities.iter().any(|c| c == "realtime") && m.runtime != "wasi")
         || !m.limits.valid()
         || !safe_relative(&m.entry)
         || !m.files.contains_key(&m.entry)
@@ -192,12 +194,10 @@ pub fn validate_manifest(m: &Manifest, native_target: &str) -> Result<()> {
         || m.roles.len() > 32
         || m.fields.len() > 32
         || m.realtime().is_some_and(|r| r.path == m.health)
-        || ((m.panel || !m.site) && m.runtime != "wasi")
     {
-        return Err(Error::bad(format!(
-            "Invalid or incompatible app manifest. This server accepts protocol 1 WASI components (wasm32-wasip2) and native packages for {}.",
-            native_target
-        )));
+        return Err(Error::bad(
+            "Invalid or incompatible app manifest. LOKI accepts protocol 1 WASI components (wasm32-wasip2).",
+        ));
     }
     let mut keys = HashSet::new();
     for field in &m.fields {

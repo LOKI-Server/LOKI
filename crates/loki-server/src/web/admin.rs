@@ -501,11 +501,6 @@ pub(super) async fn app_config(state: &State, id: &str, input: AppConfig) -> Res
     }
     apps::validate_config(&manifest, &config)?;
     let serialized = serde_json::to_string(&config)?;
-    let url = if host.is_empty() {
-        format!("http://127.0.0.1:{}", app.port)
-    } else {
-        format!("https://{host}")
-    };
     sqlx::query("UPDATE apps SET hostname=?,config=?,lan_bind=? WHERE id=?")
         .bind(&host)
         .bind(serialized)
@@ -513,15 +508,8 @@ pub(super) async fn app_config(state: &State, id: &str, input: AppConfig) -> Res
         .bind(id)
         .execute(&state.0.db)
         .await?;
-    sqlx::query("UPDATE clients SET redirect=? WHERE id=?")
-        .bind(format!("{url}/auth/callback"))
-        .bind(id)
-        .execute(&state.0.db)
-        .await?;
     let result = async {
-        if manifest.runtime == "wasi" {
-            crate::components::register_client(state, &apps::get(state, id).await?).await?;
-        }
+        crate::components::register_client(state, &apps::get(state, id).await?).await?;
         if app.enabled {
             apps::start_inner(state, id).await?;
         }
@@ -536,14 +524,9 @@ pub(super) async fn app_config(state: &State, id: &str, input: AppConfig) -> Res
             .bind(id)
             .execute(&state.0.db)
             .await?;
-        sqlx::query("UPDATE clients SET redirect=? WHERE id=?")
-            .bind(format!("{}/auth/callback", apps::public_url(&app)))
-            .bind(id)
-            .execute(&state.0.db)
-            .await?;
         if app.enabled {
             let _ = apps::start_inner(state, id).await;
-        } else if manifest.runtime == "wasi" {
+        } else {
             let _ = crate::components::register_client(state, &app).await;
         }
         let _ = caddy::apply(state).await;

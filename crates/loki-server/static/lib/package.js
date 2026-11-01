@@ -82,15 +82,13 @@ function problems(m, names, file, installed) {
   if (typeof m.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(m.id) || m.id.startsWith("loki-")) out.push("The app ID is missing or invalid.");
   if (typeof m.name !== "string" || !m.name || m.name.length > 100) out.push("The app name is missing or too long.");
   if (typeof m.version !== "string" || !SEMVER.test(m.version)) out.push("The version is not a valid semantic version.");
-  if (runtime !== "native" && runtime !== "wasi") out.push(`Unknown runtime “${esc(runtime)}”.`);
-  if (runtime === "native" && m.target !== store.state.target) out.push(`This native package is built for ${esc(m.target || "an unknown target")}; this server needs ${esc(store.state.target)}.`);
-  if (runtime === "wasi" && m.target !== "wasm32-wasip2") out.push("WASI packages must target wasm32-wasip2.");
+  if (runtime !== "wasi") out.push("This is a native package. LOKI 0.3 runs WASI components only; import a WASI build of the app.");
+  else if (m.target !== "wasm32-wasip2") out.push("WASI packages must target wasm32-wasip2.");
   if (runtime === "wasi" && !String(m.entry).endsWith(".wasm")) out.push("The WASI entry must be a .wasm component.");
   if (!files.includes(m.entry)) out.push("The entry file is not listed in the manifest.");
   if (files.some(f => !names.has(f))) out.push("The package is missing a declared file.");
   const unknown = (m.capabilities || []).filter(c => !CAPABILITIES.includes(c));
   if (unknown.length) out.push(`Unknown capabilities: ${unknown.map(esc).join(", ")}.`);
-  if (runtime !== "wasi" && ((m.capabilities || []).includes("realtime") || m.panel || m.site === false)) out.push("Realtime, panels, and panel-only apps need a WASI component.");
   if (installed && !out.length && compareVersions(m.version, installed.manifest.version) < 0) out.push(`Version ${esc(m.version)} is older than the installed ${esc(installed.manifest.version)}. Import the same or a newer version.`);
   return out;
 }
@@ -99,12 +97,10 @@ const row = (label, value) => `<div class="kv-row"><dt>${esc(label)}</dt><dd>${v
 const list = items => items.length ? `<div class="tags">${items.map(i => tag(i)).join("")}</div>` : '<span class="kv-none">None</span>';
 
 function summary(m, names, file, installed, issues) {
-  const wasi = (m.runtime ?? "native") === "wasi";
   const order = installed && SEMVER.test(m.version) ? compareVersions(m.version, installed.manifest.version) : 1, was = installed?.manifest.version;
   const change = !installed ? tag("New app") : order === 0 ? tag(`Reinstalls v${was}`, "warn") : order < 0 ? tag(`Older than v${was}`, "bad") : tag(`Updates v${was}`);
-  return `<div class="package-preview"><h3>${esc(m.name || m.id || "Unnamed app")}</h3><div class="tags">${tag(`v${m.version}`)}${tag(wasi ? "WASI component" : "Native service", wasi ? "" : "warn")}${change}</div>${m.description ? `<p>${esc(m.description)}</p>` : ""}`
+  return `<div class="package-preview"><h3>${esc(m.name || m.id || "Unnamed app")}</h3><div class="tags">${tag(`v${m.version}`)}${change}</div>${m.description ? `<p>${esc(m.description)}</p>` : ""}`
     + `<dl class="kv">${row("App ID", `<span class="kv-str">${esc(m.id)}</span>`)}${row("Target", `<span class="kv-str">${esc(m.target)}</span>`)}${row("Capabilities", list(m.capabilities || []))}${row("Roles", list(m.roles || []))}${row("Settings", m.fields?.length ? esc(m.fields.map(f => f.label || f.key).join(", ")) : '<span class="kv-none">None</span>')}${row("Panel", m.panel ? "Yes" : "No")}${row("Package", `${esc(fmt(file.size))}, ${names.size} files`)}</dl>`
-    + (!wasi && !issues.length ? '<p class="notice">This native service will run with your server user’s permissions. Only import it if you trust where it came from.</p>' : "")
     + (installed && !issues.length ? '<p class="help">LOKI stops the installed version and snapshots its data before updating.</p>' : "")
     + (issues.length ? `<div class="notice error">LOKI cannot import this package:<ul>${issues.map(i => `<li>${i}</li>`).join("")}</ul></div>` : "")
     + "</div>";

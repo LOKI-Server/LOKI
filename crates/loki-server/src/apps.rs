@@ -1,4 +1,4 @@
-use crate::{Error, Result, State, auth, caddy, platform};
+use crate::{Error, Result, State, auth, caddy};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -7,12 +7,8 @@ use std::{
     collections::HashSet,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::Stdio,
 };
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    process::Command,
-};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub use loki_sdk::manifest::{Field, Manifest, safe_relative, valid_id};
 #[derive(FromRow, Serialize)]
@@ -33,19 +29,22 @@ pub struct App {
     pub lan_bind: String,
 }
 pub struct Runtime {
-    pub process: Option<platform::Process>,
     pub ready: bool,
     pub failures: u32,
     pub next_attempt: i64,
-    pub started: i64,
     pub component: Option<std::sync::Arc<crate::components::Runtime>>,
 }
 pub fn target() -> String {
     format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
 }
 pub fn validate_manifest(m: &Manifest) -> Result<()> {
-    loki_sdk::manifest::validate_manifest(m, &target())
-        .map_err(|error| Error::bad(error.to_string()))
+    loki_sdk::manifest::validate_manifest(m).map_err(|error| Error::bad(error.to_string()))
+}
+/// Why an app installed by an earlier LOKI cannot start, if it can't.
+pub fn unsupported(m: &Manifest) -> Option<&'static str> {
+    (m.runtime != "wasi").then_some(
+        "LOKI 0.3 runs WASI components only, so this native app can no longer start. Its data is kept; import a WASI build of the app to update it.",
+    )
 }
 pub fn extract(package: &Path, dest: &Path) -> Result<Manifest> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(package)?)?;
@@ -132,22 +131,12 @@ pub fn extract(package: &Path, dest: &Path) -> Result<Manifest> {
         dest.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest)?,
     )?;
-    if manifest.runtime == "wasi" {
-        let mut bytes = [0; 8];
-        std::fs::File::open(dest.join(&manifest.entry))?.read_exact(&mut bytes)?;
-        if bytes != [0, 97, 115, 109, 13, 0, 1, 0] {
-            return Err(Error::bad(
-                "The WASI entry must be a WebAssembly component, not a core module or native executable.",
-            ));
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            dest.join(&manifest.entry),
-            std::fs::Permissions::from_mode(0o700),
-        )?;
+    let mut bytes = [0; 8];
+    std::fs::File::open(dest.join(&manifest.entry))?.read_exact(&mut bytes)?;
+    if bytes != [0, 97, 115, 109, 13, 0, 1, 0] {
+        return Err(Error::bad(
+            "The WASI entry must be a WebAssembly component, not a core module or native executable.",
+        ));
     }
     Ok(manifest)
 }
@@ -159,13 +148,14 @@ pub async fn get(state: &State, id: &str) -> Result<App> {
         .ok_or_else(Error::not_found)
 }
 pub fn public_url(app: &App) -> String {
-    if app.hostname.is_empty() {
-        if serde_json::from_str::<Manifest>(&app.manifest).is_ok_and(|m| m.runtime == "wasi") {
-            return format!("http://{}.localhost:{}", app.id, app.port);
-        }
-        format!("http://127.0.0.1:{}", app.port)
+    origin(&app.id, app.port, &app.hostname)
+}
+/// Without a hostname, an app shares LOKI's listener on its own `.localhost` origin.
+pub fn origin(id: &str, port: i64, hostname: &str) -> String {
+    if hostname.is_empty() {
+        format!("http://{id}.localhost:{port}")
     } else {
-        format!("https://{}", app.hostname)
+        format!("https://{hostname}")
     }
 }
 pub async fn import(state: &State, package: PathBuf, actor: &str) -> Result<Manifest> {
@@ -216,13 +206,7 @@ pub async fn import(state: &State, package: PathBuf, actor: &str) -> Result<Mani
     tokio::fs::rename(&staged, &install).await?;
     tokio::fs::create_dir_all(state.0.data.join("app-data").join(&m.id)).await?;
     if existing.is_none() {
-        let port = if m.runtime == "wasi" {
-            state.0.bind.port()
-        } else {
-            std::net::TcpListener::bind("127.0.0.1:0")?
-                .local_addr()?
-                .port()
-        };
+        let port = state.0.bind.port();
         let secret = auth::random();
         let mut tx = state.0.db.begin().await?;
         sqlx::query("INSERT INTO resources(id,kind,name) VALUES(?,'app',?)")
@@ -241,13 +225,6 @@ pub async fn import(state: &State, package: PathBuf, actor: &str) -> Result<Mani
             .bind(i64::from(port))
             .bind(&secret)
             .bind(serde_json::to_string(&config)?)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("INSERT INTO clients(id,secret,resource,redirect) VALUES(?,?,?,?)")
-            .bind(&m.id)
-            .bind(auth::digest(&secret))
-            .bind(&m.id)
-            .bind(format!("http://127.0.0.1:{port}/auth/callback"))
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -352,111 +329,23 @@ pub async fn start_inner(state: &State, id: &str) -> Result<()> {
     let app = get(state, id).await?;
     let m: Manifest = serde_json::from_str(&app.manifest)?;
     validate_config(&m, &serde_json::from_str(&app.config)?)?;
-    if m.runtime == "wasi" {
-        sqlx::query("UPDATE apps SET port=? WHERE id=?")
-            .bind(i64::from(state.0.bind.port()))
-            .bind(id)
-            .execute(&state.0.db)
-            .await?;
-        let app = get(state, id).await?;
-        let component = crate::components::start(state, &app, &m).await?;
-        state.0.runtimes.lock().await.insert(
-            id.into(),
-            Runtime {
-                process: None,
-                component: Some(component),
-                ready: true,
-                failures: 0,
-                next_attempt: 0,
-                started: auth::now(),
-            },
-        );
-        sqlx::query("UPDATE apps SET error='' WHERE id=?")
-            .bind(id)
-            .execute(&state.0.db)
-            .await?;
-        return Ok(());
+    if let Some(reason) = unsupported(&m) {
+        return Err(Error::bad(reason));
     }
-    let app = if app.port == i64::from(state.0.bind.port()) {
-        // A failed native-to-WASI update may roll back to a native listener.
-        let port = std::net::TcpListener::bind("127.0.0.1:0")?
-            .local_addr()?
-            .port();
-        sqlx::query("UPDATE apps SET port=? WHERE id=?")
-            .bind(i64::from(port))
-            .bind(id)
-            .execute(&state.0.db)
-            .await?;
-        let app = get(state, id).await?;
-        sqlx::query("UPDATE clients SET redirect=? WHERE id=?")
-            .bind(format!("{}/auth/callback", public_url(&app)))
-            .bind(id)
-            .execute(&state.0.db)
-            .await?;
-        app
-    } else {
-        app
-    };
-    let mut command = Command::new(state.0.data.join("apps").join(id).join(&m.entry));
-    command
-        .current_dir(state.0.data.join("app-data").join(id))
-        .env("LOKI_BIND", format!("127.0.0.1:{}", app.port))
-        .env("LOKI_DATA_DIR", state.0.data.join("app-data").join(id))
-        .env("LOKI_PUBLIC_URL", public_url(&app))
-        .env("LOKI_ISSUER", &state.0.settings.read().await.public_url)
-        .env("LOKI_CLIENT_ID", id)
-        .env("LOKI_CLIENT_SECRET", &app.secret)
-        .env("LOKI_CONFIG", &app.config)
-        .env("LOKI_PROTOCOL", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut process = platform::Process::spawn(&mut command)?;
-    if let Some(stdout) = process.child.stdout.take() {
-        tokio::spawn(capture(
-            stdout,
-            state.0.data.join("logs").join(format!("{id}.stdout.log")),
-        ));
-    }
-    if let Some(stderr) = process.child.stderr.take() {
-        tokio::spawn(capture(
-            stderr,
-            state.0.data.join("logs").join(format!("{id}.stderr.log")),
-        ));
-    }
-    let client = platform::http();
-    let endpoint = format!("http://127.0.0.1:{}{}", app.port, m.health);
-    let mut ready = false;
-    for _ in 0..30 {
-        if process.child.try_wait()?.is_some() {
-            break;
-        }
-        if client
-            .get(&endpoint)
-            .timeout(std::time::Duration::from_secs(1))
-            .send()
-            .await
-            .is_ok_and(|r| r.status().is_success())
-        {
-            ready = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    if !ready {
-        process.stop().await?;
-        return Err(Error::bad(
-            "App did not become ready. Check its logs and listening port.",
-        ));
-    }
+    sqlx::query("UPDATE apps SET port=? WHERE id=?")
+        .bind(i64::from(state.0.bind.port()))
+        .bind(id)
+        .execute(&state.0.db)
+        .await?;
+    let app = get(state, id).await?;
+    let component = crate::components::start(state, &app, &m).await?;
     state.0.runtimes.lock().await.insert(
         id.into(),
         Runtime {
-            process: Some(process),
+            component: Some(component),
             ready: true,
             failures: 0,
             next_attempt: 0,
-            started: auth::now(),
-            component: None,
         },
     );
     sqlx::query("UPDATE apps SET error='' WHERE id=?")
@@ -469,9 +358,6 @@ pub async fn stop_inner(state: &State, id: &str) -> Result<()> {
     let runtime = state.0.runtimes.lock().await.remove(id);
     if let Some(component) = runtime.as_ref().and_then(|r| r.component.as_ref()) {
         component.stop().await;
-    }
-    if let Some(mut process) = runtime.and_then(|r| r.process) {
-        process.stop().await?;
     }
     Ok(())
 }
@@ -659,44 +545,19 @@ pub async fn monitor(state: State) {
             .await
             .unwrap_or_default();
         for id in ids {
-            let (mut restart, mut failures, mut crashed) = (true, 0, false);
+            // Enabled apps without a running component start here, with backoff.
+            let (mut restart, mut failures) = (true, 0);
             {
-                let mut runtimes = state.0.runtimes.lock().await;
-                if let Some(r) = runtimes.get_mut(&id) {
+                let runtimes = state.0.runtimes.lock().await;
+                if let Some(r) = runtimes.get(&id) {
                     if r.component.is_some() {
                         continue;
-                    }
-                    if let Some(p) = r.process.as_mut() {
-                        match p.child.try_wait() {
-                            Ok(None) => {
-                                restart = false;
-                                if auth::now() - r.started > 60 {
-                                    r.failures = 0;
-                                }
-                            }
-                            _ => {
-                                r.process = None;
-                                r.ready = false;
-                                r.failures += 1;
-                                r.next_attempt = auth::now() + 2i64.pow(r.failures.min(8));
-                                crashed = true;
-                            }
-                        }
                     }
                     failures = r.failures;
                     if r.next_attempt > auth::now() {
                         restart = false;
                     }
                 }
-            }
-            if crashed {
-                let _ = caddy::apply(&state).await;
-                let _ = sqlx::query(
-                    "UPDATE apps SET error='App exited; restarting with backoff.' WHERE id=?",
-                )
-                .bind(&id)
-                .execute(&state.0.db)
-                .await;
             }
             if restart {
                 match start_inner(&state, &id).await {
@@ -711,11 +572,9 @@ pub async fn monitor(state: State) {
                         state.0.runtimes.lock().await.insert(
                             id.clone(),
                             Runtime {
-                                process: None,
                                 ready: false,
                                 failures,
                                 next_attempt: auth::now() + 2i64.pow(failures.min(8)),
-                                started: 0,
                                 component: None,
                             },
                         );
@@ -740,6 +599,31 @@ mod tests {
             assert!(!safe_relative(s), "{s}");
         }
         assert!(safe_relative("bin/app.exe"));
+    }
+    #[tokio::test]
+    async fn native_apps_from_earlier_versions_say_why_they_cannot_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = State::open(tmp.path().into(), "127.0.0.1:7070".parse().unwrap())
+            .await
+            .unwrap();
+        let manifest = serde_json::json!({"protocol":1,"id":"branch","name":"Branch","version":"1.0.0","target":"x86_64-windows","entry":"branch.exe","health":"/health","files":{"branch.exe":"00"}});
+        sqlx::query("INSERT INTO resources(id,kind,name) VALUES('branch','app','Branch')")
+            .execute(&state.0.db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO apps(id,manifest,port,secret) VALUES('branch',?,40000,'')")
+            .bind(manifest.to_string())
+            .execute(&state.0.db)
+            .await
+            .unwrap();
+        let error = action(&state, "branch", "enable").await.unwrap_err();
+        assert!(
+            error.message.contains("WASI components only"),
+            "{}",
+            error.message
+        );
+        assert!(!get(&state, "branch").await.unwrap().enabled);
+        state.0.db.close().await;
     }
     #[test]
     fn snapshot_copies_regular_files() {
