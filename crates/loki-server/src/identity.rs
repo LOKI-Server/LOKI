@@ -183,6 +183,7 @@ pub struct DeviceInput {
 /// since apps on phones, consoles and desktops cannot keep one.
 pub async fn device(
     ExtractState(state): ExtractState<State>,
+    axum::Extension(ip): axum::Extension<crate::auth::ClientIp>,
     Form(input): Form<DeviceInput>,
 ) -> Result<Json<Value>> {
     let client = public_client(&state, &input.client_id).await?;
@@ -212,7 +213,9 @@ pub async fn device(
         name: if name.is_empty() { "A device" } else { &name },
         platform: &platform,
     };
-    Ok(Json(crate::device_codes::create(&state, request).await?))
+    Ok(Json(
+        crate::device_codes::create(&state, &ip, request).await?,
+    ))
 }
 async fn public_client(state: &State, id: &str) -> Result<Client> {
     sqlx::query_as("SELECT * FROM clients WHERE id=?")

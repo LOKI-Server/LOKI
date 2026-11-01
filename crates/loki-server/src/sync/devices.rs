@@ -31,6 +31,7 @@ fn device_info(input: &DeviceInfo) -> Result<(String, String)> {
 }
 pub async fn pair(
     ExtractState(state): ExtractState<State>,
+    axum::Extension(ip): axum::Extension<auth::ClientIp>,
     Json(input): Json<DeviceInfo>,
 ) -> Result<Json<Value>> {
     let (name, platform) = device_info(&input)?;
@@ -41,7 +42,7 @@ pub async fn pair(
         name: &name,
         platform: &platform,
     };
-    Ok(Json(device_codes::create(&state, request).await?))
+    Ok(Json(device_codes::create(&state, &ip, request).await?))
 }
 
 #[derive(Deserialize)]
@@ -102,16 +103,11 @@ pub struct Login {
 }
 pub async fn login(
     ExtractState(state): ExtractState<State>,
+    axum::Extension(ip): axum::Extension<auth::ClientIp>,
     Json(input): Json<Login>,
 ) -> Result<Json<Value>> {
-    // Shares the browser's per-account limit, so devices add no extra guesses.
-    auth::rate(
-        &state,
-        format!("login:{}", input.username.to_lowercase()),
-        8,
-        900,
-    )
-    .await?;
+    // Shares the browser's limits, so devices add no extra guesses.
+    auth::login_rate(&state, &input.username, &ip).await?;
     let (name, platform) = device_info(&input.device)?;
     let user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE username=? COLLATE NOCASE OR (email!='' AND email=? COLLATE NOCASE)")
         .bind(input.username.trim())

@@ -42,7 +42,7 @@ paths:
       tags: [auth]
       operationId: startPairing
       summary: Start device pairing
-      description: Rate-limited server-wide (429 without a code).
+      description: Rate-limited per network address and server-wide (429 without a code).
       security: []
       requestBody:
         required: true

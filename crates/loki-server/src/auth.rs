@@ -221,6 +221,42 @@ pub async fn rate(state: &State, key: String, max: u32, seconds: i64) -> Result<
     }
     Ok(())
 }
+/// Where a request came from, for rate limits. The request guard adds it.
+#[derive(Clone, Debug)]
+pub struct ClientIp(pub String);
+/// Behind LOKI's Caddy every connection is loopback, so the client is the last
+/// address Caddy appended to `X-Forwarded-For`; other peers can't choose it.
+/// IPv6 clients are grouped by /64, since one host usually holds the whole prefix.
+pub fn client_ip(
+    peer: Option<std::net::SocketAddr>,
+    headers: &HeaderMap,
+    behind_caddy: bool,
+) -> String {
+    use std::net::IpAddr;
+    let Some(peer) = peer else {
+        return "local".into();
+    };
+    let forwarded = (behind_caddy && peer.ip().is_loopback())
+        .then(|| headers.get_all("x-forwarded-for").iter().next_back())
+        .flatten()
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit(',').next())
+        .and_then(|v| v.trim().parse::<IpAddr>().ok());
+    match forwarded.unwrap_or(peer.ip()).to_canonical() {
+        IpAddr::V6(ip) => {
+            let s = ip.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+        ip => ip.to_string(),
+    }
+}
+/// Counts a password guess against this client and against the account. The
+/// account ceiling is high enough that one client can't lock its owner out.
+pub async fn login_rate(state: &State, username: &str, ip: &ClientIp) -> Result<()> {
+    let username = username.trim().to_lowercase();
+    rate(state, format!("login:{username}:{}", ip.0), 8, 900).await?;
+    rate(state, format!("login:{username}"), 100, 900).await
+}
 pub const BIO_CHARS: usize = 300;
 const BIO_LINES: usize = 8;
 /// Normalizes line endings and trims a bio, rejecting ones that are too long.
@@ -425,17 +461,12 @@ pub struct Credentials {
 }
 pub async fn login(
     axum::extract::State(state): axum::extract::State<State>,
+    axum::Extension(ip): axum::Extension<ClientIp>,
     headers: HeaderMap,
     Json(input): Json<Credentials>,
 ) -> Result<axum::response::Response> {
     use axum::response::IntoResponse;
-    rate(
-        &state,
-        format!("login:{}", input.username.to_lowercase()),
-        8,
-        900,
-    )
-    .await?;
+    login_rate(&state, &input.username, &ip).await?;
     let user:Option<User>=sqlx::query_as("SELECT * FROM users WHERE username=? COLLATE NOCASE OR (email!='' AND email=? COLLATE NOCASE)").bind(input.username.trim()).bind(input.username.trim()).fetch_optional(&state.0.db).await?;
     let stored=user.as_ref().map(|u|u.password.clone()).unwrap_or_else(||"$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
     let valid = verify(&state, input.password, stored).await?;
@@ -499,9 +530,11 @@ pub struct Registration {
 }
 pub async fn register(
     axum::extract::State(state): axum::extract::State<State>,
+    axum::Extension(ip): axum::Extension<ClientIp>,
     Json(input): Json<Registration>,
 ) -> Result<Json<serde_json::Value>> {
-    rate(&state, "registrations".into(), 30, 3600).await?;
+    rate(&state, format!("registrations:{}", ip.0), 10, 3600).await?;
+    rate(&state, "registrations".into(), 60, 3600).await?;
     let mode = state.0.settings.read().await.registration.clone();
     if state.0.setup_token.lock().await.is_some() || mode == "closed" {
         return Err(Error::forbidden());
@@ -642,6 +675,50 @@ pub async fn second_factor(state: &State, user: &User, code: &str) -> Result<boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn forwarded_clients_are_trusted_only_from_caddy() {
+        let forwarded = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", value.parse().unwrap());
+            headers
+        };
+        let loopback = Some("127.0.0.1:50000".parse().unwrap());
+        let remote = Some("203.0.113.9:50000".parse().unwrap());
+        let spoofed = forwarded("198.51.100.1, 192.0.2.7");
+        assert_eq!(client_ip(loopback, &spoofed, true), "192.0.2.7");
+        assert_eq!(client_ip(loopback, &spoofed, false), "127.0.0.1");
+        assert_eq!(client_ip(remote, &spoofed, true), "203.0.113.9");
+        assert_eq!(client_ip(loopback, &forwarded("junk"), true), "127.0.0.1");
+        assert_eq!(client_ip(None, &spoofed, true), "local");
+        assert_eq!(
+            client_ip(loopback, &forwarded("2001:db8:1:2:3:4:5:6"), true),
+            "2001:db8:1:2::/64"
+        );
+        assert_eq!(
+            client_ip(
+                Some("[::ffff:192.0.2.7]:1".parse().unwrap()),
+                &spoofed,
+                false
+            ),
+            "192.0.2.7"
+        );
+    }
+    #[tokio::test]
+    async fn one_client_cannot_lock_an_account_out_for_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = State::open(tmp.path().into(), "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let attacker = ClientIp("192.0.2.7".into());
+        for _ in 0..8 {
+            login_rate(&state, "Owner", &attacker).await.unwrap();
+        }
+        assert!(login_rate(&state, " owner ", &attacker).await.is_err());
+        login_rate(&state, "owner", &ClientIp("198.51.100.1".into()))
+            .await
+            .unwrap();
+        state.0.db.close().await;
+    }
     #[test]
     fn rfc_totp_vector() {
         assert_eq!(

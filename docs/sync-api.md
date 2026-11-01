@@ -126,8 +126,8 @@ Pairing works like TV sign-in: the device never sees the password.
    ```
 
 `device_code` is a secret; never display it. A pairing can be consumed once.
-Starting pairings is rate-limited server-wide; a `429` without a `code` means
-try again later.
+Starting pairings is rate-limited per network address and server-wide; a `429`
+without a `code` means try again later.
 
 ### Password login (headless clients)
 
@@ -145,7 +145,7 @@ response is the same `{token, device, user}` as a successful poll.
 | --- | --- |
 | `401`, `code: invalid_credentials` | Wrong username, password, or code. The same answer for each, on purpose. |
 | `403`, `code: forbidden` | The account is not approved or has no sync access. |
-| `429` without a code | Too many attempts for this account; shared with the browser sign-in. |
+| `429` without a code | Too many attempts for this account from this network address, or for the account overall; shared with the browser sign-in. |
 
 Prefer pairing whenever a screen is available, since it keeps the password and
 second factor off the device.

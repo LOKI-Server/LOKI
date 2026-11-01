@@ -42,8 +42,9 @@ pub struct Request<'a> {
     pub platform: &'a str,
 }
 /// Starts a sign-in and returns the RFC 8628 device authorization response.
-pub async fn create(state: &State, request: Request<'_>) -> Result<Value> {
-    auth::rate(state, "device-codes".into(), 120, 900).await?;
+pub async fn create(state: &State, ip: &auth::ClientIp, request: Request<'_>) -> Result<Value> {
+    auth::rate(state, format!("device-codes:{}", ip.0), 30, 900).await?;
+    auth::rate(state, "device-codes".into(), 600, 900).await?;
     sqlx::query("DELETE FROM device_codes WHERE expires<?")
         .bind(auth::now())
         .execute(&state.0.db)

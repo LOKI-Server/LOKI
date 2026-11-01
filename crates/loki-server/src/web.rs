@@ -123,7 +123,11 @@ async fn boot(state: &State, headers: &HeaderMap) -> Option<String> {
             .replace('&', "\\u0026"),
     )
 }
-async fn guard(ExtractState(state): ExtractState<State>, request: Request, next: Next) -> Response {
+async fn guard(
+    ExtractState(state): ExtractState<State>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let path = request.uri().path().to_string();
     let Ok(_permit) = state.0.requests.acquire().await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -166,11 +170,17 @@ async fn guard(ExtractState(state): ExtractState<State>, request: Request, next:
         .into_response();
     }
     let request_headers = request.headers().clone();
-    let peer = request
-        .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|p| p.0.ip().to_string())
-        .unwrap_or_else(|| "local".into());
+    let peer = auth::client_ip(
+        request
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|p| p.0),
+        &request_headers,
+        state.0.settings.read().await.caddy_enabled,
+    );
+    request
+        .extensions_mut()
+        .insert(auth::ClientIp(peer.clone()));
     if request.method() != axum::http::Method::GET
         && request.method() != axum::http::Method::HEAD
         && path.starts_with("/api/")
@@ -873,9 +883,10 @@ struct Reset {
 }
 async fn reset(
     ExtractState(state): ExtractState<State>,
+    axum::Extension(ip): axum::Extension<auth::ClientIp>,
     Json(input): Json<Reset>,
 ) -> Result<Json<Value>> {
-    auth::rate(&state, "resets".into(), 30, 900).await?;
+    auth::rate(&state, format!("resets:{}", ip.0), 30, 900).await?;
     let password = auth::hash(&state, input.password).await?;
     let mut tx = state.0.db.begin().await?;
     let uid: String =
