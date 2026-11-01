@@ -17,6 +17,8 @@ pub use storage::*;
 mod guest;
 #[cfg(feature = "manifest")]
 pub mod manifest;
+#[cfg(feature = "realtime")]
+pub mod realtime;
 #[cfg(feature = "guest")]
 pub use guest::*;
 

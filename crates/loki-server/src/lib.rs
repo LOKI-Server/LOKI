@@ -8,6 +8,7 @@ pub mod db;
 pub mod files;
 pub mod identity;
 pub mod platform;
+pub mod realtime;
 pub mod startup;
 pub mod storage;
 pub mod sync;
@@ -139,6 +140,8 @@ pub struct Inner {
     /// Bumped after every sync commit and before maintenance, waking long polls.
     pub sync_wake: tokio::sync::watch::Sender<u64>,
     pub sync_waiters: Semaphore,
+    /// Open realtime WebSocket connections across every app.
+    pub sockets: Arc<Semaphore>,
     /// Shared by blob uploads and commits; exclusive for garbage collection.
     pub sync_blobs: RwLock<()>,
 }
@@ -226,6 +229,7 @@ impl State {
             startup,
             sync_wake: tokio::sync::watch::Sender::new(0),
             sync_waiters: Semaphore::new(256),
+            sockets: Arc::new(Semaphore::new(512)),
             sync_blobs: RwLock::new(()),
         }));
         Ok(http)

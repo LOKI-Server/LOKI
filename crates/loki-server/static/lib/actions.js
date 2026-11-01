@@ -92,7 +92,7 @@ export async function onSubmit(event) {
     else if (kind === "app-config") {
       const r = resource(id), config = {};
       for (const f of r.manifest.fields) config[f.key] = f.kind === "number" ? Number(data[f.key]) : data[f.key];
-      await act("app-config", id, { hostname: data.hostname, config });
+      await act("app-config", id, { hostname: data.hostname, lan_bind: data.lan_bind ?? "", config });
       close();
       toast("App settings saved.");
     }

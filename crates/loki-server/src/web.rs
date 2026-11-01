@@ -269,6 +269,7 @@ async fn dashboard(
                         }
                     }
                     resource["config"] = config;
+                    resource["lan_bind"] = json!(app.lan_bind);
                     resource["error"] = json!(app.error);
                     resource["previous"] = json!(app.previous.is_some());
                 }
@@ -1020,6 +1021,27 @@ async fn route_action(state: &State, id: &str, action: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Checks a realtime app's LAN listener address, such as `0.0.0.0:4767`. Empty turns it off.
+async fn lan_bind(state: &State, id: &str, value: &str) -> Result<String> {
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    let address: std::net::SocketAddr = value
+        .parse()
+        .map_err(|_| Error::bad("Enter the LAN address as IP:port, for example 0.0.0.0:4767."))?;
+    if address.port() == 0 || address.port() == state.0.bind.port() {
+        return Err(Error::bad("Choose a port other than LOKI's own."));
+    }
+    let taken: i64 = sqlx::query_scalar("SELECT count(*) FROM apps WHERE lan_bind=? AND id!=?")
+        .bind(address.to_string())
+        .bind(id)
+        .fetch_one(&state.0.db)
+        .await?;
+    if taken > 0 {
+        return Err(Error::bad("Another app already uses this LAN address."));
+    }
+    Ok(address.to_string())
+}
 async fn app_config(state: &State, id: &str, data: &Value) -> Result<()> {
     let _guard = state.0.operations.lock().await;
     let app = apps::get(state, id).await?;
@@ -1028,6 +1050,11 @@ async fn app_config(state: &State, id: &str, data: &Value) -> Result<()> {
     if !host.is_empty() {
         unique_host(state, id, &host).await?;
     }
+    let lan_bind = if manifest.realtime().is_some() {
+        lan_bind(state, id, data["lan_bind"].as_str().unwrap_or("").trim()).await?
+    } else {
+        String::new()
+    };
     let mut config = data["config"].clone();
     let old_config: Value = serde_json::from_str(&app.config)?;
     for f in &manifest.fields {
@@ -1042,9 +1069,10 @@ async fn app_config(state: &State, id: &str, data: &Value) -> Result<()> {
     } else {
         format!("https://{host}")
     };
-    sqlx::query("UPDATE apps SET hostname=?,config=? WHERE id=?")
+    sqlx::query("UPDATE apps SET hostname=?,config=?,lan_bind=? WHERE id=?")
         .bind(&host)
         .bind(serialized)
+        .bind(&lan_bind)
         .bind(id)
         .execute(&state.0.db)
         .await?;
@@ -1064,9 +1092,10 @@ async fn app_config(state: &State, id: &str, data: &Value) -> Result<()> {
     }
     .await;
     if let Err(e) = result {
-        sqlx::query("UPDATE apps SET hostname=?,config=? WHERE id=?")
+        sqlx::query("UPDATE apps SET hostname=?,config=?,lan_bind=? WHERE id=?")
             .bind(&app.hostname)
             .bind(&app.config)
+            .bind(&app.lan_bind)
             .bind(id)
             .execute(&state.0.db)
             .await?;

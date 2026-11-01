@@ -1,0 +1,21 @@
+[package]
+name = "realtime-echo"
+version = "0.1.0"
+edition = "2024"
+authors = ["Aspenini"]
+repository = "https://github.com/Aspenini/LOKI"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+loki-sdk = { path = "../../../../loki-sdk", features = ["realtime"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"

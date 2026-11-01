@@ -1,5 +1,5 @@
 //! Portable WASIp2 HTTP components. No ambient filesystem, sockets, or secrets.
-use crate::{Error, Result, State, app_storage, apps, auth, files};
+use crate::{Error, Result, State, app_storage, apps, auth, files, realtime};
 use axum::{
     body::Body,
     http::{HeaderMap, Request, StatusCode, header},
@@ -21,7 +21,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::Semaphore,
 };
-use wasmtime::component::{Component, Linker, ResourceTable};
+use wasmtime::component::{Component, ComponentType, Lift, Linker, Lower, ResourceTable};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_wasi_http::{
@@ -48,10 +48,15 @@ pub struct Runtime {
     package: PathBuf,
     config: Value,
     origin: String,
+    pub(crate) realtime: std::sync::OnceLock<Arc<realtime::Handle>>,
 }
 impl Runtime {
     pub async fn stop(&self) {
         self.active.store(false, Ordering::SeqCst);
+        // Long-lived connections end first, so nothing holds the app open.
+        if let Some(realtime) = self.realtime.get() {
+            realtime.stop().await;
+        }
         let _drain = self
             .slots
             .acquire_many(self.manifest.limits.concurrent_requests as u32)
@@ -64,7 +69,7 @@ impl Runtime {
         }
     }
 }
-struct Host {
+pub(crate) struct Host {
     wasi: WasiCtx,
     http: WasiHttpCtx,
     hooks: DenyNetwork,
@@ -75,12 +80,20 @@ struct Host {
     form: Value,
     pending: Vec<PathBuf>,
     file: Option<(String, FileSource, String)>,
+    /// Set only in an app's realtime instance.
+    connections: Option<Arc<realtime::Connections>>,
 }
-#[derive(Clone, Copy)]
-enum FileSource {
-    Asset,
+/// Where an app's file lives. Matches `file-source` in the WIT, in the same order.
+#[derive(Clone, Copy, ComponentType, Lift, Lower)]
+#[component(enum)]
+#[repr(u8)]
+pub(crate) enum FileSource {
+    #[component(name = "upload")]
     Upload,
+    #[component(name = "storage")]
     Storage,
+    #[component(name = "asset")]
+    Asset,
 }
 impl Drop for Host {
     fn drop(&mut self) {
@@ -263,6 +276,8 @@ pub async fn start(
                 })
             },
         )?;
+    link_files(&mut linker)?;
+    realtime::link(&mut linker)?;
     let pre = ProxyPre::new(linker.instantiate_pre(&component)?)?;
     let data = state.0.data.join("app-data").join(&app.id);
     let pool = if manifest.capabilities.iter().any(|c| c == "database") {
@@ -288,6 +303,7 @@ pub async fn start(
         package: state.0.data.join("apps").join(&app.id),
         config: serde_json::from_str(&app.config)?,
         origin: apps::public_url(app),
+        realtime: std::sync::OnceLock::new(),
     });
     register_client(state, app).await?;
     let request = Request::builder()
@@ -310,6 +326,17 @@ pub async fn start(
         runtime.stop().await;
         return Err(Error::bad("Component readiness check failed."));
     }
+    if manifest.realtime().is_some() {
+        match realtime::start(state, runtime.clone(), app).await {
+            Ok(handle) => {
+                let _ = runtime.realtime.set(handle);
+            }
+            Err(error) => {
+                runtime.stop().await;
+                return Err(error);
+            }
+        }
+    }
     Ok(runtime)
 }
 pub async fn register_client(state: &State, app: &apps::App) -> Result<()> {
@@ -321,7 +348,7 @@ async fn execute(
     _state: &State,
     runtime: Arc<Runtime>,
     mut request: Request<Body>,
-    mut info: Value,
+    info: Value,
     form: Value,
     pending: Vec<PathBuf>,
 ) -> Result<Response> {
@@ -332,43 +359,9 @@ async fn execute(
             "This application is stopped.".into(),
         ));
     }
-    info["config"] = runtime.config.clone();
-    info["origin"] = json!(runtime.origin);
-    info["app_id"] = json!(runtime.manifest.id);
     let limits = runtime.manifest.limits.clone();
-    let mut wasi = WasiCtx::builder();
-    // No inherited environment, stdio, preopened directories, or network access.
-    wasi.allow_tcp(false)
-        .allow_udp(false)
-        .allow_ip_name_lookup(false);
-    let mut table = ResourceTable::new();
-    table.set_max_capacity(256);
-    let mut http = WasiHttpCtx::new();
-    http.set_field_size_limit(64 * 1024);
-    let mut store = Store::new(
-        runtime.pre.engine(),
-        Host {
-            wasi: wasi.build(),
-            http,
-            hooks: DenyNetwork,
-            table,
-            limits: StoreLimitsBuilder::new()
-                .memory_size(limits.memory_mib * 1024 * 1024)
-                .table_elements(100_000)
-                .instances(64)
-                .memories(8)
-                .tables(8)
-                .build(),
-            runtime: runtime.clone(),
-            info,
-            form,
-            pending,
-            file: None,
-        },
-    );
-    store.limiter(|host| &mut host.limits);
+    let mut store = new_store(&runtime, info, form, pending, None)?;
     store.set_fuel(limits.fuel)?;
-    store.fuel_async_yield_interval(Some(10_000))?;
     // Authentication credentials stay in the host; identity comes from context.
     request.headers_mut().remove(header::COOKIE);
     request.headers_mut().remove(header::AUTHORIZATION);
@@ -439,6 +432,106 @@ async fn execute(
         .insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
     response.headers_mut().remove(header::SET_COOKIE);
     Ok(response)
+}
+/// A store for one component instance, with the app's memory limits and no ambient access.
+pub(crate) fn new_store(
+    runtime: &Arc<Runtime>,
+    mut info: Value,
+    form: Value,
+    pending: Vec<PathBuf>,
+    connections: Option<Arc<realtime::Connections>>,
+) -> Result<Store<Host>> {
+    info["config"] = runtime.config.clone();
+    info["origin"] = json!(runtime.origin);
+    info["app_id"] = json!(runtime.manifest.id);
+    let limits = &runtime.manifest.limits;
+    let mut wasi = WasiCtx::builder();
+    // No inherited environment, stdio, preopened directories, or network access.
+    wasi.allow_tcp(false)
+        .allow_udp(false)
+        .allow_ip_name_lookup(false);
+    let mut table = ResourceTable::new();
+    table.set_max_capacity(256);
+    let mut http = WasiHttpCtx::new();
+    http.set_field_size_limit(64 * 1024);
+    let mut store = Store::new(
+        runtime.pre.engine(),
+        Host {
+            wasi: wasi.build(),
+            http,
+            hooks: DenyNetwork,
+            table,
+            limits: StoreLimitsBuilder::new()
+                .memory_size(limits.memory_mib * 1024 * 1024)
+                .table_elements(100_000)
+                .instances(64)
+                .memories(8)
+                .tables(8)
+                .build(),
+            runtime: runtime.clone(),
+            info,
+            form,
+            pending,
+            file: None,
+            connections,
+        },
+    );
+    store.limiter(|host| &mut host.limits);
+    store.fuel_async_yield_interval(Some(10_000))?;
+    Ok(store)
+}
+impl Runtime {
+    pub(crate) fn pre(&self) -> &ProxyPre<Host> {
+        &self.pre
+    }
+    pub(crate) fn manifest(&self) -> &apps::Manifest {
+        &self.manifest
+    }
+    pub(crate) fn log(&self, message: &str) {
+        component_log(self, message);
+    }
+}
+fn link_files(linker: &mut Linker<Host>) -> Result<()> {
+    let mut files = linker.instance("loki:app/files@0.1.0")?;
+    files.func_wrap_async(
+        "size",
+        |mut context, (source, path): (FileSource, String)| {
+            Box::new(async move {
+                let result = match context.data_mut().open(source, &path).await {
+                    Ok(file) => file.metadata().map(|m| m.len()).map_err(|e| e.to_string()),
+                    Err(e) => Err(e.1),
+                };
+                Ok((result,))
+            })
+        },
+    )?;
+    files.func_wrap_async(
+        "read",
+        |mut context, (source, path, offset, length): (FileSource, String, u64, u32)| {
+            Box::new(async move {
+                let result = match context.data_mut().open(source, &path).await {
+                    Ok(file) => {
+                        tokio::task::spawn_blocking(move || read_range(file, offset, length))
+                            .await
+                            .map_err(|e| e.to_string())
+                            .and_then(|r| r.map_err(|e| e.to_string()))
+                    }
+                    Err(e) => Err(e.1),
+                };
+                Ok((result,))
+            })
+        },
+    )?;
+    Ok(())
+}
+/// Reads at most 1 MiB from `offset`; less at the end of the file.
+fn read_range(mut file: std::fs::File, offset: u64, length: u32) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek};
+    file.seek(std::io::SeekFrom::Start(offset))?;
+    let mut data = Vec::new();
+    file.take(u64::from(length.min(1024 * 1024)))
+        .read_to_end(&mut data)?;
+    Ok(data)
 }
 async fn enter(
     state: &State,
@@ -512,6 +605,43 @@ impl Drop for UploadCleanup {
     }
 }
 impl Host {
+    pub(crate) fn connections(&self) -> Option<&Arc<realtime::Connections>> {
+        self.connections.as_ref()
+    }
+    /// Opens one of the app's own files, applying the same rules as serving it.
+    pub(crate) async fn open(&mut self, source: FileSource, path: &str) -> Result<std::fs::File> {
+        let file = match source {
+            FileSource::Storage => {
+                self.capability("storage")?;
+                self.runtime
+                    .storage
+                    .as_ref()
+                    .unwrap()
+                    .open_file(path)
+                    .await?
+            }
+            FileSource::Upload | FileSource::Asset => {
+                let root = if matches!(source, FileSource::Asset) {
+                    if !apps::safe_relative(path)
+                        || !self.runtime.manifest.files.contains_key(path)
+                        || path == self.runtime.manifest.entry
+                    {
+                        return Err(Error::forbidden());
+                    }
+                    self.runtime.package.clone()
+                } else {
+                    self.capability("uploads")?;
+                    self.runtime.data.join("uploads")
+                };
+                let (dir, relative) = files::confined(&root.to_string_lossy(), path)?;
+                dir.open(&relative).map_err(|_| Error::not_found())?
+            }
+        };
+        if !file.metadata()?.is_file() {
+            return Err(Error::not_found());
+        }
+        Ok(file.into_std())
+    }
     fn capability(&self, name: &str) -> Result<()> {
         if self.runtime.manifest.capabilities.iter().any(|s| s == name) {
             Ok(())
@@ -632,6 +762,21 @@ impl Host {
             }
             "log" => {
                 component_log(&self.runtime, text("message")?);
+                Ok(Value::Null)
+            }
+            "realtime-restart" => {
+                self.capability("realtime")?;
+                self.runtime
+                    .realtime
+                    .get()
+                    .ok_or_else(|| {
+                        Error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "The realtime instance is not running.".into(),
+                        )
+                    })?
+                    .restart()
+                    .await;
                 Ok(Value::Null)
             }
             _ => Err(Error::bad("Unknown LOKI host operation.")),
@@ -883,7 +1028,27 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
     } else {
         None
     };
-    if !auth::allowed(state, user.as_ref(), &app.id, "access").await? {
+    let manifest: apps::Manifest = serde_json::from_str(&app.manifest)?;
+    let allowed = auth::allowed(state, user.as_ref(), &app.id, "access").await?;
+    // Realtime sockets are open to anyone who can reach the app, so players need no
+    // LOKI account. A signed-in, same-origin browser also says who it is.
+    if let Some(settings) = manifest.realtime()
+        && path == settings.path
+        && request.method() == axum::http::Method::GET
+        && realtime::is_upgrade(request.headers())
+    {
+        let same_origin = request
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|h| h.to_str().ok())
+            .is_some_and(|o| o == origin);
+        let user = match user.as_ref().filter(|_| allowed && same_origin) {
+            Some(user) => user_info(state, user, &app.id, &manifest).await?,
+            None => Value::Null,
+        };
+        return realtime::upgrade(state, &app.id, request, user).await;
+    }
+    if !allowed {
         return if user.is_none() {
             Ok(Redirect::to("/_loki/start").into_response())
         } else {
@@ -894,28 +1059,12 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
         .as_ref()
         .map(|r| auth::digest(&format!("component-csrf:{r}")))
         .unwrap_or_default();
-    let mut roles = vec!["access"];
-    let manifest: apps::Manifest = serde_json::from_str(&app.manifest)?;
-    for role in &manifest.roles {
-        if auth::allowed(state, user.as_ref(), &app.id, role).await? {
-            roles.push(role);
-        }
-    }
-    let info = json!({"user":user.as_ref().map(|u|json!({"id":u.id,"username":u.username,"name":u.display_name,"email":u.email,"roles":roles})),"csrf":csrf,"issuer":state.0.settings.read().await.public_url,"dashboard_url":dashboard_url(state,&origin).await});
-    let runtime = state
-        .0
-        .runtimes
-        .lock()
-        .await
-        .get(&app.id)
-        .filter(|r| r.ready)
-        .and_then(|r| r.component.clone())
-        .ok_or_else(|| {
-            Error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The component is not running.".into(),
-            )
-        })?;
+    let user_value = match &user {
+        Some(user) => user_info(state, user, &app.id, &manifest).await?,
+        None => Value::Null,
+    };
+    let info = json!({"user":user_value,"csrf":csrf,"issuer":state.0.settings.read().await.public_url,"dashboard_url":dashboard_url(state,&origin).await});
+    let runtime = running(state, &app.id).await?;
     let _permit = enter(state, &runtime).await?;
     let mut form = Value::Null;
     let mut pending = Vec::new();
@@ -994,6 +1143,50 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
     Ok(response)
 }
 
+/// The signed-in user as the guest sees them, with the app roles they hold.
+async fn user_info(
+    state: &State,
+    user: &auth::User,
+    app: &str,
+    manifest: &apps::Manifest,
+) -> Result<Value> {
+    let mut roles = vec!["access"];
+    for role in &manifest.roles {
+        if auth::allowed(state, Some(user), app, role).await? {
+            roles.push(role.as_str());
+        }
+    }
+    Ok(
+        json!({"id":user.id,"username":user.username,"name":user.display_name,"email":user.email,"roles":roles}),
+    )
+}
+/// The app's runtime, if it is ready to serve.
+pub(crate) async fn running(state: &State, app: &str) -> Result<Arc<Runtime>> {
+    state
+        .0
+        .runtimes
+        .lock()
+        .await
+        .get(app)
+        .filter(|r| r.ready)
+        .and_then(|r| r.component.clone())
+        .ok_or_else(|| {
+            Error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The component is not running.".into(),
+            )
+        })
+}
+/// Serves the app's health path anonymously, for the app's LAN listener.
+pub(crate) async fn health(
+    state: &State,
+    runtime: Arc<Runtime>,
+    request: Request<Body>,
+) -> Result<Response> {
+    let _permit = enter(state, &runtime).await?;
+    let info = json!({"user":null,"csrf":"","issuer":state.0.settings.read().await.public_url});
+    execute(state, runtime, request, info, Value::Null, Vec::new()).await
+}
 async fn parse_form(
     runtime: &Runtime,
     headers: &HeaderMap,

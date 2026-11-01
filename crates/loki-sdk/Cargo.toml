@@ -15,6 +15,7 @@ guest = ["dep:wasi", "dep:wit-bindgen", "dep:form_urlencoded", "dep:percent-enco
 templates = ["guest", "dep:askama"]
 manifest = ["dep:semver"]
 testing = ["guest"]
+realtime = ["guest"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

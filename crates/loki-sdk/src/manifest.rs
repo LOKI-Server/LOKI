@@ -30,6 +30,15 @@ pub struct Manifest {
     #[serde(default)]
     pub limits: Limits,
 }
+impl Manifest {
+    /// The realtime settings of an app that declares the `realtime` capability.
+    pub fn realtime(&self) -> Option<Realtime> {
+        self.capabilities
+            .iter()
+            .any(|c| c == "realtime")
+            .then(|| self.limits.realtime.clone().unwrap_or_default())
+    }
+}
 fn native_runtime() -> String {
     "native".into()
 }
@@ -52,6 +61,47 @@ pub struct Limits {
     pub timeout_seconds: u64,
     pub concurrent_requests: usize,
     pub request_bytes: usize,
+    /// Present only for apps with the `realtime` capability.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realtime: Option<Realtime>,
+}
+/// Limits for an app's long-lived realtime instance and its WebSocket endpoint.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Realtime {
+    /// The path on the app's origin that accepts WebSocket connections.
+    pub path: String,
+    pub max_connections: usize,
+    pub max_message_bytes: usize,
+    /// How often `on-tick` runs, if at all.
+    pub tick_ms: Option<u64>,
+    /// Fuel for each event the instance handles.
+    pub event_fuel: u64,
+}
+impl Default for Realtime {
+    fn default() -> Self {
+        Self {
+            path: "/multiplayer".into(),
+            max_connections: 64,
+            max_message_bytes: 64 * 1024,
+            tick_ms: None,
+            event_fuel: 5_000_000,
+        }
+    }
+}
+impl Realtime {
+    pub fn valid(&self) -> bool {
+        self.path.starts_with('/')
+            && !self.path.starts_with("//")
+            && !self.path.starts_with("/_loki")
+            && self.path != "/logout"
+            && self.path.len() <= 200
+            && !self.path.contains(['\r', '\n', '?', '#'])
+            && (1..=256).contains(&self.max_connections)
+            && (1024..=2 * 1024 * 1024).contains(&self.max_message_bytes)
+            && self.tick_ms.is_none_or(|t| (20..=1000).contains(&t))
+            && (100_000..=100_000_000).contains(&self.event_fuel)
+    }
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -61,6 +111,7 @@ impl Default for Limits {
             timeout_seconds: 30,
             concurrent_requests: 4,
             request_bytes: 16 * 1024 * 1024,
+            realtime: None,
         }
     }
 }
@@ -71,6 +122,7 @@ impl Limits {
             && (1..=120).contains(&self.timeout_seconds)
             && (1..=8).contains(&self.concurrent_requests)
             && (1024..=1024 * 1024 * 1024).contains(&self.request_bytes)
+            && self.realtime.as_ref().is_none_or(Realtime::valid)
     }
 }
 
@@ -110,9 +162,13 @@ pub fn validate_manifest(m: &Manifest, native_target: &str) -> Result<()> {
         || !matches!(m.runtime.as_str(), "native" | "wasi")
         || (m.runtime == "native" && m.target != native_target)
         || (m.runtime == "wasi" && (m.target != "wasm32-wasip2" || !m.entry.ends_with(".wasm")))
-        || m.capabilities
-            .iter()
-            .any(|s| !matches!(s.as_str(), "database" | "uploads" | "forms" | "storage"))
+        || m.capabilities.iter().any(|s| {
+            !matches!(
+                s.as_str(),
+                "database" | "uploads" | "forms" | "storage" | "realtime"
+            )
+        })
+        || (m.capabilities.iter().any(|c| c == "realtime") && m.runtime != "wasi")
         || !m.limits.valid()
         || !safe_relative(&m.entry)
         || !m.files.contains_key(&m.entry)
@@ -122,6 +178,7 @@ pub fn validate_manifest(m: &Manifest, native_target: &str) -> Result<()> {
         || m.description.len() > 2000
         || m.roles.len() > 32
         || m.fields.len() > 32
+        || m.realtime().is_some_and(|r| r.path == m.health)
     {
         return Err(Error::bad(format!(
             "Invalid or incompatible app manifest. This server accepts protocol 1 WASI components (wasm32-wasip2) and native packages for {}.",

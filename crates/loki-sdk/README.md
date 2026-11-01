@@ -180,6 +180,55 @@ outbound networking, native library loading, and background threads are not
 provided by the current host. Use `request.body(MAX)` / `json(MAX)` only for
 bounded small bodies rather than reading multipart media into memory.
 
+## Realtime apps
+
+Enable the `realtime` feature for an app that keeps state in memory and holds
+WebSocket connections, such as a game server. Declare the `realtime` capability
+and its limits in the manifest (see the [WASI guide](../../docs/wasi.md#realtime-apps)).
+LOKI keeps one instance alive and calls it one event at a time:
+
+```rust
+use loki_sdk::realtime::{Connection, OpenInfo, RealtimeApp};
+use loki_sdk::{Request, Response, Result};
+use std::collections::BTreeSet;
+
+fn handle(_request: Request) -> Result<Response> {
+    Ok(Response::text("ready"))
+}
+
+struct Room {
+    players: BTreeSet<Connection>,
+}
+impl RealtimeApp for Room {
+    fn start() -> Self {
+        Room { players: BTreeSet::new() }
+    }
+    fn open(&mut self, connection: Connection, _info: OpenInfo) {
+        self.players.insert(connection);
+    }
+    fn message(&mut self, _from: Connection, data: Vec<u8>) {
+        for player in &self.players {
+            let _ = player.send(&data);
+        }
+    }
+    fn close(&mut self, connection: Connection) {
+        self.players.remove(&connection);
+    }
+}
+
+loki_sdk::export_realtime!(handle, Room);
+```
+
+`Connection::send_file(FileSource::Upload, path)` streams a large file to one
+connection without loading it into the guest. `realtime::file_size`,
+`realtime::read_file` and `FileReader` (`Read + Seek`) read the app's files in
+ranges. `realtime::restart()` lets an HTTP handler start the instance afresh.
+Connections are anonymous by default: anyone who can reach the app can connect,
+so check your own credentials in the protocol if you need them.
+
+For native tests, `realtime::testing::with_host(files, test)` installs fake files
+and returns what each connection was sent.
+
 ## Native tests
 
 Enable `loki-sdk`'s `testing` feature in dev-dependencies. Use

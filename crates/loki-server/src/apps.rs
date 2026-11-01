@@ -29,6 +29,8 @@ pub struct App {
     #[serde(skip_serializing)]
     pub previous_config: Option<String>,
     pub error: String,
+    /// An extra listener, such as `0.0.0.0:4767`, for a realtime app's sockets on the LAN.
+    pub lan_bind: String,
 }
 pub struct Runtime {
     pub process: Option<platform::Process>,

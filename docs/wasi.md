@@ -187,8 +187,9 @@ produced inside Wasm are limited to 8 MiB; use host file streaming for large dat
 No host environment, stdio, ambient directories, TCP/UDP listeners, DNS, or
 outgoing HTTP is inherited. WASI filesystem calls have no preopened directories.
 The current capability set does not provide arbitrary networking, native library
-loading, long-lived background workers, or WebSockets. Guest traps, exhausted
-fuel, and failed memory growth fail the request; other requests and LOKI continue.
+loading, or background threads. Long-lived state and WebSockets are available
+through the `realtime` capability below. Guest traps, exhausted fuel, and failed
+memory growth fail the request; other requests and LOKI continue.
 The runtime and host API remain part of the trusted implementation.
 
 Disable/restart/update waits for active component requests, closes the app's SQL
@@ -196,6 +197,95 @@ pool, and releases its compiled runtime. Updates snapshot stopped app data and
 retain the previous package/configuration for rollback. During initial
 development, owner-initiated replacement may keep the same app version; older
 versions are rejected. LOKI is at version **0.2.0** and has not had a stable release yet.
+
+## Ranged file reads
+
+The `loki:app/files` WIT interface reads the app's own files in pieces, so a large
+upload never has to fit in guest memory. `size(source, path)` returns the size and
+`read(source, path, offset, length)` returns at most 1 MiB. `source` is `upload`
+(requires `uploads`), `storage` (requires `storage`) or `asset` (a declared package
+file other than the component). Paths are confined exactly as for serving them.
+The Rust SDK's `realtime` feature wraps these as `file_size`, `read_file` and a
+`FileReader` that implements `Read + Seek`, which is enough to open a ZIP archive.
+
+## Realtime apps
+
+An app with the `realtime` capability gets one **long-lived instance** as well as
+the usual per-request instances. LOKI keeps it alive while the app is enabled and
+calls it one event at a time, so its memory persists between calls and needs no
+locks. This suits game servers, chat rooms and live dashboards.
+
+The component targets the `realtime-app` world in `loki-sdk/wit/platform.wit`. It
+still exports the `wasi:http` handler for its pages, and also exports
+`realtime-handler`:
+
+| Export | When LOKI calls it |
+| --- | --- |
+| `on-start` | The instance started, or restarted with a fresh state |
+| `on-open(connection, info)` | A WebSocket connected. `info` is JSON `{remote, user}` |
+| `on-message(connection, data)` | A binary or text message arrived |
+| `on-close(connection)` | The connection closed, from either side |
+| `on-tick` | Every `tick_ms`, when set |
+
+The instance answers with the `realtime` interface: `send(connection, data)`,
+`send-file(connection, source, path)` and `close(connection, code, reason)`.
+`send-file` streams the file from disk as consecutive 64 KiB binary messages, in
+order with other sends, so large downloads never pass through guest memory. Only
+the realtime instance can use connections. HTTP handlers can restart it with the
+`realtime-restart` host operation, for example after its settings change.
+
+```json
+"capabilities": ["realtime"],
+"limits": {
+  "realtime": {
+    "path": "/multiplayer",
+    "max_connections": 64,
+    "max_message_bytes": 65536,
+    "tick_ms": 50,
+    "event_fuel": 5000000
+  }
+}
+```
+
+| Limit | Default | Range |
+| --- | --- | --- |
+| `path` | `/multiplayer` | Starts with `/`; not the health path, `/logout` or `/_loki` |
+| `max_connections` | 64 | 1–256 per app; LOKI allows 512 across all apps |
+| `max_message_bytes` | 64 KiB | 1 KiB–2 MiB, for incoming messages |
+| `tick_ms` | none | none, or 20–1000 |
+| `event_fuel` | 5,000,000 | 100,000–100,000,000 per event |
+
+`on-start` runs with the request `fuel` and `timeout_seconds`. Every other event
+gets `event_fuel` and five seconds. The instance's memory is bounded by
+`memory_mib`.
+
+**Who can connect.** The WebSocket path accepts connections from **anyone who can
+reach the app**, whatever its visibility, so players and other clients need no
+LOKI account. The app decides who may stay, for example with its own password.
+When a browser signed in to LOKI connects from the app's own origin and has access,
+`info.user` says who it is; otherwise it is `null`. The dashboard says this on the
+app's settings.
+
+**Failures.** A trap, running out of fuel or time, or failed memory growth ends
+the instance. LOKI closes every connection with code 1011, logs the error, and
+starts a fresh instance after 1 second, doubling to at most 60 seconds while
+failures continue. Connections that arrive meanwhile are closed with 1013.
+
+**Limits on connections.** Larger incoming messages close the connection with
+1009. A connection with more than 4 MiB of messages waiting to be sent (files
+excluded) is closed with 1008 instead of buffering further. Closing a connection
+yourself takes code 1000 or 3000–4999.
+
+**Lifecycle.** Disabling, restarting, updating or backing up the app closes every
+connection with 1001 first, so long-lived connections never hold LOKI up.
+`realtime-restart` closes them with 1012. Keep anything that must survive in the
+app's database or storage.
+
+**LAN address.** The owner can give a realtime app a LAN address in its settings,
+such as `0.0.0.0:4767`. LOKI then also listens there, so devices on the local
+network can connect by IP, without a hostname. Only the realtime path and the
+health check answer on that address; everything else is 404, and no sign-in runs
+there.
 
 ## Building and verification
 
@@ -223,6 +313,15 @@ The sandbox regression fixture is intentionally adversarial:
 cargo build --release --target wasm32-wasip2 --manifest-path crates/loki-server/tests/fixtures/wasi-probe/Cargo.toml --target-dir target/wasi-probe
 $env:LOKI_COMPONENT_FIXTURE="$PWD/target/wasi-probe/wasm32-wasip2/release/wasi_probe.wasm"
 cargo test -p loki-server --test components
+```
+
+The realtime fixture exercises long-lived state, ticks, file streaming, limits,
+failure recovery, restarts, the LAN address and shutdown with real WebSockets:
+
+```powershell
+cargo build --release --target wasm32-wasip2 --manifest-path crates/loki-server/tests/fixtures/realtime-echo/Cargo.toml --target-dir target/realtime-echo
+$env:LOKI_REALTIME_FIXTURE="$PWD/target/realtime-echo/wasm32-wasip2/release/realtime_echo.wasm"
+cargo test -p loki-server --test realtime
 ```
 
 Build this fixture locally to verify denied filesystem/network/SQL access,

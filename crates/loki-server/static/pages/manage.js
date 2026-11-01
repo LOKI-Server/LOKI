@@ -27,11 +27,18 @@ export function syncManage(id) {
   modal(r.name, `<p>Who may pair devices and keep files in sync. Each person only ever sees their own folders. Set storage limits in Server settings and per person in People &amp; groups.</p>` + section("Who can use sync", accessPanel(r)));
 }
 
+// Apps with live connections, such as game servers, can also listen on the LAN.
+function realtimeSettings(r) {
+  if (!r.manifest.capabilities?.includes("realtime")) return "";
+  const path = r.manifest.limits?.realtime?.path || "/multiplayer";
+  return `<div class="notice">Anyone who can reach this app can connect to its live endpoint (<span class="mono">${esc(path)}</span>) without a LOKI account. The app decides who may join.</div>${field("lan_bind", "LAN address (optional)", r.lan_bind || "", "text", "placeholder=0.0.0.0:4767")}<p class="help">Also accept connections on this address, so devices on your network can connect by IP. Only the live endpoint and health check answer there. Allow the port in your firewall.</p>`;
+}
+
 export function appManage(id) {
   const r = resource(id);
   const operation = (label, op, kind = "subtle", iconName = "") => button(label, "app-operation", id, `data-operation="${op}"`, kind, iconName);
   modal(r.name, `<p>${esc(r.manifest.description)}</p><div class="tags">${tag(`v${r.manifest.version}`)}${tag(r.manifest.runtime === "wasi" ? "WASI component" : "Native service")}${resourceStatus(r)}</div>${r.error ? `<p class="notice error">${esc(r.error)}</p>` : ""}<div class="actions">${operation(r.enabled ? "Disable" : "Enable", r.enabled ? "disable" : "enable", "primary", "power")}${r.enabled ? operation("Restart", "restart", "subtle", "refresh") : ""}${button("Logs", "logs", id, "", "subtle", "logs")}${r.previous ? operation("Roll back version & data", "rollback", "subtle", "left") : ""}${operation("Uninstall (keep data)", "uninstall", "danger", "trash")}</div>`
-    + section("Settings", `<form data-form="app-config" data-id="${esc(id)}">${field("hostname", "Public hostname (optional)", r.hostname, "text", "placeholder=bigshot.example.com")}<p class="help">Leave blank for loopback access. Your domain needs DNS and a configured Caddy.</p>${r.manifest.fields.map(f => f.kind === "bool" ? check(f.key, f.label, r.config[f.key] ?? f.default) : field(f.key, f.label, r.config[f.key] ?? f.default ?? "", f.kind === "secret" ? "password" : f.kind === "number" ? "number" : "text", f.required ? "required" : "")).join("")}<div class="actions"><button>Save application settings</button></div></form>`)
+    + section("Settings", `<form data-form="app-config" data-id="${esc(id)}">${field("hostname", "Public hostname (optional)", r.hostname, "text", "placeholder=bigshot.example.com")}<p class="help">Leave blank for loopback access. Your domain needs DNS and a configured Caddy.</p>${realtimeSettings(r)}${r.manifest.fields.map(f => f.kind === "bool" ? check(f.key, f.label, r.config[f.key] ?? f.default) : field(f.key, f.label, r.config[f.key] ?? f.default ?? "", f.kind === "secret" ? "password" : f.kind === "number" ? "number" : "text", f.required ? "required" : "")).join("")}<div class="actions"><button>Save application settings</button></div></form>`)
     + section("Who can use this app", accessPanel(r)));
 }
 

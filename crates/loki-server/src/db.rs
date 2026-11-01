@@ -55,6 +55,16 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
             .execute(&pool)
             .await?;
     }
+    if !sqlx::query("PRAGMA table_info(apps)")
+        .fetch_all(&pool)
+        .await?
+        .iter()
+        .any(|r| r.get::<String, _>("name") == "lan_bind")
+    {
+        sqlx::query("ALTER TABLE apps ADD COLUMN lan_bind TEXT NOT NULL DEFAULT ''")
+            .execute(&pool)
+            .await?;
+    }
     if !sqlx::query("PRAGMA table_info(users)")
         .fetch_all(&pool)
         .await?

@@ -6,6 +6,55 @@ interface platform {
     call: func(operation: string, input: string) -> result<string, string>;
 }
 
+/// Ranged reads of the app's own files, without copying whole files into the guest.
+interface files {
+    /// Uploads need `uploads`, storage files need `storage`, and assets are the
+    /// package's declared files other than the component itself.
+    enum file-source {
+        upload,
+        storage,
+        asset,
+    }
+    /// The file's size in bytes.
+    size: func(source: file-source, path: string) -> result<u64, string>;
+    /// Reads up to `length` bytes (at most 1 MiB) from `offset`. Fewer bytes are
+    /// returned at the end of the file.
+    read: func(source: file-source, path: string, offset: u64, length: u32) -> result<list<u8>, string>;
+}
+
+/// Connections to the app's realtime WebSocket endpoint. Only the realtime
+/// instance can use them.
+interface realtime {
+    use files.{file-source};
+    /// Queues one binary message. A connection that falls too far behind is closed.
+    send: func(connection: u64, data: list<u8>) -> result<_, string>;
+    /// Streams a file as consecutive 64 KiB binary messages, in order with other
+    /// sends. Returns the file's size.
+    send-file: func(connection: u64, source: file-source, path: string) -> result<u64, string>;
+    /// Closes the connection after its queued messages. `on-close` still follows.
+    close: func(connection: u64, code: u16, reason: string);
+}
+
+/// Exported by apps with the `realtime` capability. LOKI keeps one instance of the
+/// app alive for these calls and makes them one at a time, so memory persists
+/// between them.
+interface realtime-handler {
+    /// The instance started, or restarted with a fresh state.
+    on-start: func();
+    /// `info` is JSON: `{"remote": "IP:port", "user": null | {id, username, name, email, roles}}`.
+    on-open: func(connection: u64, info: string);
+    on-message: func(connection: u64, data: list<u8>);
+    on-close: func(connection: u64);
+    /// Runs every `limits.realtime.tick_ms` milliseconds, when set.
+    on-tick: func();
+}
+
 world host-api {
     import platform;
+}
+
+world realtime-app {
+    import files;
+    import realtime;
+    export realtime-handler;
 }

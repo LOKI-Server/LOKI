@@ -12,7 +12,7 @@ loki-sdk = { workspace = true, features = ["manifest"] }
 anyhow = "1"
 argon2 = "0.5"
 askama = "0.12"
-axum = { version = "0.8", features = ["multipart", "macros"] }
+axum = { version = "0.8", features = ["multipart", "macros", "ws"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 base64 = "0.22"
 cap-std = "3"
@@ -67,4 +67,5 @@ embed-resource = "3"
 
 [dev-dependencies]
 tempfile = "3"
+tokio-tungstenite = "0.29"
 http-body-util = "0.1"
