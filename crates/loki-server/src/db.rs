@@ -19,81 +19,80 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
     sqlx::raw_sql(include_str!("schema.sql"))
         .execute(&pool)
         .await?;
+    migrate(&pool).await?;
+    Ok(pool)
+}
+/// One change to databases made by older versions. `schema.sql` already has the
+/// result, so new databases skip straight past these.
+enum Migration {
+    /// Adds a column unless the table has it.
+    Column(&'static str, &'static str, &'static str),
+    Sql(&'static str),
+}
+use Migration::{Column, Sql};
+/// Applied in order, once each: `PRAGMA user_version` counts how many have run.
+/// Databases from before the count start at 0 and may already have some columns,
+/// so `Column` checks first. Only append; never reorder or remove a step.
+const MIGRATIONS: &[Migration] = &[
     // Credential epochs invalidate stale in-flight authentication after revocation.
-    for table in ["users", "sessions", "codes", "tokens"] {
-        let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
-            .fetch_all(&pool)
-            .await?;
-        if !columns
-            .iter()
-            .any(|r| r.get::<String, _>("name") == "auth_version")
-        {
-            sqlx::query(&format!(
-                "ALTER TABLE {table} ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0"
-            ))
-            .execute(&pool)
-            .await?;
+    Column("users", "auth_version", "INTEGER NOT NULL DEFAULT 0"),
+    Column("sessions", "auth_version", "INTEGER NOT NULL DEFAULT 0"),
+    Column("codes", "auth_version", "INTEGER NOT NULL DEFAULT 0"),
+    Column("tokens", "auth_version", "INTEGER NOT NULL DEFAULT 0"),
+    // Families started by device sign-in refresh without a client secret.
+    Column("token_families", "public", "INTEGER NOT NULL DEFAULT 0"),
+    // Share roots chosen before paths were simplified kept Windows' `\\?\D:\` form.
+    Sql(r"UPDATE shares SET root=substr(root,5) WHERE root LIKE '\\?\%' AND substr(root,6,2)=':\'"),
+    Column("apps", "previous_config", "TEXT"),
+    Column(
+        "shares",
+        "excluded_extensions",
+        "TEXT NOT NULL DEFAULT '[]'",
+    ),
+    Column("apps", "lan_bind", "TEXT NOT NULL DEFAULT ''"),
+    Column("users", "bio", "TEXT NOT NULL DEFAULT ''"),
+    // Tokens issued before families were tracked.
+    Sql(
+        "INSERT OR IGNORE INTO token_families(id,expires) SELECT family,max(expires) FROM tokens GROUP BY family",
+    ),
+    // An early Save sync draft paired devices in its own table.
+    Sql("DROP TABLE IF EXISTS sync_pairings"),
+];
+async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+    let done: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut *tx)
+        .await?;
+    let done = usize::try_from(done)?;
+    if done >= MIGRATIONS.len() {
+        return Ok(());
+    }
+    for step in &MIGRATIONS[done..] {
+        match step {
+            Column(table, column, definition) => {
+                let exists = sqlx::query(&format!("PRAGMA table_info({table})"))
+                    .fetch_all(&mut *tx)
+                    .await?
+                    .iter()
+                    .any(|r| r.get::<String, _>("name") == *column);
+                if !exists {
+                    sqlx::query(&format!(
+                        "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                    ))
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+            Sql(sql) => {
+                sqlx::query(sql).execute(&mut *tx).await?;
+            }
         }
     }
-    // Families started by device sign-in refresh without a client secret.
-    if !sqlx::query("PRAGMA table_info(token_families)")
-        .fetch_all(&pool)
-        .await?
-        .iter()
-        .any(|r| r.get::<String, _>("name") == "public")
-    {
-        sqlx::query("ALTER TABLE token_families ADD COLUMN public INTEGER NOT NULL DEFAULT 0")
-            .execute(&pool)
-            .await?;
-    }
-    // Share roots chosen before paths were simplified kept Windows' `\\?\D:\` form.
-    sqlx::query(
-        r"UPDATE shares SET root=substr(root,5) WHERE root LIKE '\\?\%' AND substr(root,6,2)=':\'",
-    )
-    .execute(&pool)
-    .await?;
-    if !sqlx::query("PRAGMA table_info(apps)")
-        .fetch_all(&pool)
-        .await?
-        .iter()
-        .any(|r| r.get::<String, _>("name") == "previous_config")
-    {
-        sqlx::query("ALTER TABLE apps ADD COLUMN previous_config TEXT")
-            .execute(&pool)
-            .await?;
-    }
-    if !sqlx::query("PRAGMA table_info(shares)")
-        .fetch_all(&pool)
-        .await?
-        .iter()
-        .any(|r| r.get::<String, _>("name") == "excluded_extensions")
-    {
-        sqlx::query("ALTER TABLE shares ADD COLUMN excluded_extensions TEXT NOT NULL DEFAULT '[]'")
-            .execute(&pool)
-            .await?;
-    }
-    if !sqlx::query("PRAGMA table_info(apps)")
-        .fetch_all(&pool)
-        .await?
-        .iter()
-        .any(|r| r.get::<String, _>("name") == "lan_bind")
-    {
-        sqlx::query("ALTER TABLE apps ADD COLUMN lan_bind TEXT NOT NULL DEFAULT ''")
-            .execute(&pool)
-            .await?;
-    }
-    if !sqlx::query("PRAGMA table_info(users)")
-        .fetch_all(&pool)
-        .await?
-        .iter()
-        .any(|r| r.get::<String, _>("name") == "bio")
-    {
-        sqlx::query("ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''")
-            .execute(&pool)
-            .await?;
-    }
-    sqlx::query("INSERT OR IGNORE INTO token_families(id,expires) SELECT family,max(expires) FROM tokens GROUP BY family").execute(&pool).await?;
-    Ok(pool)
+    sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len()))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }
 pub async fn settings(pool: &SqlitePool) -> anyhow::Result<Settings> {
     let json: Option<String> = sqlx::query_scalar("SELECT json FROM settings WHERE id=1")
@@ -131,6 +130,11 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(share, ("kept-folder".into(), "[]".into()));
+        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
         sqlx::query("UPDATE shares SET excluded_extensions='[\"tmp\"]' WHERE id='old'")
             .execute(&pool)
             .await
@@ -169,6 +173,11 @@ mod tests {
                 .await
                 .unwrap();
         }
+        // As if written by a version from before migrations were counted.
+        sqlx::query("PRAGMA user_version=0")
+            .execute(&pool)
+            .await
+            .unwrap();
         pool.close().await;
         let pool = open(&path).await.unwrap();
         let roots: Vec<String> = sqlx::query_scalar("SELECT root FROM shares ORDER BY id")
