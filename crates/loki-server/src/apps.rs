@@ -67,7 +67,8 @@ pub fn extract(package: &Path, dest: &Path) -> Result<Manifest> {
     std::fs::create_dir_all(dest)?;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
+        // A name zip can't decode is empty, which is unsafe below.
+        let name = file.name().unwrap_or_default().into_owned();
         if !safe_relative(&name)
             || !seen.insert(name.clone())
             || file.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000)

@@ -500,10 +500,11 @@ pub fn broken_package(
     output.write_all(&serde_json::to_vec(&manifest)?)?;
     for i in 0..input.len() {
         let mut entry = input.by_index(i)?;
-        if entry.name() == "manifest.json" {
+        let name = entry.name()?.into_owned();
+        if name == "manifest.json" {
             continue;
         }
-        output.start_file(entry.name(), options)?;
+        output.start_file(name, options)?;
         std::io::copy(&mut entry, &mut output)?;
     }
     output.finish()?;

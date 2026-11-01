@@ -183,7 +183,9 @@ pub fn storage(binary: &Path, package: &Path) -> Result<()> {
         "app-data/storage-notes/storage/files/",
     ] {
         ensure!(
-            archive.file_names().any(|p| p.starts_with(prefix)),
+            archive
+                .file_names()
+                .any(|p| p.is_ok_and(|p| p.starts_with(prefix))),
             "Backup omitted {prefix}"
         );
     }

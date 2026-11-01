@@ -28,7 +28,9 @@ fn validated_archive(backup: &Path) -> anyhow::Result<zip::ZipArchive<std::fs::F
     let mut total = 0u64;
     for i in 0..archive.len() {
         let file = archive.by_index(i)?;
-        let name = file.name();
+        // A name zip can't decode is empty, which is unsafe below.
+        let name = file.name().unwrap_or_default();
+        let name = name.as_ref();
         if !apps::safe_relative(name)
             || file.is_dir()
             || file.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000)
@@ -74,7 +76,7 @@ pub fn restore(backup: &Path, data: &Path) -> anyhow::Result<()> {
     let mut archive = validated_archive(backup)?;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let target = data.join(file.name());
+        let target = data.join(file.name()?.as_ref());
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
