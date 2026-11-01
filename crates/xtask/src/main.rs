@@ -8,6 +8,7 @@ use std::{
 mod benchmark;
 mod bundle;
 mod common;
+mod icon;
 mod sdk;
 mod smoke;
 
@@ -25,6 +26,8 @@ struct Cli {
 enum Task {
     /// Assemble LOKI and checksum-verified Caddy; optionally include developer tools.
     Bundle(bundle::Options),
+    /// Render the app icon, favicons and installer icon with Synarith.
+    Icon(icon::Options),
     /// Measure initialized idle resident memory and one-core CPU consumption.
     Benchmark(benchmark::Options),
     /// Verify setup, HTTPS/local cookies, relocation and supervised restart.
@@ -80,6 +83,7 @@ fn main() -> Result<()> {
     match args.task {
         Task::Bundle(options) => bundle::run(options),
         Task::Benchmark(options) => benchmark::run(options),
+        Task::Icon(options) => icon::run(options),
         Task::SetupSmoke { binary } => smoke::setup(&absolute(&binary)?),
         Task::SdkSmoke {
             tool,

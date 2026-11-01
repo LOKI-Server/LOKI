@@ -66,6 +66,16 @@ const FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../static/style.css"),
     ),
     (
+        "icon-32.png",
+        "image/png",
+        include_bytes!("../static/icon-32.png"),
+    ),
+    (
+        "icon-256.png",
+        "image/png",
+        include_bytes!("../static/icon-256.png"),
+    ),
+    (
         "tree.svg",
         "image/svg+xml",
         include_bytes!("../static/tree.svg"),

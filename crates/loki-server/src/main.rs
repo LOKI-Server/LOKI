@@ -218,21 +218,15 @@ fn tray(state: State, stop: Arc<AtomicBool>) -> Option<std::thread::JoinHandle<(
         if menu.append_items(&[&open, &exit]).is_err() {
             return;
         }
-        let mut rgba = vec![0u8; 32 * 32 * 4];
-        for y in 0..32usize {
-            for x in 0..32usize {
-                let at = (y * 32 + x) * 4;
-                let rune = (x.abs_diff(15) <= 1 && y > 5 && y < 27)
-                    || ((y as isize - x as isize).abs() <= 1 && x > 7 && x < 16)
-                    || ((y + x).abs_diff(30) <= 1 && x > 14 && x < 24);
-                rgba[at..at + 4].copy_from_slice(if rune {
-                    &[95, 235, 161, 255]
-                } else {
-                    &[10, 27, 20, 255]
-                });
-            }
-        }
-        let Ok(icon) = Icon::from_rgba(rgba, 32, 32) else {
+        // The executable's own icon at the tray's size; the favicon if it is missing.
+        let size = unsafe { GetSystemMetrics(SM_CXSMICON) } as u32;
+        let icon = Icon::from_resource(1, Some((size, size))).or_else(|_| {
+            let image = image::load_from_memory(include_bytes!("../static/icon-32.png"))
+                .expect("embedded icon is a PNG")
+                .into_rgba8();
+            Icon::from_rgba(image.into_raw(), 32, 32)
+        });
+        let Ok(icon) = icon else {
             return;
         };
         let Ok(_tray) = TrayIconBuilder::new()

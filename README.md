@@ -1,5 +1,7 @@
 # LOKI Server
 
+<img src="packaging/icon/loki.png" alt="The LOKI icon: the Algiz rune grown into a world tree, ringed by nine gold realms" width="128">
+
 **Your services, held together.**
 
 By [Aspenini](https://github.com/Aspenini) · [GitHub](https://github.com/Aspenini/LOKI) · [MIT license](LICENSE)

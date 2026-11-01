@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#0a100d"><title>LOKI — your services, held together</title>
 <link rel="stylesheet" href="{{ assets }}/style.css">
+<link rel="icon" sizes="32x32" href="{{ assets }}/icon-32.png"><link rel="icon" sizes="256x256" href="{{ assets }}/icon-256.png"><link rel="apple-touch-icon" href="{{ assets }}/icon-256.png">
 {% for module in modules %}<link rel="modulepreload" href="{{ assets }}/{{ module }}">
 {% endfor %}<script type="module" src="{{ assets }}/app.js"></script>
 {% if let Some(boot) = boot %}<script type="application/json" id="boot">{{ boot|safe }}</script>

@@ -1,0 +1,113 @@
+syar 1;
+use std;
+// LOKI's icon: the Algiz rune ᛉ grown into Yggdrasil. Its branches hold the sky,
+// three roots reach the three wells, and the nine realms circle it in gold.
+// main is the full icon; small trades detail for weight at 16-48 px.
+// Render: syar render packaging/icon/loki.syar -o loki.png --width 1024 --height 1024 --samples 3
+viewbox(-1.0, -1.0, 2.0, 2.0);
+seed 2026;
+param green: color = srgb("#7de7a7");
+param leaf: color = srgb("#d4fbe2");
+param gold: color = srgb("#d2bd7e");
+param night: color = srgb("#050a07");
+
+// A quadratic stroke whose width eases from wa at a to wb at b.
+fn branch(q: vec2, a: vec2, c: vec2, b: vec2, wa: float, wb: float) -> float {
+    var distance = 3.402823e38;
+    var previous = a;
+    for index in 1..25 {
+        let u = float(index) / 24.0;
+        let next = (1.0 - u) * (1.0 - u) * a + 2.0 * (1.0 - u) * u * c + u * u * b;
+        let v = next - previous;
+        let h = clamp(dot(q - previous, v) / dot(v, v), 0.0, 1.0);
+        let along = (float(index - 1) + h) / 24.0;
+        distance = min(distance, length(q - previous - v * h) - mix(wa, wb, along) * 0.5);
+        previous = next;
+    }
+    return distance;
+}
+
+// The rune-tree in document units; weight thickens every limb.
+fn tree(q: vec2, weight: float) -> float {
+    let m = vec2(abs(x(q)), y(q));
+    let trunk = branch(q, vec2(0.0, 0.40), vec2(0.0, -0.10), vec2(0.0, -0.64), 0.12 * weight, 0.048 * weight);
+    let arm = branch(m, vec2(0.0, 0.06), vec2(0.29, -0.10), vec2(0.40, -0.51), 0.088 * weight, 0.042 * weight);
+    let root = branch(m, vec2(0.0, 0.26), vec2(0.08, 0.50), vec2(0.36, 0.60), 0.09 * weight, 0.034 * weight);
+    let taproot = branch(q, vec2(0.0, 0.30), vec2(0.0, 0.50), vec2(0.0, 0.66), 0.095 * weight, 0.036 * weight);
+    let crown = smooth_union(trunk, arm, radius: 0.045);
+    return smooth_union(crown, min(root, taproot), radius: 0.04);
+}
+
+// Rounded-square tile, a superellipse that reads as soft but stays square.
+fn tile_shape(q: vec2) -> float {
+    let a = abs(q) / 0.94;
+    return (pow(pow(x(a), 5.0) + pow(y(a), 5.0), 0.2) - 1.0) * 0.94;
+}
+
+fn starfield(q: vec2, frequency: float, salt: int) -> float {
+    let cell = floor(q * frequency);
+    let chance = hash(cell, salt, 0);
+    if chance < 0.9 { return 0.0; }
+    let center = vec2(hash(cell, salt, 1), hash(cell, salt, 2)) * 0.6 + vec2(0.2, 0.2);
+    let local = q * frequency - cell - center;
+    let brightness = pow((chance - 0.9) / 0.1, 3.0);
+    return exp(-dot(local, local) * 220.0) * (0.15 + brightness * 0.85);
+}
+
+fn nine_realms(q: vec2, radius: float, size: float) -> float {
+    var distance = 3.402823e38;
+    for index in 0..9 {
+        let angle = float(index) / 9.0 * tau - tau * 0.25;
+        distance = min(distance, length(q - radius * vec2(cos(angle), sin(angle))) - size);
+    }
+    return distance;
+}
+
+group sky(q: vec2, detail: float) -> color {
+    let depth = mix(srgb("#173525"), night, smoothstep(0.0, 1.25, length(q - vec2(0.0, -0.12))));
+    let aurora = fbm(q * 1.6 + vec2(3.1, 7.4), octaves: 5);
+    let band = exp(-pow((y(q) + 0.18 + sin(x(q) * 2.4) * 0.12) * 2.6, 2.0));
+    let veil = mix(depth, srgb("#1f5a3a"), smoothstep(0.42, 0.85, aurora) * band * 0.55 * detail);
+    let stars = (starfield(q, 22.0, 11) + starfield(q, 41.0, 23) * 0.6) * detail;
+    let lit = mix(veil, srgb("#e9f6ee"), clamp(stars, 0.0, 1.0) * 0.8 * smoothstep(0.15, 0.55, length(q)));
+    let shade = 1.0 - smoothstep(0.55, 1.0, y(q)) * 0.35;
+    return rgba(red(lit) * shade, green(lit) * shade, blue(lit) * shade, 1.0);
+}
+
+group icon(at: vec2, zoom: float, weight: float, detail: float) -> color {
+    let q = at * zoom;
+    let center = vec2(0.0, -0.04);
+    let orbit = abs(length(q - center) - 0.64) - 0.006 * weight;
+    let realms = nine_realms(q - center, 0.64, 0.026 * weight);
+    let wells = min(
+        abs(length(vec2(abs(x(q)), y(q)) - vec2(0.40, 0.66)) - 0.05) - 0.011 * weight,
+        abs(length(q - vec2(0.0, 0.73)) - 0.055) - 0.011 * weight);
+
+    let limbs = tree(q, weight);
+    // The orbit passes behind the tree: a dark gap keeps the rune legible.
+    let gap = smoothstep(0.0, 0.035, limbs);
+    let ring_ink = opacity(gold, (0.4 + 0.6 * detail) * gap);
+    let ring = over(fill(realms, opacity(gold, gap * detail)), fill(orbit, ring_ink));
+    let well_ink = fill(wells, opacity(gold, 0.9 * detail));
+
+    let height = clamp((0.66 - y(q)) / 1.30, 0.0, 1.0);
+    let bark = mix(srgb("#2fae72"), green, smoothstep(0.0, 0.55, height));
+    let crown = mix(bark, leaf, smoothstep(0.55, 1.0, height));
+    // Deeper green toward each limb's edge rounds it like carved, lit glass.
+    let edge = smoothstep(-0.035 * weight, 0.0, limbs);
+    let lit = mix(mix(crown, green, 0.35 * (1.0 - detail)), srgb("#1d8a58"), edge * mix(0.2, 0.55, detail));
+    let rune = fill(limbs, lit);
+
+    let tips = min(length(q - vec2(0.0, -0.68)), length(vec2(abs(x(q)), y(q)) - vec2(0.411, -0.53)));
+    let blossoms = glow(tips - 0.02 * weight, radius: 0.035, color: opacity(leaf, 0.45 * detail));
+    let aura = glow(limbs, radius: 0.055, color: opacity(green, 0.3));
+
+    let art = over(rune, over(blossoms, over(aura, over(well_ink, ring))));
+    let base = over(art, sky(at, detail));
+    let rim = smoothstep(-0.02, 0.0, tile_shape(at)) * smoothstep(0.2, -0.9, y(at));
+    let edged = mix(base, srgb("#6fd79d"), rim * 0.22);
+    return opacity(edged, coverage(tile_shape(at)));
+}
+
+output main = icon(p, 1.0, 1.0, 1.0);
+output small = icon(p, 0.86, 1.5, 0.0);

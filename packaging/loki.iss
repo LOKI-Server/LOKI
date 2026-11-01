@@ -32,6 +32,7 @@ SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
+SetupIconFile=icon\loki.ico
 UninstallDisplayIcon={app}\loki-server.exe
 VersionInfoVersion={#AppVersion}.0
 VersionInfoCompany=Aspenini
