@@ -184,7 +184,7 @@ bounded small bodies rather than reading multipart media into memory.
 
 Enable the `realtime` feature for an app that keeps state in memory and holds
 WebSocket connections, such as a game server. Declare the `realtime` capability
-and its limits in the manifest (see the [WASI guide](../../docs/wasi.md#realtime-apps)).
+and its limits in the manifest (see the [app guide](../../docs/apps.md#realtime-apps)).
 LOKI keeps one instance alive and calls it one event at a time:
 
 ```rust

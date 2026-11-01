@@ -156,8 +156,9 @@ URLs. Ctrl+C stops its server. It requires a built LOKI server; it can find one
 next to `cargo-loki` or on PATH. Caddy and sign-in startup remain disabled in this
 profile. `--port 0` chooses an available port; `--no-watch` skips rebuilding.
 
-See the [SDK guide](crates/loki-sdk/README.md), [tool commands](crates/cargo-loki/README.md),
-[WASI host API](docs/wasi.md), and [packages and identity](docs/app-protocol.md).
+See the [app guide](docs/apps.md) for packages, identity, the host API and
+limits, the [SDK guide](crates/loki-sdk/README.md), and the
+[tool commands](crates/cargo-loki/README.md).
 
 ## Data and recovery
 
@@ -231,7 +232,7 @@ cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 Get-ChildItem crates/loki-server/static -Recurse -Filter *.js | ForEach-Object { node --check $_.FullName }
-node --test crates/loki-server/tests/setup-ui.cjs crates/loki-server/tests/shares-ui.cjs crates/loki-server/tests/startup-ui.cjs
+node --test crates/loki-server/tests/*.cjs
 cargo xtask sdk-smoke --tool target/debug/cargo-loki.exe --server target/debug/loki-server.exe
 ```
 
@@ -242,12 +243,27 @@ locally; this repository has no CI workflows.
 Run the real WASI workflow after building LOKI and packaging Bigshot:
 
 ```powershell
-cargo xtask wasi-smoke --loki target/debug/loki-server.exe --package ../bigshot-voter/target/loki/bigshot-voter-0.5.0.loki-app
+cargo xtask wasi-smoke --loki target/debug/loki-server.exe --package ../bigshot-voter/target/loki/bigshot-voter-0.6.0.loki-app
 ```
 
 This uses disposable data under `target/wasi-smoke-*`, not installed services or real
 accounts. It exercises component readiness, host-managed sign-in, voting,
 permission revocation, failed-update rollback, and backup/resume.
+
+Two test components exercise the sandbox and realtime apps. Their tests skip
+themselves unless pointed at a build:
+
+```powershell
+cargo build --release --target wasm32-wasip2 --manifest-path crates/loki-server/tests/fixtures/wasi-probe/Cargo.toml --target-dir target/wasi-probe
+cargo build --release --target wasm32-wasip2 --manifest-path crates/loki-server/tests/fixtures/realtime-echo/Cargo.toml --target-dir target/realtime-echo
+$env:LOKI_COMPONENT_FIXTURE="$PWD/target/wasi-probe/wasm32-wasip2/release/wasi_probe.wasm"
+$env:LOKI_REALTIME_FIXTURE="$PWD/target/realtime-echo/wasm32-wasip2/release/realtime_echo.wasm"
+cargo test -p loki-server --test components --test realtime
+```
+
+The probe checks denied filesystem, network and SQL access, withheld credentials,
+missing capabilities, traps and resource limits. The echo app checks long-lived
+state, ticks, file streaming, failure recovery, the LAN address and shutdown.
 
 For the first-run setup and data-relocation regression check:
 
@@ -266,5 +282,4 @@ cargo xtask benchmark target/release/loki-server.exe
 ```
 
 The engineering target is less than 75 MiB idle resident memory and less than
-1% of one CPU core. See [verification notes](docs/verification.md) for measured
-results and what has actually been exercised on this machine.
+1% of one CPU core.
