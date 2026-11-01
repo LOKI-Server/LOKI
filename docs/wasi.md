@@ -58,6 +58,10 @@ persist between runs, under `target/loki/dev/APP_ID`.
 }
 ```
 
+Limits accept `memory_mib` 16–256, `fuel` 100,000–10,000,000,000 per request,
+`timeout_seconds` 1–120, `concurrent_requests` 1–8 and `request_bytes` 1 KiB–1 GiB.
+Fuel counts roughly one unit per Wasm instruction; the timeout bounds wall-clock time.
+
 Capabilities are opt-in. Package path, size, and checksum validation also applies
 to components. The entry must be a WebAssembly component, not a core Wasm module
 or a platform-specific precompiled Wasmtime cache. Code is limited to 32 MiB.

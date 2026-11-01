@@ -118,7 +118,7 @@ impl Default for Limits {
 impl Limits {
     pub fn valid(&self) -> bool {
         (16..=256).contains(&self.memory_mib)
-            && (100_000..=500_000_000).contains(&self.fuel)
+            && (100_000..=10_000_000_000).contains(&self.fuel)
             && (1..=120).contains(&self.timeout_seconds)
             && (1..=8).contains(&self.concurrent_requests)
             && (1024..=1024 * 1024 * 1024).contains(&self.request_bytes)
