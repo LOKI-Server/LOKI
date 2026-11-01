@@ -14,13 +14,15 @@ pub fn create(name: &str, path: Option<&Path>, sdk: Option<&Path>) -> Result<()>
         "{} already exists; choose a new directory",
         path.display()
     );
+    // cargo-loki and loki-sdk share the workspace version.
+    let sdk_version = env!("CARGO_PKG_VERSION");
     let dependency = if let Some(sdk) = sdk {
         format!(
-            "{{ version = \"0.1.0\", path = {} }}",
+            "{{ version = \"{sdk_version}\", path = {} }}",
             toml::Value::String(std::fs::canonicalize(sdk)?.to_string_lossy().into_owned())
         )
     } else {
-        "\"0.1.0\"".into()
+        format!("\"{sdk_version}\"")
     };
     let cargo = format!(
         "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\ncrate-type = [\"cdylib\", \"rlib\"]\n\n[dependencies]\nloki-sdk = {dependency}\n\n[package.metadata.loki]\nid = {name:?}\nname = {name:?}\nhealth = \"/health\"\nassets = [\"static\"]\n\n[profile.release]\nlto = true\nopt-level = \"s\"\nstrip = true\npanic = \"abort\"\n"

@@ -144,8 +144,8 @@ cargo loki dev --server ../LOKI/target/debug/loki-server.exe
 These commands assume the checkout is named `LOKI`; omit `.exe` on Linux/macOS.
 These crates are local source packages;
 they have not been published to crates.io. `--sdk-path` (or `LOKI_SDK_PATH`)
-selects the local SDK until publication. The default scaffold names SDK version
-`0.1.0` for eventual registry use. Plugin metadata lives in `Cargo.toml`; no
+selects the local SDK until publication. The default scaffold names the SDK version
+it was built with for eventual registry use. Plugin metadata lives in `Cargo.toml`; no
 app-specific packaging script or handwritten bindings are needed.
 
 `cargo loki dev` runs a separate loopback-only installation in the plugin's

@@ -195,7 +195,7 @@ Disable/restart/update waits for active component requests, closes the app's SQL
 pool, and releases its compiled runtime. Updates snapshot stopped app data and
 retain the previous package/configuration for rollback. During initial
 development, owner-initiated replacement may keep the same app version; older
-versions are rejected. LOKI remains version **0.1.0** until its initial release.
+versions are rejected. LOKI is at version **0.2.0** and has not had a stable release yet.
 
 ## Building and verification
 

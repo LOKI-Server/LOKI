@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-loki"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1778,7 +1778,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "loki-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "askama",
  "base64 0.22.1",
@@ -1795,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "loki-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -4320,7 +4320,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",

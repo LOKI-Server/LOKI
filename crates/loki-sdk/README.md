@@ -28,7 +28,7 @@ Cargo metadata declares capabilities, assets, roles, settings, and limits. Missi
 capabilities and permissions are enforced by LOKI even when the SDK is bypassed.
 
 The `manifest` feature exposes shared package types/validation for native tooling
-without pulling in guest bindings. All initial LOKI crates remain at 0.1.0.
+without pulling in guest bindings. All LOKI crates share one version, currently 0.2.0.
 
 ## Persistent app storage
 
@@ -97,7 +97,7 @@ Cargo.toml to opt into the services you need:
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-loki-sdk = { version = "0.1.0", features = ["templates"] }
+loki-sdk = { version = "0.2.0", features = ["templates"] }
 serde = { version = "1", features = ["derive"] }
 
 [package.metadata.loki]

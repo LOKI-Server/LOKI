@@ -43,7 +43,7 @@ protocol 1.
 `GET /sync/v1` needs no authentication:
 
 ```json
-{"protocol":1,"server":"0.1.0","name":"LOKI","hash":"sha256","max_file_bytes":2147483648,"pairing":true}
+{"protocol":1,"server":"0.2.0","name":"LOKI","hash":"sha256","max_file_bytes":2147483648,"pairing":true}
 ```
 
 Refuse to continue if `protocol` is not a version you implement or `hash` is
