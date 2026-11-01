@@ -3,7 +3,8 @@ CREATE TABLE IF NOT EXISTS users(
  id TEXT PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE,
  display_name TEXT NOT NULL, email TEXT NOT NULL DEFAULT '', password TEXT NOT NULL,
  owner INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL CHECK(status IN('pending','approved','rejected','suspended')),
- avatar INTEGER NOT NULL DEFAULT 0, totp TEXT, totp_pending TEXT, totp_step INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL
+ avatar INTEGER NOT NULL DEFAULT 0, totp TEXT, totp_pending TEXT, totp_step INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL,
+ bio TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS sole_owner ON users(owner) WHERE owner=1;
 CREATE UNIQUE INDEX IF NOT EXISTS unique_email ON users(email COLLATE NOCASE) WHERE email!='';

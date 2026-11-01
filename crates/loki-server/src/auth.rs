@@ -51,6 +51,7 @@ pub struct User {
     pub created: i64,
     #[serde(skip_serializing)]
     pub auth_version: i64,
+    pub bio: String,
 }
 #[derive(FromRow)]
 pub struct Session {
@@ -219,6 +220,26 @@ pub async fn rate(state: &State, key: String, max: u32, seconds: i64) -> Result<
         ));
     }
     Ok(())
+}
+pub const BIO_CHARS: usize = 300;
+const BIO_LINES: usize = 8;
+/// Normalizes line endings and trims a bio, rejecting ones that are too long.
+pub fn clean_bio(bio: &str) -> Result<String> {
+    let bio = bio.replace("\r\n", "\n").trim().to_string();
+    if bio.chars().count() > BIO_CHARS {
+        return Err(Error::bad(format!(
+            "Bio must be at most {BIO_CHARS} characters."
+        )));
+    }
+    if bio.lines().count() > BIO_LINES {
+        return Err(Error::bad(format!(
+            "Bio must be at most {BIO_LINES} lines."
+        )));
+    }
+    if bio.chars().any(|c| c.is_control() && c != '\n') {
+        return Err(Error::bad("Bio cannot contain control characters."));
+    }
+    Ok(bio)
 }
 pub fn validate_identity(username: &str, email: &str, name: &str) -> Result<()> {
     if !(3..=32).contains(&username.len())
@@ -627,6 +648,29 @@ mod tests {
             totp(&base32(b"12345678901234567890"), 1).as_deref(),
             Some("287082")
         );
+    }
+    #[test]
+    fn bios_are_trimmed_and_limited() {
+        assert_eq!(
+            clean_bio(
+                " a
+b "
+            )
+            .unwrap(),
+            "a
+b"
+        );
+        assert!(clean_bio(&"é".repeat(BIO_CHARS)).is_ok());
+        assert!(clean_bio(&"é".repeat(BIO_CHARS + 1)).is_err());
+        assert!(
+            clean_bio(
+                &"a
+"
+                .repeat(9)
+            )
+            .is_err()
+        );
+        assert!(clean_bio("tab	here").is_err());
     }
     #[test]
     fn rejects_unsafe_origins() {

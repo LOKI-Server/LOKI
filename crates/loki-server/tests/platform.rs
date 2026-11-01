@@ -775,3 +775,33 @@ async fn totp_setup_recovery_codes_and_replay_protection() {
     );
     state.0.db.close().await;
 }
+
+#[tokio::test]
+async fn members_can_write_a_bio_within_the_limit() {
+    let (_tmp, _state, mut owner) = installation().await;
+    owner
+        .action(
+            "bio",
+            "",
+            json!({"bio":"  Plays Pokémon Emerald.\r\nCollects saves.  "}),
+        )
+        .await;
+    let info = owner.session().await;
+    assert_eq!(
+        info["user"]["bio"],
+        "Plays Pokémon Emerald.\nCollects saves."
+    );
+    let (status, _) = owner
+        .request(
+            "POST",
+            "/api/action",
+            Some(json!({"action":"bio","id":"","data":{"bio":"枝".repeat(301)}})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    owner
+        .action("bio", "", json!({"bio":"枝".repeat(300)}))
+        .await;
+    owner.action("bio", "", json!({"bio":""})).await;
+    assert_eq!(owner.session().await["user"]["bio"], "");
+}

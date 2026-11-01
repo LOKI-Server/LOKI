@@ -414,6 +414,15 @@ async fn action(
                 return Err(Error::bad("That username or email is unavailable."));
             }
         }
+        "bio" => {
+            ctx.approved()?;
+            let bio = auth::clean_bio(text(data, "bio")?)?;
+            sqlx::query("UPDATE users SET bio=? WHERE id=?")
+                .bind(bio)
+                .bind(&user.id)
+                .execute(&state.0.db)
+                .await?;
+        }
         "password" => {
             ctx.approved()?;
             current_password(&state, user, data).await?;

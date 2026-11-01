@@ -46,6 +46,7 @@ export async function onSubmit(event) {
     if (kind === "import") { await api("/api/apps/import", new FormData(form)); toast("Application imported."); close(); }
     else if (kind === "backup-import") { await api("/api/backups/import", new FormData(form)); close(); toast("Backup imported. Use Restore a backup to review and restore it."); }
     else if (kind === "avatar") { await api("/api/avatar", new FormData(form)); store.avatarVersion = Date.now(); form.reset(); session = true; toast("Profile picture updated."); }
+    else if (kind === "bio") { await act("bio", "", data); session = true; toast("Bio saved."); }
     else if (["profile", "password", "mfa-start", "mfa-disable"].includes(kind)) {
       const result = await act(kind, "", data);
       if (kind === "password") { location.href = "/login"; return; }
@@ -267,6 +268,14 @@ export async function onClick(event) {
   } finally {
     b.disabled = false;
   }
+}
+
+/** Keeps a "characters left" count beside text boxes that have one. */
+export function onInput(event) {
+  const e = event.target;
+  if (!e.dataset?.count) return;
+  const counter = document.getElementById(e.dataset.count);
+  if (counter) counter.textContent = Number(e.maxLength) - [...e.value].length;
 }
 
 export async function onChange(event) {

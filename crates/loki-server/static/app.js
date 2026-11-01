@@ -1,7 +1,7 @@
 // LOKI dashboard entry point. Framework-free ES modules; see lib/ and pages/.
 import { $, api, close, store } from "./lib/core.js";
 import { render, refreshState, showError } from "./lib/router.js";
-import { onChange, onClick, onSubmit } from "./lib/actions.js";
+import { onChange, onClick, onInput, onSubmit } from "./lib/actions.js";
 
 // The server embeds the session (and state, when signed in) so the first paint
 // needs no request. Visitors without a session fetch one instead.
@@ -26,6 +26,7 @@ async function start() {
 document.addEventListener("click", onClick);
 document.addEventListener("submit", onSubmit);
 document.addEventListener("change", onChange);
+document.addEventListener("input", onInput);
 addEventListener("popstate", () => render({ transition: true }).catch(showError));
 $("#dialog-close").addEventListener("click", close);
 // The close event arrives asynchronously; another dialog may already be showing.

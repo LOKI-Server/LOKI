@@ -55,6 +55,16 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
             .execute(&pool)
             .await?;
     }
+    if !sqlx::query("PRAGMA table_info(users)")
+        .fetch_all(&pool)
+        .await?
+        .iter()
+        .any(|r| r.get::<String, _>("name") == "bio")
+    {
+        sqlx::query("ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''")
+            .execute(&pool)
+            .await?;
+    }
     sqlx::query("INSERT OR IGNORE INTO token_families(id,expires) SELECT family,max(expires) FROM tokens GROUP BY family").execute(&pool).await?;
     Ok(pool)
 }

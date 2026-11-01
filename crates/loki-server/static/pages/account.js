@@ -9,12 +9,19 @@ export function passwordProof() {
   return `${field("current_password", "Current password", "", "password", "required autocomplete=current-password")}${store.state.mfa ? field("code", "Authentication or recovery code", "", "text", "required autocomplete=one-time-code inputmode=numeric") : ""}`;
 }
 
+const BIO_CHARS = 300;
+
+function bioForm(bio) {
+  const left = BIO_CHARS - [...bio].length;
+  return `<form data-form="bio"><label for="bio">Bio</label><textarea id="bio" class="bio-input" name="bio" rows="4" maxlength="${BIO_CHARS}" data-count="bio-count" placeholder="A few words about yourself">${esc(bio)}</textarea><p class="help"><span id="bio-count">${left}</span> characters left. Shown on your profile to this server’s owner.</p><div class="actions"><button class="subtle">Save bio</button></div></form>`;
+}
+
 export function accountPage() {
   const u = store.session.user, state = store.state;
   const sessions = state.sessions.map(s => `<div class="session-row" data-key="${esc(s.id)}"><span class="session-icon" aria-hidden="true">${icon("globe")}</span><div><strong>${esc(s.label)}</strong>${s.current ? tag("This browser") : ""}<small>Signed in ${ago(s.created)}</small></div>${s.current ? "" : button("Revoke", "session-revoke", s.id, "", "ghost")}</div>`).join("");
   return heading("Your LOKI account", "One identity, across your services.", "", "account")
     + `<div class="split"><div class="stack">`
-    + `<section class="card"><div class="profile-head">${avatar(u)}<div><h2>${esc(u.display_name || u.username)}</h2><small>@${esc(u.username)}${u.owner ? " · Owner" : ""}</small></div></div><form data-form="profile">${field("username", "Username", u.username, "text", "required minlength=3 maxlength=32")}${field("display_name", "Display name", u.display_name)}${field("email", "Email (optional, unverified)", u.email, "email")}${passwordProof()}<div class="actions"><button>Save profile</button></div></form><hr class="divider"><form data-form="avatar"><label for="avatar-file">Profile picture</label><input id="avatar-file" name="file" type="file" accept="image/png,image/jpeg,image/webp" required><p class="help">Up to 4 MiB. Your image is resized and saved as a safe PNG.</p><div class="actions"><button class="subtle">${icon("upload")}Update picture</button></div></form></section>`
+    + `<section class="card"><div class="profile-head">${avatar(u)}<div><h2>${esc(u.display_name || u.username)}</h2><small>@${esc(u.username)}${u.owner ? " · Owner" : ""}</small></div></div>${u.bio ? `<p class="bio">${esc(u.bio)}</p>` : ""}<form data-form="profile">${field("username", "Username", u.username, "text", "required minlength=3 maxlength=32")}${field("display_name", "Display name", u.display_name)}${field("email", "Email (optional, unverified)", u.email, "email")}${passwordProof()}<div class="actions"><button>Save profile</button></div></form><hr class="divider">${bioForm(u.bio)}<hr class="divider"><form data-form="avatar"><label for="avatar-file">Profile picture</label><input id="avatar-file" name="file" type="file" accept="image/png,image/jpeg,image/webp" required><p class="help">Up to 4 MiB. Your image is resized and saved as a safe PNG.</p><div class="actions"><button class="subtle">${icon("upload")}Update picture</button></div></form></section>`
     + `<section class="card"><h2>Change password</h2><form data-form="password">${passwordProof()}${field("password", "New password", "", "password", "required minlength=10 maxlength=128 autocomplete=new-password")}<div class="actions"><button>Change password & sign out everywhere</button></div></form></section>`
     + `</div><div class="stack">`
     + `<section class="card"><div class="card-header"><h2>Two-factor authentication</h2>${state.mfa ? tag("On") : tag("Off", "dim")}</div><p>${state.mfa ? "Your account is protected by an authenticator app." : "Add an authenticator app and recovery codes to protect your account."}</p>${button(state.mfa ? "Disable two-factor authentication" : "Set up two-factor authentication", state.mfa ? "mfa-disable" : "mfa-start", "", "", state.mfa ? "subtle" : "primary", "shield")}</section>`
