@@ -4,7 +4,6 @@ use crate::{
     project::{Project, absolute},
 };
 use anyhow::{Context, Result, bail, ensure};
-use rand::RngCore;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -126,7 +125,7 @@ pub fn run(build: Build, server: Option<PathBuf>, port: u16, no_watch: bool) -> 
             data.display()
         );
         let mut bytes = [0; 24];
-        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        rand::fill(&mut bytes);
         let credentials = Credentials {
             plugin: id.clone(),
             username: "developer".into(),

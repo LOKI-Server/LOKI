@@ -10,7 +10,7 @@ license.workspace = true
 [dependencies]
 loki-sdk = { workspace = true, features = ["manifest"] }
 anyhow = "1"
-argon2 = "0.5"
+argon2 = "0.6"
 askama = "0.16"
 axum = { version = "0.8", features = ["multipart", "macros", "ws"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
@@ -25,7 +25,7 @@ hex = "0.4"
 hmac = "0.12"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 mime_guess = "2"
-rand = "0.8"
+rand = "0.10"
 # Constant-time RSA signing for identity tokens; already used by rustls.
 ring = "0.17"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

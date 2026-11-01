@@ -235,9 +235,10 @@ impl State {
         let key = if key_path.exists() {
             RsaPrivateKey::from_pkcs8_pem(&std::fs::read_to_string(&key_path)?)?
         } else {
-            let key =
-                tokio::task::spawn_blocking(|| RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048))
-                    .await??;
+            let key = tokio::task::spawn_blocking(|| {
+                RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048)
+            })
+            .await??;
             platform::write_private(&key_path, key.to_pkcs8_pem(LineEnding::LF)?.as_bytes())?;
             key
         };

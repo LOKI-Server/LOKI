@@ -541,7 +541,7 @@ mod tests {
     };
     #[test]
     fn ring_signs_exactly_what_rsa_would_and_it_verifies() {
-        let key = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let key = RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048).unwrap();
         let message = b"header.payload";
         let signature = sign(&signer(&key).unwrap(), message).unwrap();
         let expected = SigningKey::<Sha256>::new(key.clone()).sign(message);

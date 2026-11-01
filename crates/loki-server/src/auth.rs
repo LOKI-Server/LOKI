@@ -1,5 +1,5 @@
 use crate::{Error, Result, Settings, State};
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::{
     Json,
     http::{HeaderMap, StatusCode},
@@ -7,7 +7,6 @@ use axum::{
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
@@ -18,7 +17,7 @@ pub fn now() -> i64 {
 }
 pub fn random() -> String {
     let mut b = [0; 32];
-    rand::rngs::OsRng.fill_bytes(&mut b);
+    rand::fill(&mut b);
     URL_SAFE_NO_PAD.encode(b)
 }
 pub fn digest(value: &str) -> String {
@@ -307,10 +306,7 @@ pub async fn hash(state: &State, password: String) -> Result<String> {
     let _permit = state.0.passwords.acquire().await?;
     Ok(tokio::task::spawn_blocking(move || {
         Argon2::default()
-            .hash_password(
-                password.as_bytes(),
-                &SaltString::generate(&mut rand::rngs::OsRng),
-            )
+            .hash_password(password.as_bytes())
             .map(|h| h.to_string())
             .map_err(|e| anyhow::anyhow!("{e}"))
     })
@@ -459,6 +455,8 @@ pub struct Credentials {
     #[serde(default)]
     pub code: String,
 }
+/// Verified when no account matches, so unknown usernames take as long as known ones.
+const UNKNOWN_USER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 pub async fn login(
     axum::extract::State(state): axum::extract::State<State>,
     axum::Extension(ip): axum::Extension<ClientIp>,
@@ -468,7 +466,10 @@ pub async fn login(
     use axum::response::IntoResponse;
     login_rate(&state, &input.username, &ip).await?;
     let user:Option<User>=sqlx::query_as("SELECT * FROM users WHERE username=? COLLATE NOCASE OR (email!='' AND email=? COLLATE NOCASE)").bind(input.username.trim()).bind(input.username.trim()).fetch_optional(&state.0.db).await?;
-    let stored=user.as_ref().map(|u|u.password.clone()).unwrap_or_else(||"$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
+    let stored = user
+        .as_ref()
+        .map(|u| u.password.clone())
+        .unwrap_or_else(|| UNKNOWN_USER_HASH.into());
     let valid = verify(&state, input.password, stored).await?;
     let user = user.filter(|_| valid).ok_or_else(|| {
         Error::new(
@@ -675,6 +676,32 @@ pub async fn second_factor(state: &State, user: &User, code: &str) -> Result<boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hashes_from_earlier_versions_still_verify() {
+        // Made by LOKI 0.2.0's argon2 0.5.
+        let legacy = PasswordHash::new("$argon2id$v=19$m=19456,t=2,p=1$fKNBWfbhXqM5CcL7WOOZtg$BTq6PHIeaWruxEXnJWhX4fJMUMlqIOPlvdotCZbthgk").unwrap();
+        let argon2 = Argon2::default();
+        assert!(
+            argon2
+                .verify_password(b"correct horse battery", &legacy)
+                .is_ok()
+        );
+        assert!(
+            argon2
+                .verify_password(b"wrong horse battery", &legacy)
+                .is_err()
+        );
+        let unknown = PasswordHash::new(UNKNOWN_USER_HASH).unwrap();
+        assert!(argon2.verify_password(b"anything", &unknown).is_err());
+        let fresh = argon2
+            .hash_password(b"correct horse battery")
+            .unwrap()
+            .to_string();
+        assert!(
+            fresh.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "{fresh}"
+        );
+    }
     #[test]
     fn forwarded_clients_are_trusted_only_from_caddy() {
         let forwarded = |value: &str| {

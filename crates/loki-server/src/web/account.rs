@@ -113,8 +113,7 @@ pub(super) async fn revoke_session(state: &State, user: &User, id: &str) -> Resu
 pub(super) async fn mfa_start(state: &State, user: &User, proof: Proof) -> Result<Value> {
     proof.check(state, user).await?;
     let mut bytes = [0; 20];
-    use rand::RngCore;
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    rand::fill(&mut bytes);
     let secret = auth::base32(&bytes);
     sqlx::query("UPDATE users SET totp_pending=? WHERE id=?")
         .bind(&secret)

@@ -4,7 +4,6 @@
 //! `/oidc/device` and the token endpoint.
 use crate::{Error, Result, State, auth, auth::User};
 use axum::http::StatusCode;
-use rand::Rng;
 use serde_json::{Value, json};
 
 pub const LIFETIME: i64 = 600;
@@ -26,9 +25,8 @@ fn normalize(code: &str) -> Option<String> {
         .then(|| format!("{}-{}", &letters[..4], &letters[4..]))
 }
 fn user_code() -> String {
-    let mut rng = rand::rngs::OsRng;
     let letters: String = (0..8)
-        .map(|_| CODE_ALPHABET[rng.gen_range(0..CODE_ALPHABET.len())] as char)
+        .map(|_| CODE_ALPHABET[rand::random_range(0..CODE_ALPHABET.len())] as char)
         .collect();
     format!("{}-{}", &letters[..4], &letters[4..])
 }
