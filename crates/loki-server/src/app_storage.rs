@@ -1,20 +1,49 @@
 //! App-scoped durable values and generated files. No guest filesystem paths.
 use crate::{Error, Result, apps};
 use axum::http::StatusCode;
-use base64::{Engine, engine::general_purpose::STANDARD};
 use cap_std::fs::{Dir, File, OpenOptions};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     io::{Read, Write},
     path::Path,
     sync::Arc,
 };
+use wasmtime::component::{ComponentType, Lower};
 
 pub const VALUE_BYTES: u64 = 128 * 1024;
 pub const FILE_BYTES: u64 = 1024 * 1024;
 const TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const ENTRIES: usize = 4096;
 
+/// Matches `file-info` in the WIT.
+#[derive(Clone, Debug, ComponentType, Lower)]
+#[component(record)]
+pub(crate) struct FileInfo {
+    pub path: String,
+    pub size: u64,
+}
+/// Matches `file-page` in the WIT.
+#[derive(Debug, ComponentType, Lower)]
+#[component(record)]
+pub(crate) struct FilePage {
+    pub files: Vec<FileInfo>,
+    pub next: Option<String>,
+}
+/// Matches `usage` in the WIT.
+#[derive(Debug, ComponentType, Lower)]
+#[component(record)]
+pub(crate) struct Usage {
+    pub bytes: u64,
+    pub entries: u32,
+    #[component(name = "limit-bytes")]
+    pub limit_bytes: u64,
+    #[component(name = "max-entries")]
+    pub max_entries: u32,
+    #[component(name = "max-file-bytes")]
+    pub max_file_bytes: u64,
+    #[component(name = "max-value-bytes")]
+    pub max_value_bytes: u64,
+}
 pub(crate) struct Storage {
     values: Dir,
     files: Dir,
@@ -188,113 +217,113 @@ impl Storage {
         }
         Ok(Some(bytes))
     }
-    pub async fn call(self: &Arc<Self>, operation: &str, input: Value) -> Result<Value> {
-        // The blocking job owns the guard even if its requesting guest times out.
+    /// Runs storage work off the async runtime under the app's storage lock. The
+    /// blocking job owns the guard even if its requesting guest times out.
+    pub async fn job<T: Send + 'static>(
+        self: &Arc<Self>,
+        work: impl FnOnce(&Self) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         let guard = self.lock.clone().lock_owned().await;
         let storage = self.clone();
-        let operation = operation.to_owned();
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
-            storage.run(&operation, &input)
+            work(&storage)
         })
         .await?
     }
-    fn run(&self, operation: &str, input: &Value) -> Result<Value> {
-        let text = |key: &str| {
-            input[key]
-                .as_str()
-                .ok_or_else(|| Error::bad("Missing storage argument."))
-        };
-        match operation {
-            "storage-set" => {
-                let key = name(text("key")?, true)?;
-                let value = input
-                    .get("value")
-                    .ok_or_else(|| Error::bad("Missing JSON value."))?;
-                self.write(&self.values, &key, &serde_json::to_vec(value)?, VALUE_BYTES)?;
-                Ok(Value::Null)
-            }
-            "storage-get" => {
-                let key = name(text("key")?, true)?;
-                match Self::read(&self.values, &key, VALUE_BYTES)? {
-                    Some(bytes) => {
-                        Ok(json!({"found":true,"value":serde_json::from_slice::<Value>(&bytes)?}))
-                    }
-                    None => Ok(json!({"found":false})),
-                }
-            }
-            "storage-delete" | "storage-file-delete" => {
-                let key = operation == "storage-delete";
-                let dir = if key { &self.values } else { &self.files };
-                let name = name(text(if key { "key" } else { "path" })?, key)?;
-                if Self::existing(dir, &name)?.is_none() {
-                    return Ok(json!(false));
-                }
-                dir.remove_file(name).map_err(io)?;
-                Ok(json!(true))
-            }
-            "storage-file-write" => {
-                let path = text("path")?;
-                let key = name(path, false)?;
-                let encoded = text("data")?;
-                if encoded.len() > (FILE_BYTES as usize).div_ceil(3) * 4 {
-                    return Err(limit("Generated file exceeds 1 MiB."));
-                }
-                let bytes = STANDARD
-                    .decode(encoded)
-                    .map_err(|_| Error::bad("Invalid file bytes."))?;
-                self.write(&self.files, &key, &bytes, FILE_BYTES)?;
-                Ok(json!({"path":path,"size":bytes.len()}))
-            }
-            "storage-file-read" => {
-                let bytes = Self::read(&self.files, &name(text("path")?, false)?, FILE_BYTES)?
-                    .ok_or_else(Error::not_found)?;
-                Ok(json!({"data":STANDARD.encode(bytes)}))
-            }
-            "storage-file-info" => {
-                let path = text("path")?;
-                let size = Self::existing(&self.files, &name(path, false)?)?
-                    .ok_or_else(Error::not_found)?;
-                Ok(json!({"path":path,"size":size}))
-            }
-            "storage-list" => {
-                let prefix = input["prefix"].as_str().unwrap_or("");
-                let after = input["after"].as_str().unwrap_or("");
-                if prefix.len() > 120 || after.len() > 120 {
-                    return Err(Error::bad("Invalid storage cursor."));
-                }
-                self.scan()?;
-                let mut entries = Vec::new();
-                for entry in self.files.entries().map_err(io)? {
-                    let entry = entry.map_err(io)?;
-                    let path = String::from_utf8(
-                        hex::decode(entry.file_name().to_string_lossy().as_bytes())
-                            .map_err(|_| Error::bad("Invalid stored filename."))?,
-                    )
-                    .map_err(|_| Error::bad("Invalid stored filename."))?;
-                    if path.starts_with(prefix) && path.as_str() > after {
-                        let size = entry.metadata().map_err(io)?.len();
-                        entries.push(json!({"path":path,"size":size}));
-                    }
-                }
-                entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
-                let more = entries.len() > 100;
-                entries.truncate(100);
-                let next = if more {
-                    entries.last().map(|v| v["path"].clone())
-                } else {
-                    None
-                };
-                Ok(json!({"files":entries,"next":next}))
-            }
-            "storage-usage" => {
-                let (bytes, entries) = self.scan()?;
-                Ok(
-                    json!({"bytes":bytes,"entries":entries,"limit_bytes":self.quota,"max_entries":self.entries,"max_file_bytes":FILE_BYTES,"max_value_bytes":VALUE_BYTES}),
-                )
-            }
-            _ => Err(Error::bad("Unknown storage operation.")),
+    /// Replaces the value under `key` with JSON text.
+    pub fn set_value(&self, key: &str, json: &str) -> Result<()> {
+        let key = name(key, true)?;
+        let value: Value = serde_json::from_str(json)
+            .map_err(|_| Error::bad("Storage values must be JSON text."))?;
+        self.write(
+            &self.values,
+            &key,
+            &serde_json::to_vec(&value)?,
+            VALUE_BYTES,
+        )
+    }
+    /// The JSON text under `key`, if any.
+    pub fn value(&self, key: &str) -> Result<Option<String>> {
+        Self::read(&self.values, &name(key, true)?, VALUE_BYTES)?
+            .map(|bytes| Ok(serde_json::from_slice::<Value>(&bytes)?.to_string()))
+            .transpose()
+    }
+    pub fn delete_value(&self, key: &str) -> Result<bool> {
+        Self::remove(&self.values, &name(key, true)?)
+    }
+    pub fn write_file(&self, path: &str, bytes: &[u8]) -> Result<FileInfo> {
+        let key = name(path, false)?;
+        if bytes.len() as u64 > FILE_BYTES {
+            return Err(limit("Generated file exceeds 1 MiB."));
         }
+        self.write(&self.files, &key, bytes, FILE_BYTES)?;
+        Ok(FileInfo {
+            path: path.into(),
+            size: bytes.len() as u64,
+        })
+    }
+    pub fn read_file(&self, path: &str) -> Result<Vec<u8>> {
+        Self::read(&self.files, &name(path, false)?, FILE_BYTES)?.ok_or_else(Error::not_found)
+    }
+    pub fn file_info(&self, path: &str) -> Result<FileInfo> {
+        let size =
+            Self::existing(&self.files, &name(path, false)?)?.ok_or_else(Error::not_found)?;
+        Ok(FileInfo {
+            path: path.into(),
+            size,
+        })
+    }
+    pub fn delete_file(&self, path: &str) -> Result<bool> {
+        Self::remove(&self.files, &name(path, false)?)
+    }
+    fn remove(dir: &Dir, name: &str) -> Result<bool> {
+        if Self::existing(dir, name)?.is_none() {
+            return Ok(false);
+        }
+        dir.remove_file(name).map_err(io)?;
+        Ok(true)
+    }
+    /// Files under `prefix`, sorted by path, 100 at a time after the `after` cursor.
+    pub fn list_files(&self, prefix: &str, after: Option<&str>) -> Result<FilePage> {
+        let after = after.unwrap_or("");
+        if prefix.len() > 120 || after.len() > 120 {
+            return Err(Error::bad("Invalid storage cursor."));
+        }
+        self.scan()?;
+        let mut files = Vec::new();
+        for entry in self.files.entries().map_err(io)? {
+            let entry = entry.map_err(io)?;
+            let path = String::from_utf8(
+                hex::decode(entry.file_name().to_string_lossy().as_bytes())
+                    .map_err(|_| Error::bad("Invalid stored filename."))?,
+            )
+            .map_err(|_| Error::bad("Invalid stored filename."))?;
+            if path.starts_with(prefix) && path.as_str() > after {
+                let size = entry.metadata().map_err(io)?.len();
+                files.push(FileInfo { path, size });
+            }
+        }
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let more = files.len() > 100;
+        files.truncate(100);
+        let next = if more {
+            files.last().map(|f| f.path.clone())
+        } else {
+            None
+        };
+        Ok(FilePage { files, next })
+    }
+    pub fn usage(&self) -> Result<Usage> {
+        let (bytes, entries) = self.scan()?;
+        Ok(Usage {
+            bytes,
+            entries: entries as u32,
+            limit_bytes: self.quota,
+            max_entries: self.entries as u32,
+            max_file_bytes: FILE_BYTES,
+            max_value_bytes: VALUE_BYTES,
+        })
     }
     pub async fn open_file(self: &Arc<Self>, path: &str) -> Result<File> {
         let guard = self.lock.clone().lock_owned().await;
@@ -325,71 +354,36 @@ mod tests {
     #[test]
     fn values_files_and_case_sensitive_unicode_names_survive_reopening() {
         let (dir, storage) = storage();
-        storage
-            .run(
-                "storage-set",
-                &json!({"key":"prefs","value":{"theme":"green"}}),
-            )
-            .unwrap();
+        storage.set_value("prefs", r#"{"theme":"green"}"#).unwrap();
         for path in ["reports/枝.txt", "reports/BRANCH.txt", "reports/branch.txt"] {
-            storage
-                .run(
-                    "storage-file-write",
-                    &json!({"path":path,"data":STANDARD.encode(path)}),
-                )
-                .unwrap();
+            storage.write_file(path, path.as_bytes()).unwrap();
         }
         drop(storage);
         let storage = Storage::open(&dir.path().join("storage")).unwrap();
         assert_eq!(
-            storage.run("storage-get", &json!({"key":"prefs"})).unwrap()["value"]["theme"],
-            "green"
+            storage.value("prefs").unwrap().as_deref(),
+            Some(r#"{"theme":"green"}"#)
         );
-        assert_eq!(
-            storage
-                .run("storage-get", &json!({"key":"absent"}))
-                .unwrap()["found"],
-            false
-        );
-        assert_eq!(
-            storage
-                .run("storage-list", &json!({"prefix":"reports/"}))
-                .unwrap()["files"]
-                .as_array()
-                .unwrap()
-                .len(),
-            3
-        );
+        assert_eq!(storage.value("absent").unwrap(), None);
+        assert_eq!(storage.list_files("reports/", None).unwrap().files.len(), 3);
         for path in ["reports/枝.txt", "reports/BRANCH.txt", "reports/branch.txt"] {
-            let result = storage
-                .run("storage-file-read", &json!({"path":path}))
-                .unwrap();
-            assert_eq!(
-                STANDARD.decode(result["data"].as_str().unwrap()).unwrap(),
-                path.as_bytes()
-            );
+            assert_eq!(storage.read_file(path).unwrap(), path.as_bytes());
         }
     }
     #[test]
     fn invalid_names_and_oversized_values_never_replace_existing_data() {
         let (_dir, storage) = storage();
-        storage
-            .run("storage-set", &json!({"key":"prefs","value":"old"}))
-            .unwrap();
+        storage.set_value("prefs", r#""old""#).unwrap();
+        let large = serde_json::to_string(&"x".repeat(VALUE_BYTES as usize)).unwrap();
         assert_eq!(
-            storage
-                .run(
-                    "storage-set",
-                    &json!({"key":"prefs","value":"x".repeat(VALUE_BYTES as usize)})
-                )
-                .unwrap_err()
-                .status,
+            storage.set_value("prefs", &large).unwrap_err().status,
             StatusCode::PAYLOAD_TOO_LARGE
         );
         assert_eq!(
-            storage.run("storage-get", &json!({"key":"prefs"})).unwrap()["value"],
-            "old"
+            storage.set_value("prefs", "not json").unwrap_err().status,
+            StatusCode::BAD_REQUEST
         );
+        assert_eq!(storage.value("prefs").unwrap().as_deref(), Some(r#""old""#));
         for path in [
             "../other-app/secret",
             "/absolute",
@@ -400,25 +394,14 @@ mod tests {
             "a/../b",
             "",
         ] {
-            assert!(
-                storage
-                    .run("storage-file-write", &json!({"path":path,"data":"eA=="}))
-                    .is_err(),
-                "{path}"
-            );
+            assert!(storage.write_file(path, b"x").is_err(), "{path}");
         }
         assert!(
             storage
-                .run(
-                    "storage-file-write",
-                    &json!({"path":"large","data":STANDARD.encode(vec![0;FILE_BYTES as usize+1])})
-                )
+                .write_file("large", &vec![0; FILE_BYTES as usize + 1])
                 .is_err()
         );
-        assert_eq!(
-            storage.run("storage-usage", &Value::Null).unwrap()["entries"],
-            1
-        );
+        assert_eq!(storage.usage().unwrap().entries, 1);
     }
     #[test]
     fn quota_and_entry_limits_allow_replacement_and_deletion() {
@@ -426,12 +409,7 @@ mod tests {
         let writable = Arc::get_mut(&mut storage).unwrap();
         writable.quota = 10;
         writable.entries = 2;
-        let write = |path: &str, bytes: &[u8]| {
-            storage.run(
-                "storage-file-write",
-                &json!({"path":path,"data":STANDARD.encode(bytes)}),
-            )
-        };
+        let write = |path: &str, bytes: &[u8]| storage.write_file(path, bytes);
         write("a", b"12345").unwrap();
         write("b", b"12345").unwrap();
         assert_eq!(
@@ -443,48 +421,25 @@ mod tests {
             StatusCode::PAYLOAD_TOO_LARGE
         );
         write("a", b"1").unwrap();
-        assert_eq!(
-            storage
-                .run("storage-file-delete", &json!({"path":"b"}))
-                .unwrap(),
-            true
-        );
-        assert_eq!(
-            storage
-                .run("storage-file-delete", &json!({"path":"b"}))
-                .unwrap(),
-            false
-        );
+        assert!(storage.delete_file("b").unwrap());
+        assert!(!storage.delete_file("b").unwrap());
         write("c", b"123456789").unwrap();
-        assert_eq!(
-            storage.run("storage-usage", &Value::Null).unwrap()["bytes"],
-            10
-        );
+        assert_eq!(storage.usage().unwrap().bytes, 10);
     }
     #[test]
     fn listings_have_stable_bounded_cursors() {
         let (_dir, storage) = storage();
         for i in 0..105 {
             storage
-                .run(
-                    "storage-file-write",
-                    &json!({"path":format!("notes/{i:03}.txt"),"data":""}),
-                )
+                .write_file(&format!("notes/{i:03}.txt"), b"")
                 .unwrap();
         }
-        let first = storage
-            .run("storage-list", &json!({"prefix":"notes/"}))
-            .unwrap();
-        assert_eq!(first["files"].as_array().unwrap().len(), 100);
-        let second = storage
-            .run(
-                "storage-list",
-                &json!({"prefix":"notes/","after":first["next"]}),
-            )
-            .unwrap();
-        assert_eq!(second["files"].as_array().unwrap().len(), 5);
-        assert_eq!(second["next"], Value::Null);
-        assert_eq!(second["files"][0]["path"], "notes/100.txt");
+        let first = storage.list_files("notes/", None).unwrap();
+        assert_eq!(first.files.len(), 100);
+        let second = storage.list_files("notes/", first.next.as_deref()).unwrap();
+        assert_eq!(second.files.len(), 5);
+        assert_eq!(second.next, None);
+        assert_eq!(second.files[0].path, "notes/100.txt");
     }
     #[tokio::test]
     async fn apps_are_isolated_and_concurrent_writes_respect_quota() {
@@ -492,28 +447,13 @@ mod tests {
         Arc::get_mut(&mut storage).unwrap().quota = 5;
         let other = Storage::open(&dir.path().join("another-app/storage")).unwrap();
         let (a, b) = tokio::join!(
-            storage.call("storage-file-write", json!({"path":"a","data":"MTIzNDU="})),
-            storage.call("storage-file-write", json!({"path":"b","data":"MTIzNDU="}))
+            storage.job(|s| s.write_file("a", b"12345")),
+            storage.job(|s| s.write_file("b", b"12345"))
         );
         assert_ne!(a.is_ok(), b.is_ok());
-        assert_eq!(
-            other
-                .call("storage-get", json!({"key":"prefs"}))
-                .await
-                .unwrap()["found"],
-            false
-        );
-        other
-            .call("storage-set", json!({"key":"prefs","value":42}))
-            .await
-            .unwrap();
-        assert_eq!(
-            storage
-                .call("storage-get", json!({"key":"prefs"}))
-                .await
-                .unwrap()["found"],
-            false
-        );
+        assert_eq!(other.job(|s| s.value("prefs")).await.unwrap(), None);
+        other.job(|s| s.set_value("prefs", "42")).await.unwrap();
+        assert_eq!(storage.job(|s| s.value("prefs")).await.unwrap(), None);
     }
     #[tokio::test]
     async fn snapshots_wait_for_background_io_even_if_the_request_is_cancelled() {
@@ -549,20 +489,9 @@ mod tests {
         {
             assert!(std::process::Command::new("powershell").args(["-NoProfile","-Command","New-Item -ItemType Junction -Path $env:LOKI_STORAGE_LINK -Target $env:LOKI_STORAGE_OUTSIDE -ErrorAction Stop | Out-Null"]).env("LOKI_STORAGE_LINK",&link).env("LOKI_STORAGE_OUTSIDE",outside.path()).status().unwrap().success());
         }
-        assert!(
-            storage
-                .run("storage-file-read", &json!({"path":"escape"}))
-                .is_err()
-        );
-        assert!(storage.run("storage-list", &Value::Null).is_err());
-        assert!(
-            storage
-                .run(
-                    "storage-file-write",
-                    &json!({"path":"escape","data":"eA=="})
-                )
-                .is_err()
-        );
+        assert!(storage.read_file("escape").is_err());
+        assert!(storage.list_files("", None).is_err());
+        assert!(storage.write_file("escape", b"x").is_err());
         assert_eq!(
             std::fs::read_to_string(outside.path().join("secret")).unwrap(),
             "private"

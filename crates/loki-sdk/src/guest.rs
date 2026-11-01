@@ -1,35 +1,366 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use wasi::http::types::{
     Fields, IncomingRequest, OutgoingBody, OutgoingResponse, ResponseOutparam,
 };
 
-mod bindings {
+#[doc(hidden)]
+pub(crate) mod bindings {
     wit_bindgen::generate!({path:"wit",world:"host-api"});
 }
-pub(crate) fn call<T: DeserializeOwned>(operation: &str, input: impl Serialize) -> Result<T> {
-    let input = serde_json::to_string(&input)?;
-    if input.len() > 2 * 1024 * 1024 {
-        return Err(Error::new(413, "Host request exceeds 2 MiB."));
-    }
+
+/// Calls to the typed host API (`loki:app@0.3.0`). In native tests a
+/// [`testing::with_host`] fake answers them instead, by operation name and JSON.
+// Arguments go unused on targets that are neither WASI nor a test.
+#[allow(unused_variables)]
+pub(crate) mod host {
+    use super::*;
+    use crate::{FileInfo, FilePage, StorageUsage};
+    #[cfg(target_arch = "wasm32")]
+    use bindings::loki::app as wit;
     #[cfg(any(test, feature = "testing"))]
-    if let Some(result) = testing::invoke(operation, &input) {
-        return serde_json::from_str(&result.map_err(Error::from_host)?).map_err(Into::into);
+    use serde_json::json;
+
+    /// Tries the test fake, then the WASI host.
+    macro_rules! host {
+        ($operation:literal, $input:expr, |$fake:ident: $output:ty| $convert:expr, $real:expr) => {{
+            #[cfg(any(test, feature = "testing"))]
+            if let Some(result) = testing::fake::<$output>($operation, $input) {
+                return result.and_then(|$fake| $convert);
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let result: Result<_> = $real;
+                return result;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            return Err(no_host());
+        }};
     }
-    #[cfg(target_arch = "wasm32")]
-    let output =
-        bindings::loki::app::platform::call(operation, &input).map_err(Error::from_host)?;
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (operation, input);
-        Err(Error::internal(
+    fn no_host() -> Error {
+        Error::internal(
             "LOKI services require a WASI host. Use loki_sdk::testing for native unit tests.",
-        ))
+        )
     }
     #[cfg(target_arch = "wasm32")]
-    serde_json::from_str(&output).map_err(Into::into)
+    impl From<wit::types::Error> for Error {
+        fn from(error: wit::types::Error) -> Self {
+            Error::new(error.status, error.message)
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    impl From<wit::types::User> for User {
+        fn from(user: wit::types::User) -> Self {
+            User {
+                id: user.id,
+                username: user.username,
+                name: user.name,
+                email: user.email,
+                bio: user.bio,
+                avatar: user.avatar,
+                roles: user.roles,
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    impl From<wit::types::Upload> for Upload {
+        fn from(upload: wit::types::Upload) -> Self {
+            Upload {
+                field: upload.field,
+                name: upload.name,
+                content_type: upload.content_type,
+                size: upload.size,
+                token: upload.token,
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    impl From<wit::storage::FileInfo> for FileInfo {
+        fn from(info: wit::storage::FileInfo) -> Self {
+            FileInfo {
+                path: info.path,
+                size: info.size,
+            }
+        }
+    }
+
+    pub fn context() -> Result<Context> {
+        host!("context", Value::Null, |c: Context| Ok(c), {
+            let c = wit::request::get_context();
+            Ok(Context {
+                app_id: c.app_id,
+                origin: c.origin,
+                issuer: c.issuer,
+                dashboard_url: c.dashboard_url,
+                user: c.user.map(Into::into),
+                csrf: c.csrf,
+                config: serde_json::from_str(&c.config)?,
+                panel_action: c.panel_action.map(|a| PanelAction {
+                    action: a.action,
+                    value: a.value,
+                    fields: a.fields.into_iter().collect(),
+                    files: a.files.into_iter().map(Into::into).collect(),
+                }),
+                lan_bind: c.lan_bind,
+                lan_ips: c.lan_ips,
+            })
+        })
+    }
+    pub fn form() -> Result<Form> {
+        host!("form", Value::Null, |f: Form| Ok(f), {
+            let f = wit::request::get_form()?;
+            Ok(Form {
+                fields: f.fields.into_iter().collect(),
+                files: f.files.into_iter().map(Into::into).collect(),
+            })
+        })
+    }
+    pub fn log(message: &str) -> Result<()> {
+        host!("log", json!({"message":message}), |r: ()| Ok(r), {
+            wit::request::log(message);
+            Ok(())
+        })
+    }
+    pub fn transaction(statements: &[Statement]) -> Result<Vec<QueryResult>> {
+        host!(
+            "database",
+            json!({"statements":statements}),
+            |r: Vec<QueryResult>| Ok(r),
+            {
+                use wit::database::Value as Sql;
+                let mut typed = Vec::with_capacity(statements.len());
+                for statement in statements {
+                    let params = statement
+                        .params
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    let params = params
+                        .iter()
+                        .map(|value| match value {
+                            Value::Null => Ok(Sql::Null),
+                            Value::Bool(b) => Ok(Sql::Integer(i64::from(*b))),
+                            Value::Number(n) => Ok(match n.as_i64() {
+                                Some(i) => Sql::Integer(i),
+                                None => Sql::Real(n.as_f64().unwrap_or(f64::NAN)),
+                            }),
+                            Value::String(s) => Ok(Sql::Text(s.clone())),
+                            _ => Err(Error::bad("SQL parameters must be scalar values.")),
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    typed.push(wit::database::Statement {
+                        sql: statement.sql.clone(),
+                        params,
+                    });
+                }
+                Ok(wit::database::transaction(&typed)?
+                    .into_iter()
+                    .map(|result| QueryResult {
+                        rows: result
+                            .rows
+                            .into_iter()
+                            .map(|row| {
+                                let object = result.columns.iter().cloned().zip(
+                                    row.into_iter().map(|value| match value {
+                                        Sql::Null => Value::Null,
+                                        Sql::Integer(i) => serde_json::json!(i),
+                                        Sql::Real(r) => serde_json::json!(r),
+                                        Sql::Text(s) => Value::String(s),
+                                    }),
+                                );
+                                Value::Object(object.collect())
+                            })
+                            .collect(),
+                        affected: result.affected,
+                    })
+                    .collect())
+            }
+        )
+    }
+    pub fn retain(token: &str, path: String) -> Result<StoredFile> {
+        host!(
+            "retain-upload",
+            json!({"token":token,"path":path}),
+            |f: StoredFile| Ok(f),
+            {
+                wit::uploads::retain(token, &path)?;
+                Ok(StoredFile { path })
+            }
+        )
+    }
+    pub fn delete_upload(path: &str) -> Result<()> {
+        host!("delete-file", json!({"path":path}), |r: ()| Ok(r), {
+            Ok(wit::uploads::delete(path)?)
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn serve(
+        source: wit::types::FileSource,
+        path: &str,
+        filename: Option<&str>,
+        download: bool,
+    ) -> Result<()> {
+        let options = wit::responses::ServeOptions {
+            filename: filename.map(Into::into),
+            download,
+        };
+        Ok(wit::responses::serve_file(source, path, &options)?)
+    }
+    pub fn serve_asset(path: &str) -> Result<()> {
+        host!("asset", json!({"path":path}), |r: ()| Ok(r), {
+            serve(wit::types::FileSource::Asset, path, None, false)
+        })
+    }
+    pub fn serve_upload(path: &str, filename: &str, download: bool) -> Result<()> {
+        host!(
+            "file",
+            json!({"path":path,"filename":filename,"download":download}),
+            |r: ()| Ok(r),
+            serve(
+                wit::types::FileSource::Upload,
+                path,
+                Some(filename),
+                download
+            )
+        )
+    }
+    pub fn serve_storage(path: &str, filename: &str, download: bool) -> Result<()> {
+        host!(
+            "storage-file-serve",
+            json!({"path":path,"filename":filename,"download":download}),
+            |r: ()| Ok(r),
+            serve(
+                wit::types::FileSource::Storage,
+                path,
+                Some(filename),
+                download
+            )
+        )
+    }
+    pub fn set_json(key: &str, value: &Value) -> Result<()> {
+        host!(
+            "storage-set",
+            json!({"key":key,"value":value}),
+            |r: ()| Ok(r),
+            Ok(wit::storage::set(key, &value.to_string())?)
+        )
+    }
+    pub fn get_json(key: &str) -> Result<Option<Value>> {
+        #[cfg(any(test, feature = "testing"))]
+        #[derive(Deserialize)]
+        struct Found {
+            found: bool,
+            #[serde(default)]
+            value: Value,
+        }
+        host!(
+            "storage-get",
+            json!({"key":key}),
+            |f: Found| Ok(f.found.then_some(f.value)),
+            wit::storage::get(key)?
+                .map(|text| serde_json::from_str(&text).map_err(Into::into))
+                .transpose()
+        )
+    }
+    pub fn delete_json(key: &str) -> Result<bool> {
+        host!("storage-delete", json!({"key":key}), |r: bool| Ok(r), {
+            Ok(wit::storage::delete(key)?)
+        })
+    }
+    pub fn write_file(path: &str, bytes: &[u8]) -> Result<FileInfo> {
+        #[cfg(any(test, feature = "testing"))]
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        host!(
+            "storage-file-write",
+            json!({"path":path,"data":STANDARD.encode(bytes)}),
+            |f: FileInfo| Ok(f),
+            Ok(wit::storage::write_file(path, bytes)?.into())
+        )
+    }
+    pub fn read_file(path: &str) -> Result<Vec<u8>> {
+        #[cfg(any(test, feature = "testing"))]
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        #[cfg(any(test, feature = "testing"))]
+        #[derive(Deserialize)]
+        struct Bytes {
+            data: String,
+        }
+        host!(
+            "storage-file-read",
+            json!({"path":path}),
+            |b: Bytes| STANDARD
+                .decode(b.data)
+                .map_err(|_| Error::internal("Invalid file bytes from host.")),
+            Ok(wit::storage::read_file(path)?)
+        )
+    }
+    pub fn file_info(path: &str) -> Result<FileInfo> {
+        host!(
+            "storage-file-info",
+            json!({"path":path}),
+            |f: FileInfo| Ok(f),
+            { Ok(wit::storage::get_file_info(path)?.into()) }
+        )
+    }
+    pub fn delete_file(path: &str) -> Result<bool> {
+        host!(
+            "storage-file-delete",
+            json!({"path":path}),
+            |r: bool| Ok(r),
+            { Ok(wit::storage::delete_file(path)?) }
+        )
+    }
+    pub fn list_files(prefix: &str, after: Option<&str>) -> Result<FilePage> {
+        host!(
+            "storage-list",
+            json!({"prefix":prefix,"after":after}),
+            |p: FilePage| Ok(p),
+            {
+                let page = wit::storage::list_files(prefix, after)?;
+                Ok(FilePage {
+                    files: page.files.into_iter().map(Into::into).collect(),
+                    next: page.next,
+                })
+            }
+        )
+    }
+    pub fn usage() -> Result<StorageUsage> {
+        host!("storage-usage", Value::Null, |u: StorageUsage| Ok(u), {
+            let u = wit::storage::get_usage()?;
+            Ok(StorageUsage {
+                bytes: u.bytes,
+                entries: u.entries as usize,
+                limit_bytes: u.limit_bytes,
+                max_entries: u.max_entries as usize,
+                max_file_bytes: u.max_file_bytes,
+                max_value_bytes: u.max_value_bytes,
+            })
+        })
+    }
+    #[cfg(feature = "realtime")]
+    pub fn restart_realtime() -> Result<()> {
+        host!("realtime-restart", Value::Null, |r: Value| Ok(()), {
+            Ok(wit::realtime_control::restart()?)
+        })
+    }
+    #[cfg(feature = "realtime")]
+    #[cfg(target_arch = "wasm32")]
+    pub fn file_size(source: wit::types::FileSource, path: &str) -> Result<u64> {
+        Ok(wit::files::size(source, path)?)
+    }
+    #[cfg(feature = "realtime")]
+    #[cfg(target_arch = "wasm32")]
+    pub fn read_range(
+        source: wit::types::FileSource,
+        path: &str,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>> {
+        Ok(wit::files::read(source, path, offset, length)?)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -95,7 +426,7 @@ pub struct PanelAction {
 }
 impl Context {
     pub fn current() -> Result<Self> {
-        call("context", ())
+        host::context()
     }
     pub fn require_user(&self) -> Result<&User> {
         self.user.as_ref().ok_or_else(Error::unauthorized)
@@ -112,7 +443,7 @@ impl Context {
         &self.csrf
     }
     pub fn form(&self) -> Result<Form> {
-        call("form", ())
+        host::form()
     }
     pub fn database(&self) -> Database {
         Database
@@ -158,7 +489,7 @@ impl QueryResult {
 }
 impl Database {
     pub fn transaction(&self, statements: &[Statement]) -> Result<Vec<QueryResult>> {
-        call("database", json!({"statements":statements}))
+        host::transaction(statements)
     }
     pub fn query(&self, sql: &str, params: impl Serialize) -> Result<QueryResult> {
         let mut results = self.transaction(&[Statement::new(sql, params)?])?;
@@ -231,10 +562,7 @@ pub struct Upload {
 }
 impl Upload {
     pub fn retain(&self, path: impl Into<String>) -> Result<StoredFile> {
-        call(
-            "retain-upload",
-            json!({"token":self.token,"path":path.into()}),
-        )
+        host::retain(&self.token, path.into())
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -246,7 +574,7 @@ impl StoredFile {
         Self { path: path.into() }
     }
     pub fn delete(&self) -> Result<()> {
-        call("delete-file", json!({"path":self.path}))
+        host::delete_upload(&self.path)
     }
     pub fn download(&self, filename: &str) -> Result<Response> {
         self.respond(filename, true)
@@ -255,19 +583,16 @@ impl StoredFile {
         self.respond(filename, false)
     }
     fn respond(&self, filename: &str, download: bool) -> Result<Response> {
-        call::<()>(
-            "file",
-            json!({"path":self.path,"filename":filename,"download":download}),
-        )?;
+        host::serve_upload(&self.path, filename, download)?;
         Ok(Response::empty(200))
     }
 }
 pub fn asset(path: &str) -> Result<Response> {
-    call::<()>("asset", json!({"path":path}))?;
+    host::serve_asset(path)?;
     Ok(Response::empty(200))
 }
 pub fn log(message: impl AsRef<str>) -> Result<()> {
-    call("log", json!({"message":message.as_ref()}))
+    host::log(message.as_ref())
 }
 pub fn now() -> std::time::SystemTime {
     std::time::SystemTime::now()
@@ -616,6 +941,14 @@ pub mod testing {
     ) -> Option<std::result::Result<String, String>> {
         HOST.with(|host| host.borrow_mut().as_mut().map(|h| h(operation, input)))
     }
+    /// Asks the installed fake host, if any, using the operation names and JSON of
+    /// the host API before 0.3.
+    pub(crate) fn fake<T: DeserializeOwned>(operation: &str, input: Value) -> Option<Result<T>> {
+        invoke(operation, &input.to_string()).map(|result| {
+            let output = result.map_err(Error::from_host)?;
+            serde_json::from_str(&output).map_err(Into::into)
+        })
+    }
     /// Install a thread-local fake host for one test, restoring it even after panic.
     pub fn with_host<T>(
         host: impl FnMut(&str, &str) -> std::result::Result<String, String> + 'static,
@@ -647,6 +980,7 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     fn context() -> Context {
         serde_json::from_value(json!({"app_id":"demo","origin":"http://demo.localhost","issuer":"http://localhost","user":{"id":"stable-id","username":"a","name":"A","email":"","roles":["access"]},"config":{"limit":12}})).unwrap()
     }

@@ -1,13 +1,15 @@
-//! The host API an app calls: its SQLite database, files, storage, and logs.
+//! The typed host API an app imports (`loki:app@0.3.0`): its request context and
+//! form, SQLite database, uploads, storage, file responses, and logs.
 use super::{FileSource, Host, component_log};
-use crate::{Error, Result, apps, files, realtime};
+use crate::{Error, Result, app_storage, apps, files, realtime};
 use axum::http::StatusCode;
 use futures_util::TryStreamExt;
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::Value;
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 use std::{path::PathBuf, sync::Arc, time::Duration};
+use wasmtime::component::{ComponentType, Lift, Linker, Lower};
 
-use wasmtime::component::Linker;
 // SQLite must not become an escape from the component's filesystem sandbox.
 unsafe extern "C" fn authorize_sql(
     _: *mut std::ffi::c_void,
@@ -92,37 +94,262 @@ pub(super) async fn database(path: PathBuf) -> Result<sqlx::SqlitePool> {
         .connect_with(options)
         .await?)
 }
-pub(super) fn link_files(linker: &mut Linker<Host>) -> Result<()> {
-    let mut files = linker.instance("loki:app/files@0.1.0")?;
-    files.func_wrap_async(
-        "size",
-        |mut context, (source, path): (FileSource, String)| {
+/// Why a host call failed. Matches `error` in the WIT.
+#[derive(Debug, ComponentType, Lower)]
+#[component(record)]
+pub(crate) struct WitError {
+    status: u16,
+    message: String,
+}
+impl From<Error> for WitError {
+    fn from(error: Error) -> Self {
+        Self {
+            status: error.status.as_u16(),
+            message: error.message,
+        }
+    }
+}
+type HostResult<T> = std::result::Result<T, WitError>;
+
+/// Matches `user` in the WIT. Read from the JSON LOKI builds for each request.
+#[derive(Clone, Debug, Deserialize, ComponentType, Lower)]
+#[component(record)]
+pub(crate) struct User {
+    id: String,
+    username: String,
+    name: String,
+    email: String,
+    #[serde(default)]
+    bio: String,
+    #[serde(default)]
+    avatar: bool,
+    roles: Vec<String>,
+}
+/// Matches `upload` in the WIT.
+#[derive(Clone, Debug, Deserialize, ComponentType, Lower)]
+#[component(record)]
+struct Upload {
+    field: String,
+    name: String,
+    #[component(name = "content-type")]
+    content_type: String,
+    size: u64,
+    token: String,
+}
+/// Matches `panel-action` in the WIT.
+#[derive(Debug, Deserialize, ComponentType, Lower)]
+#[component(record)]
+struct PanelAction {
+    action: String,
+    #[serde(default)]
+    value: String,
+    #[serde(default, deserialize_with = "pairs")]
+    fields: Vec<(String, String)>,
+    #[serde(default)]
+    files: Vec<Upload>,
+}
+/// Matches `context` in the WIT.
+#[derive(Debug, Default, Deserialize, ComponentType, Lower)]
+#[component(record)]
+#[serde(default)]
+struct Context {
+    #[component(name = "app-id")]
+    app_id: String,
+    origin: String,
+    issuer: String,
+    #[component(name = "dashboard-url")]
+    dashboard_url: String,
+    user: Option<User>,
+    csrf: String,
+    #[serde(deserialize_with = "json_text")]
+    config: String,
+    #[component(name = "panel-action")]
+    panel_action: Option<PanelAction>,
+    #[component(name = "lan-bind")]
+    lan_bind: String,
+    #[component(name = "lan-ips")]
+    lan_ips: Vec<String>,
+}
+/// Matches `form` in the WIT.
+#[derive(Debug, Default, Deserialize, ComponentType, Lower)]
+#[component(record)]
+struct Form {
+    #[serde(default, deserialize_with = "pairs")]
+    fields: Vec<(String, String)>,
+    #[serde(default)]
+    files: Vec<Upload>,
+}
+/// Who opened a realtime connection. Matches `peer` in the WIT's `realtime-handler`.
+#[derive(Debug, ComponentType, Lower)]
+#[component(record)]
+pub(crate) struct ConnectionPeer {
+    pub remote: String,
+    pub user: Option<User>,
+}
+fn pairs<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<(String, String)>, D::Error> {
+    Ok(
+        std::collections::BTreeMap::<String, String>::deserialize(deserializer)?
+            .into_iter()
+            .collect(),
+    )
+}
+fn json_text<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    Ok(Value::deserialize(deserializer)?.to_string())
+}
+/// Matches `value` in the WIT's `database`.
+#[derive(Debug, ComponentType, Lift, Lower)]
+#[component(variant)]
+enum SqlValue {
+    #[component(name = "null")]
+    Null,
+    #[component(name = "integer")]
+    Integer(i64),
+    #[component(name = "real")]
+    Real(f64),
+    #[component(name = "text")]
+    Text(String),
+}
+#[derive(Debug, ComponentType, Lift)]
+#[component(record)]
+struct Statement {
+    sql: String,
+    params: Vec<SqlValue>,
+}
+#[derive(Debug, ComponentType, Lower)]
+#[component(record)]
+struct QueryResult {
+    columns: Vec<String>,
+    rows: Vec<Vec<SqlValue>>,
+    affected: u64,
+}
+/// Matches `serve-options` in the WIT.
+#[derive(Clone, Debug, Default, ComponentType, Lift)]
+#[component(record)]
+pub(crate) struct ServeOptions {
+    pub filename: Option<String>,
+    pub download: bool,
+}
+
+/// Links every host interface an app can import, except `realtime`.
+pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
+    let mut request = linker.instance("loki:app/request@0.3.0")?;
+    request.func_wrap("get-context", |store, ()| {
+        let context: Context = serde_json::from_value(store.data().info.clone())?;
+        Ok((context,))
+    })?;
+    request.func_wrap("get-form", |store, ()| Ok((store.data().form(),)))?;
+    request.func_wrap("log", |store, (message,): (String,)| {
+        component_log(&store.data().runtime, &message);
+        Ok(())
+    })?;
+
+    let mut database = linker.instance("loki:app/database@0.3.0")?;
+    database.func_wrap_async("transaction", |store, (statements,): (Vec<Statement>,)| {
+        Box::new(async move {
+            let host = store.data();
+            let pool = host
+                .capability("database")
+                .map(|()| host.runtime.pool.clone().unwrap());
+            let result = match pool {
+                Ok(pool) => query_database(&pool, statements).await,
+                Err(e) => Err(e),
+            };
+            Ok((result.map_err(WitError::from),))
+        })
+    })?;
+
+    let mut uploads = linker.instance("loki:app/uploads@0.3.0")?;
+    uploads.func_wrap("retain", |mut store, (token, path): (String, String)| {
+        Ok((store
+            .data_mut()
+            .retain(&token, &path)
+            .map_err(WitError::from),))
+    })?;
+    uploads.func_wrap("delete", |store, (path,): (String,)| {
+        Ok((store.data().delete_upload(&path).map_err(WitError::from),))
+    })?;
+
+    let mut storage = linker.instance("loki:app/storage@0.3.0")?;
+    macro_rules! storage {
+        ($name:literal, |$s:ident, $args:tt: $types:ty| $work:expr) => {
+            storage.func_wrap_async($name, |store, $args: $types| {
+                Box::new(async move {
+                    let storage = store.data().storage();
+                    let result = match storage {
+                        Ok(storage) => storage.job(move |$s| $work).await,
+                        Err(e) => Err(e),
+                    };
+                    Ok((result.map_err(WitError::from),))
+                })
+            })?;
+        };
+    }
+    storage!("set", |s, (key, json): (String, String)| s
+        .set_value(&key, &json));
+    storage!("get", |s, (key,): (String,)| s.value(&key));
+    storage!("delete", |s, (key,): (String,)| s.delete_value(&key));
+    storage!("write-file", |s, (path, data): (String, Vec<u8>)| s
+        .write_file(&path, &data));
+    storage!("read-file", |s, (path,): (String,)| s.read_file(&path));
+    storage!("get-file-info", |s, (path,): (String,)| s.file_info(&path));
+    storage!("delete-file", |s, (path,): (String,)| s.delete_file(&path));
+    storage!(
+        "list-files",
+        |s, (prefix, after): (String, Option<String>)| s.list_files(&prefix, after.as_deref())
+    );
+    storage!("get-usage", |s, (): ()| s.usage());
+
+    let mut responses = linker.instance("loki:app/responses@0.3.0")?;
+    responses.func_wrap_async(
+        "serve-file",
+        |mut store, (source, path, options): (FileSource, String, ServeOptions)| {
             Box::new(async move {
-                let result = match context.data_mut().open(source, &path).await {
-                    Ok(file) => file.metadata().map(|m| m.len()).map_err(|e| e.to_string()),
-                    Err(e) => Err(e.message),
-                };
-                Ok((result,))
+                let result = store.data_mut().serve_file(source, path, options).await;
+                Ok((result.map_err(WitError::from),))
             })
         },
     )?;
+
+    let mut files = linker.instance("loki:app/files@0.3.0")?;
+    files.func_wrap_async("size", |mut store, (source, path): (FileSource, String)| {
+        Box::new(async move {
+            let result = match store.data_mut().open(source, &path).await {
+                Ok(file) => file.metadata().map(|m| m.len()).map_err(Error::from),
+                Err(e) => Err(e),
+            };
+            Ok((result.map_err(WitError::from),))
+        })
+    })?;
     files.func_wrap_async(
         "read",
-        |mut context, (source, path, offset, length): (FileSource, String, u64, u32)| {
+        |mut store, (source, path, offset, length): (FileSource, String, u64, u32)| {
             Box::new(async move {
-                let result = match context.data_mut().open(source, &path).await {
+                let result = match store.data_mut().open(source, &path).await {
                     Ok(file) => {
                         tokio::task::spawn_blocking(move || read_range(file, offset, length))
                             .await
-                            .map_err(|e| e.to_string())
-                            .and_then(|r| r.map_err(|e| e.to_string()))
+                            .map_err(Error::from)
+                            .and_then(|r| r.map_err(Error::from))
                     }
-                    Err(e) => Err(e.message),
+                    Err(e) => Err(e),
                 };
-                Ok((result,))
+                Ok((result.map_err(WitError::from),))
             })
         },
     )?;
+
+    linker
+        .instance("loki:app/realtime-control@0.3.0")?
+        .func_wrap_async("restart", |mut store, ()| {
+            Box::new(async move {
+                let result = store.data_mut().restart_realtime().await;
+                Ok((result.map_err(WitError::from),))
+            })
+        })?;
     Ok(())
 }
 /// Reads at most 1 MiB from `offset`; less at the end of the file.
@@ -141,23 +368,10 @@ impl Host {
     /// Opens one of the app's own files, applying the same rules as serving it.
     pub(crate) async fn open(&mut self, source: FileSource, path: &str) -> Result<std::fs::File> {
         let file = match source {
-            FileSource::Storage => {
-                self.capability("storage")?;
-                self.runtime
-                    .storage
-                    .as_ref()
-                    .unwrap()
-                    .open_file(path)
-                    .await?
-            }
+            FileSource::Storage => self.storage()?.open_file(path).await?,
             FileSource::Upload | FileSource::Asset => {
                 let root = if matches!(source, FileSource::Asset) {
-                    if !apps::safe_relative(path)
-                        || !self.runtime.manifest.files.contains_key(path)
-                        || path == self.runtime.manifest.entry
-                    {
-                        return Err(Error::forbidden());
-                    }
+                    self.asset(path)?;
                     self.runtime.package.clone()
                 } else {
                     self.capability("uploads")?;
@@ -179,146 +393,115 @@ impl Host {
             Err(Error::forbidden())
         }
     }
-    pub(super) async fn call(&mut self, operation: &str, input: &str) -> Result<Value> {
-        if input.len() > 2 * 1024 * 1024 {
-            return Err(Error::bad("Host request is too large."));
+    /// Assets are the package's declared files, never the component itself.
+    fn asset(&self, path: &str) -> Result<()> {
+        if !apps::safe_relative(path)
+            || !self.runtime.manifest.files.contains_key(path)
+            || path == self.runtime.manifest.entry
+        {
+            return Err(Error::forbidden());
         }
-        let value: Value = if input.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(input)
-                .map_err(|_| Error::bad("Host request is not valid JSON."))?
-        };
-        let text = |key: &str| {
-            value
-                .get(key)
-                .and_then(Value::as_str)
-                .ok_or_else(|| Error::bad("Missing host argument."))
-        };
-        match operation {
-            "context" => Ok(self.info.clone()),
-            "form" => {
-                self.capability("forms")?;
-                Ok(self.form.clone())
-            }
-            "database" => {
-                self.capability("database")?;
-                query_database(self.runtime.pool.as_ref().unwrap(), &value).await
-            }
-            "asset" => {
-                let path = text("path")?;
-                if !apps::safe_relative(path)
-                    || !self.runtime.manifest.files.contains_key(path)
-                    || path == self.runtime.manifest.entry
-                {
-                    return Err(Error::forbidden());
-                }
-                self.file = Some((path.into(), FileSource::Asset, value.to_string()));
-                Ok(Value::Null)
-            }
-            "file" => {
-                self.capability("uploads")?;
-                let path = text("path")?;
-                if !apps::safe_relative(path) {
-                    return Err(Error::forbidden());
-                }
-                self.file = Some((path.into(), FileSource::Upload, value.to_string()));
-                Ok(Value::Null)
-            }
-            "retain-upload" => {
-                self.capability("uploads")?;
-                let token = text("token")?;
-                let path = text("path")?;
-                if !apps::safe_relative(path) || path.starts_with(".pending-") {
-                    return Err(Error::forbidden());
-                }
-                let source = self
-                    .pending
-                    .iter()
-                    .find(|p| p.file_name().and_then(|s| s.to_str()) == Some(token))
-                    .ok_or_else(Error::forbidden)?
-                    .clone();
-                let root = cap_std::fs::Dir::open_ambient_dir(
-                    self.runtime.data.join("uploads"),
-                    cap_std::ambient_authority(),
-                )?;
-                if let Some(parent) = std::path::Path::new(path).parent() {
-                    root.create_dir_all(parent)?;
-                }
-                if root.try_exists(path)? {
-                    return Err(Error::bad("Upload path already exists."));
-                }
-                root.rename(source.file_name().unwrap(), &root, path)?;
-                Ok(json!({"path":path}))
-            }
-            "delete-file" => {
-                self.capability("uploads")?;
-                let path = text("path")?;
-                let (dir, path) =
-                    files::confined(&self.runtime.data.join("uploads").to_string_lossy(), path)?;
-                dir.remove_file(path)?;
-                Ok(Value::Null)
-            }
-            "storage-file-serve" => {
-                self.capability("storage")?;
-                let path = text("path")?;
-                let filename = text("filename")?;
-                if filename.is_empty()
-                    || filename.len() > 255
-                    || filename.contains(['/', '\\'])
-                    || filename.chars().any(char::is_control)
-                {
-                    return Err(Error::bad(
-                        "Use a download filename of 1–255 UTF-8 bytes without separators or control characters.",
-                    ));
-                }
-                // Resolve and validate before committing the response marker.
-                self.runtime
-                    .storage
-                    .as_ref()
-                    .unwrap()
-                    .open_file(path)
-                    .await?;
-                self.file = Some((path.into(), FileSource::Storage, value.to_string()));
-                Ok(Value::Null)
-            }
-            operation if operation.starts_with("storage-") => {
-                self.capability("storage")?;
-                self.runtime
-                    .storage
-                    .as_ref()
-                    .unwrap()
-                    .call(operation, value)
-                    .await
-            }
-            "log" => {
-                component_log(&self.runtime, text("message")?);
-                Ok(Value::Null)
-            }
-            "realtime-restart" => {
-                self.capability("realtime")?;
-                self.runtime
-                    .realtime
-                    .get()
-                    .ok_or_else(|| {
-                        Error::new(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "The realtime instance is not running.",
-                        )
-                    })?
-                    .restart()
-                    .await;
-                Ok(Value::Null)
-            }
-            _ => Err(Error::bad("Unknown LOKI host operation.")),
+        Ok(())
+    }
+    fn storage(&self) -> Result<Arc<app_storage::Storage>> {
+        self.capability("storage")?;
+        Ok(self.runtime.storage.clone().unwrap())
+    }
+    fn form(&self) -> HostResult<Form> {
+        self.capability("forms")?;
+        if self.form.is_null() {
+            return Ok(Form::default());
         }
+        Ok(serde_json::from_value(self.form.clone()).map_err(Error::from)?)
+    }
+    /// Moves an upload from this request to `path` in the app's uploads.
+    fn retain(&mut self, token: &str, path: &str) -> Result<()> {
+        self.capability("uploads")?;
+        if !apps::safe_relative(path) || path.starts_with(".pending-") {
+            return Err(Error::forbidden());
+        }
+        let source = self
+            .pending
+            .iter()
+            .find(|p| p.file_name().and_then(|s| s.to_str()) == Some(token))
+            .ok_or_else(Error::forbidden)?
+            .clone();
+        let root = cap_std::fs::Dir::open_ambient_dir(
+            self.runtime.data.join("uploads"),
+            cap_std::ambient_authority(),
+        )?;
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            root.create_dir_all(parent)?;
+        }
+        if root.try_exists(path)? {
+            return Err(Error::bad("Upload path already exists."));
+        }
+        root.rename(source.file_name().unwrap(), &root, path)?;
+        Ok(())
+    }
+    fn delete_upload(&self, path: &str) -> Result<()> {
+        self.capability("uploads")?;
+        let (dir, path) =
+            files::confined(&self.runtime.data.join("uploads").to_string_lossy(), path)?;
+        dir.remove_file(path)?;
+        Ok(())
+    }
+    /// Marks the response to be one of the app's files, after checking it may be.
+    async fn serve_file(
+        &mut self,
+        source: FileSource,
+        path: String,
+        options: ServeOptions,
+    ) -> Result<()> {
+        if let Some(filename) = &options.filename
+            && (filename.is_empty()
+                || filename.len() > 255
+                || filename.contains(['/', '\\'])
+                || filename.chars().any(char::is_control))
+        {
+            return Err(Error::bad(
+                "Use a download filename of 1–255 UTF-8 bytes without separators or control characters.",
+            ));
+        }
+        match source {
+            FileSource::Asset => self.asset(&path)?,
+            FileSource::Upload => {
+                self.capability("uploads")?;
+                if !apps::safe_relative(&path) {
+                    return Err(Error::forbidden());
+                }
+            }
+            // Resolve and validate before committing the response marker.
+            FileSource::Storage => {
+                self.storage()?.open_file(&path).await?;
+            }
+        }
+        self.file = Some((path, source, options));
+        Ok(())
+    }
+    async fn restart_realtime(&mut self) -> Result<()> {
+        self.capability("realtime")?;
+        self.runtime
+            .realtime
+            .get()
+            .ok_or_else(|| {
+                Error::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The realtime instance is not running.",
+                )
+            })?
+            .restart()
+            .await;
+        Ok(())
     }
 }
-async fn query_database(pool: &sqlx::SqlitePool, value: &Value) -> Result<Value> {
-    let statements = value["statements"]
-        .as_array()
-        .filter(|s| !s.is_empty() && s.len() <= 64)
-        .ok_or_else(|| Error::bad("Provide 1–64 SQL statements."))?;
+async fn query_database(
+    pool: &sqlx::SqlitePool,
+    statements: Vec<Statement>,
+) -> Result<Vec<QueryResult>> {
+    if statements.is_empty() || statements.len() > 64 {
+        return Err(Error::bad("Provide 1–64 SQL statements."));
+    }
     let mut tx = pool.begin().await?;
     {
         let mut handle = tx.lock_handle().await?;
@@ -327,59 +510,62 @@ async fn query_database(pool: &sqlx::SqlitePool, value: &Value) -> Result<Value>
     }
     let mut results = Vec::new();
     let mut total = 0usize;
-    for statement in statements {
-        let sql = statement["sql"]
-            .as_str()
-            .filter(|s| s.len() <= 65536)
-            .ok_or_else(|| Error::bad("Invalid SQL statement."))?;
-        let mut query = sqlx::query(sql).persistent(false);
-        if let Some(parameters) = statement["params"].as_array() {
-            if parameters.len() > 256 {
-                return Err(Error::bad("Too many SQL parameters."));
-            }
-            for parameter in parameters {
-                query = match parameter {
-                    Value::Null => query.bind(Option::<String>::None),
-                    Value::Bool(v) => query.bind(*v),
-                    Value::String(v) => query.bind(v),
-                    Value::Number(v) if v.is_i64() => query.bind(v.as_i64().unwrap()),
-                    Value::Number(v) => query.bind(v.as_f64().unwrap()),
-                    _ => return Err(Error::bad("SQL parameters must be scalar values.")),
-                };
-            }
+    for statement in &statements {
+        if statement.sql.len() > 65536 {
+            return Err(Error::bad("Invalid SQL statement."));
+        }
+        if statement.params.len() > 256 {
+            return Err(Error::bad("Too many SQL parameters."));
+        }
+        let mut query = sqlx::query(&statement.sql).persistent(false);
+        for parameter in &statement.params {
+            query = match parameter {
+                SqlValue::Null => query.bind(Option::<String>::None),
+                SqlValue::Integer(v) => query.bind(*v),
+                SqlValue::Real(v) => query.bind(*v),
+                SqlValue::Text(v) => query.bind(v),
+            };
         }
         // SQLx 0.8's SQLite stream keeps result sizes bounded, including DML.
         #[allow(deprecated)]
         let mut stream = query.fetch_many(&mut *tx);
-        let mut rows = Vec::new();
-        let mut affected = 0;
+        let mut result = QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            affected: 0,
+        };
         while let Some(item) = stream.try_next().await? {
             match item {
-                sqlx::Either::Left(result) => affected += result.rows_affected(),
+                sqlx::Either::Left(done) => result.affected += done.rows_affected(),
                 sqlx::Either::Right(row) => {
-                    let mut object = serde_json::Map::new();
-                    for (index, column) in row.columns().iter().enumerate() {
+                    if result.rows.is_empty() {
+                        result.columns = row.columns().iter().map(|c| c.name().into()).collect();
+                    }
+                    let mut values = Vec::with_capacity(row.columns().len());
+                    for index in 0..row.columns().len() {
                         let raw = row.try_get_raw(index)?;
                         let value = if raw.is_null() {
-                            Value::Null
+                            SqlValue::Null
                         } else {
                             match raw.type_info().name() {
-                                "INTEGER" => json!(row.try_get::<i64, _>(index)?),
-                                "REAL" => json!(row.try_get::<f64, _>(index)?),
+                                "INTEGER" => SqlValue::Integer(row.try_get(index)?),
+                                "REAL" => SqlValue::Real(row.try_get(index)?),
                                 "BLOB" => {
                                     return Err(Error::bad(
                                         "Store binary data using uploads, not SQL blobs.",
                                     ));
                                 }
-                                _ => json!(row.try_get::<String, _>(index)?),
+                                _ => SqlValue::Text(row.try_get(index)?),
                             }
                         };
-                        object.insert(column.name().into(), value);
+                        total += match &value {
+                            SqlValue::Text(text) => text.len() + 8,
+                            _ => 8,
+                        };
+                        values.push(value);
                     }
-                    let value = Value::Object(object);
-                    total += value.to_string().len();
-                    rows.push(value);
-                    if rows.len() > 2000 || total > 4 * 1024 * 1024 {
+                    result.rows.push(values);
+                    if result.rows.len() > 2000 || total > 4 * 1024 * 1024 {
                         return Err(Error::bad(
                             "Query result exceeds its limit. Use pagination.",
                         ));
@@ -387,21 +573,26 @@ async fn query_database(pool: &sqlx::SqlitePool, value: &Value) -> Result<Value>
                 }
             }
         }
-        results.push(json!({"rows":rows,"affected":affected}));
+        results.push(result);
     }
     tx.commit().await?;
-    Ok(Value::Array(results))
+    Ok(results)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn run(sql: &str) -> Vec<Statement> {
+        vec![Statement {
+            sql: sql.into(),
+            params: Vec::new(),
+        }]
+    }
     #[tokio::test]
     async fn component_sql_cannot_attach_files_change_pragmas_or_escape_transactions() {
         let directory = tempfile::tempdir().unwrap();
         let pool = database(directory.path().join("app.db")).await.unwrap();
-        let run = |sql: &str| json!({"statements":[{"sql":sql,"params":[]}]});
-        query_database(&pool, &run("CREATE TABLE values_test(value TEXT)"))
+        query_database(&pool, run("CREATE TABLE values_test(value TEXT)"))
             .await
             .unwrap();
         for sql in [
@@ -411,15 +602,61 @@ mod tests {
             "SELECT load_extension('evil')",
             "VACUUM INTO 'escaped.db'",
             "SELECT zeroblob(2000000)",
+            "SELECT zeroblob(1)",
         ] {
-            assert!(query_database(&pool, &run(sql)).await.is_err(), "{sql}");
+            assert!(query_database(&pool, run(sql)).await.is_err(), "{sql}");
         }
-        let failed = json!({"statements":[{"sql":"INSERT INTO values_test VALUES(?)","params":["must roll back"]},{"sql":"INSERT INTO nonexistent VALUES(1)","params":[]}]});
-        assert!(query_database(&pool, &failed).await.is_err());
-        let result = query_database(&pool, &run("SELECT count(*) AS count FROM values_test"))
+        let failed = vec![
+            Statement {
+                sql: "INSERT INTO values_test VALUES(?)".into(),
+                params: vec![SqlValue::Text("must roll back".into())],
+            },
+            Statement {
+                sql: "INSERT INTO nonexistent VALUES(1)".into(),
+                params: Vec::new(),
+            },
+        ];
+        assert!(query_database(&pool, failed).await.is_err());
+        let result = query_database(&pool, run("SELECT count(*) AS count FROM values_test"))
             .await
             .unwrap();
-        assert_eq!(result[0]["rows"][0]["count"], 0);
+        assert_eq!(result[0].columns, ["count"]);
+        assert!(
+            matches!(result[0].rows[..], [ref row] if matches!(row[..], [SqlValue::Integer(0)]))
+        );
+        pool.close().await;
+    }
+    #[tokio::test]
+    async fn values_round_trip_with_their_types() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = database(directory.path().join("app.db")).await.unwrap();
+        let statements = vec![
+            Statement {
+                sql: "CREATE TABLE t(i INTEGER, r REAL, s TEXT, n TEXT)".into(),
+                params: Vec::new(),
+            },
+            Statement {
+                sql: "INSERT INTO t VALUES(?,?,?,?)".into(),
+                params: vec![
+                    SqlValue::Integer(-7),
+                    SqlValue::Real(2.5),
+                    SqlValue::Text("枝".into()),
+                    SqlValue::Null,
+                ],
+            },
+            Statement {
+                sql: "SELECT i,r,s,n FROM t".into(),
+                params: Vec::new(),
+            },
+        ];
+        let results = query_database(&pool, statements).await.unwrap();
+        assert_eq!(results[1].affected, 1);
+        assert_eq!(results[2].columns, ["i", "r", "s", "n"]);
+        assert!(matches!(
+            &results[2].rows[0][..],
+            [SqlValue::Integer(-7), SqlValue::Real(r), SqlValue::Text(s), SqlValue::Null]
+                if *r == 2.5 && s == "枝"
+        ));
         pool.close().await;
     }
 }

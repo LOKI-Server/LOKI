@@ -13,8 +13,8 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+loki-sdk = { path = "../../../../loki-sdk" }
 wasi = "0.14"
-wit-bindgen = "0.57"
 serde_json = "1"
 
 [profile.release]

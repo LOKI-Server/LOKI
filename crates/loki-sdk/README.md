@@ -260,8 +260,32 @@ fn panel(request: Request) -> Result<Response> {
 
 Enable `loki-sdk`'s `testing` feature in dev-dependencies. Use
 `testing::request(Method::Get, "/path", context)` to exercise a plain handler.
-`testing::with_host(fake, test)` temporarily installs a thread-local host closure
-whose inputs and outputs follow the [host protocol](../../docs/wasi.md).
+`testing::with_host(fake, test)` temporarily installs a thread-local host closure.
+It receives an operation name and JSON input, and returns JSON text, or an error
+as `{"loki_error":1,"status":403,"message":"..."}`:
+
+| Operation | Input | Output |
+| --- | --- | --- |
+| `context` | `null` | `Context` as JSON |
+| `form` | `null` | `{fields, files}` |
+| `database` | `{statements:[{sql, params}]}` | `[{rows:[{column: value}], affected}]` |
+| `retain-upload` | `{token, path}` | `{path}` |
+| `delete-file` | `{path}` | `null` |
+| `file`, `storage-file-serve` | `{path, filename, download}` | `null` |
+| `asset` | `{path}` | `null` |
+| `log` | `{message}` | `null` |
+| `storage-set` | `{key, value}` | `null` |
+| `storage-get` | `{key}` | `{found, value}` |
+| `storage-delete`, `storage-file-delete` | `{key}` or `{path}` | whether it existed |
+| `storage-file-write` | `{path, data}` (base64) | `{path, size}` |
+| `storage-file-read` | `{path}` | `{data}` (base64) |
+| `storage-file-info` | `{path}` | `{path, size}` |
+| `storage-list` | `{prefix, after}` | `{files:[{path, size}], next}` |
+| `storage-usage` | `null` | `StorageUsage` as JSON |
+| `realtime-restart` | `null` | `null` |
+
+These are the names and shapes of the host API before 0.3, kept so existing
+tests still work; in WASI the SDK calls the typed `loki:app@0.3.0` interfaces.
 The previous fake is restored after the test, including after a panic. This
 allows checking SQL parameter binding and upload decisions without Wasmtime;
 the real LOKI host still enforces access and capability limits in production.

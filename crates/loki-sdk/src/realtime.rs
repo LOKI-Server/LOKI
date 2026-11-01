@@ -16,7 +16,6 @@
 //! loki_sdk::export_realtime!(handle, Echo);
 //! ```
 use crate::{Error, Result, User};
-use serde::Deserialize;
 use std::io::{Read, Seek, SeekFrom};
 
 #[doc(hidden)]
@@ -41,13 +40,29 @@ pub enum FileSource {
     Asset,
 }
 #[cfg(target_arch = "wasm32")]
-impl From<FileSource> for bindings::loki::app::files::FileSource {
+impl From<FileSource> for bindings::loki::app::types::FileSource {
     fn from(source: FileSource) -> Self {
         match source {
             FileSource::Upload => Self::Upload,
             FileSource::Storage => Self::Storage,
             FileSource::Asset => Self::Asset,
         }
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl From<FileSource> for crate::guest::bindings::loki::app::types::FileSource {
+    fn from(source: FileSource) -> Self {
+        match source {
+            FileSource::Upload => Self::Upload,
+            FileSource::Storage => Self::Storage,
+            FileSource::Asset => Self::Asset,
+        }
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl From<bindings::loki::app::types::Error> for Error {
+    fn from(error: bindings::loki::app::types::Error) -> Self {
+        Error::new(error.status, error.message)
     }
 }
 
@@ -72,13 +87,11 @@ pub trait RealtimeApp: Sized {
 }
 
 /// Who opened a connection.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct OpenInfo {
     /// The peer's `IP:port`, as LOKI saw it.
-    #[serde(default)]
     pub remote: String,
     /// Set only for a same-origin browser signed in to LOKI with access to the app.
-    #[serde(default)]
     pub user: Option<User>,
 }
 
@@ -93,7 +106,7 @@ impl Connection {
             return result.map(|_| ());
         }
         #[cfg(target_arch = "wasm32")]
-        return bindings::loki::app::realtime::send(self.0, data).map_err(Error::bad);
+        return bindings::loki::app::realtime::send(self.0, data).map_err(Into::into);
         #[cfg(not(target_arch = "wasm32"))]
         Err(no_host())
     }
@@ -106,7 +119,7 @@ impl Connection {
         }
         #[cfg(target_arch = "wasm32")]
         return bindings::loki::app::realtime::send_file(self.0, source.into(), path)
-            .map_err(Error::bad);
+            .map_err(Into::into);
         #[cfg(not(target_arch = "wasm32"))]
         {
             let _ = (source, path);
@@ -129,7 +142,7 @@ impl Connection {
 /// Closes every connection and starts the realtime instance afresh, for example after
 /// its settings change. Callable from HTTP handlers too.
 pub fn restart() -> Result<()> {
-    crate::guest::call::<serde_json::Value>("realtime-restart", serde_json::Value::Null).map(|_| ())
+    crate::guest::host::restart_realtime()
 }
 
 /// The size of one of the app's files.
@@ -139,7 +152,7 @@ pub fn file_size(source: FileSource, path: &str) -> Result<u64> {
         return result.map(|data| data.len() as u64);
     }
     #[cfg(target_arch = "wasm32")]
-    return bindings::loki::app::files::size(source.into(), path).map_err(Error::bad);
+    return crate::guest::host::file_size(source.into(), path);
     #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = (source, path);
@@ -157,8 +170,7 @@ pub fn read_file(source: FileSource, path: &str, offset: u64, length: u32) -> Re
         });
     }
     #[cfg(target_arch = "wasm32")]
-    return bindings::loki::app::files::read(source.into(), path, offset, length)
-        .map_err(Error::bad);
+    return crate::guest::host::read_range(source.into(), path, offset, length);
     #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = (source, path, offset, length);
@@ -239,11 +251,19 @@ pub mod __private {
             }
         });
     }
-    pub fn info(info: &str) -> OpenInfo {
-        serde_json::from_str(info).unwrap_or(OpenInfo {
-            remote: String::new(),
-            user: None,
-        })
+    pub fn info(peer: bindings::exports::loki::app::realtime_handler::Peer) -> OpenInfo {
+        OpenInfo {
+            remote: peer.remote,
+            user: peer.user.map(|user| User {
+                id: user.id,
+                username: user.username,
+                name: user.name,
+                email: user.email,
+                bio: user.bio,
+                avatar: user.avatar,
+                roles: user.roles,
+            }),
+        }
     }
 }
 
@@ -263,8 +283,11 @@ macro_rules! export_realtime {
             fn on_start() {
                 $crate::realtime::__private::start(&__LOKI_REALTIME);
             }
-            fn on_open(connection: u64, info: ::std::string::String) {
-                let info = $crate::realtime::__private::info(&info);
+            fn on_open(
+                connection: u64,
+                peer: $crate::realtime::bindings::exports::loki::app::realtime_handler::Peer,
+            ) {
+                let info = $crate::realtime::__private::info(peer);
                 $crate::realtime::__private::with(&__LOKI_REALTIME, |app: &mut $app| {
                     $crate::realtime::RealtimeApp::open(
                         app,

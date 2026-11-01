@@ -59,10 +59,8 @@ impl Error {
             _ => ErrorKind::HostFailure,
         }
     }
-    #[cfg(all(
-        feature = "guest",
-        any(target_arch = "wasm32", test, feature = "testing")
-    ))]
+    /// Reads an error from a [`testing`](crate::testing) fake host.
+    #[cfg(all(feature = "guest", any(test, feature = "testing")))]
     pub(crate) fn from_host(message: String) -> Self {
         #[derive(serde::Deserialize)]
         struct HostError {

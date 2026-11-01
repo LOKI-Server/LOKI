@@ -7,8 +7,8 @@ is WIT and HTTP, with no dependency on server internals or its account database.
 the small `loki-sdk` crate to access this versioned contract.
 
 Components export the standard `wasi:http/incoming-handler` interface and can
-import `loki:app/platform@0.1.0`. The checked-in [WIT](../crates/loki-sdk/wit/platform.wit) defines
-that optional host interface. LOKI embeds Wasmtime 47.0.4; no external runtime,
+import the typed host interfaces of `loki:app@0.3.0`, defined in the checked-in
+[WIT](../crates/loki-sdk/wit/platform.wit). LOKI embeds Wasmtime 47.0.4; no external runtime,
 app listener, child process, OIDC client, or SQLite library is needed in a guest.
 
 ## Rust development
@@ -108,71 +108,70 @@ reaches the guest.
 
 ## Host operations
 
-`platform.call(operation, input)` takes JSON text and returns JSON text or an
-error string. Inputs are limited to 2 MiB. Host services are always scoped to the
-installed app, not a guest-supplied app ID or filesystem root.
+Apps import typed interfaces from the `loki:app@0.3.0` WIT package in
+[`crates/loki-sdk/wit/platform.wit`](../crates/loki-sdk/wit/platform.wit). The
+Rust SDK wraps them, so most apps never call them directly. Host services are
+always scoped to the installed app, not a guest-supplied app ID or filesystem
+root. A failed call returns an `error` record whose `status` follows HTTP: 400
+invalid input, 403 a missing capability or access, 404 not found, 409 a
+conflict, 413 over a limit, 503 unavailable, and 500 a host failure. The SDK maps
+the status to `ErrorKind`.
 
-| Operation | Input | Result |
+| Interface | Functions | Needs |
 | --- | --- | --- |
-| `context` | `null` | `{app_id, origin, issuer, dashboard_url, config, csrf, user}`; `user` is null or `{id, username, name, email, bio, avatar, roles}` |
-| `form` | `null` | `{fields:{...}, files:[{field,name,token,content_type,size}]}`; requires `forms` |
-| `database` | `{statements:[{sql,params:[...]}]}` | `[{rows:[{column:value}],affected}]`; requires `database` |
-| `retain-upload` | `{token,path}` | `{path}`; move a request's temporary upload to an unused path under this app's uploads; requires `uploads` |
-| `delete-file` | `{path}` | `null`; delete an app upload; requires `uploads` |
-| `file` | `{path,filename,download}` | `null`; replace the HTTP response with a streamed app upload; requires `uploads` |
-| `asset` | `{path}` | `null`; stream a declared package asset, excluding the component executable |
-| `log` | `{message}` | `null`; bounded application log |
-| `storage-set` | `{key,value}` | `null`; atomic JSON replacement; requires `storage` |
-| `storage-get` | `{key}` | `{found,value?}`; missing is distinct from stored null |
-| `storage-delete` | `{key}` | boolean indicating whether the value existed |
-| `storage-file-write` | `{path,data}` | `{path,size}`; data is standard base64; atomic replacement |
-| `storage-file-read` | `{path}` | `{data}`; bounded standard-base64 file contents |
-| `storage-file-info` | `{path}` | `{path,size}` |
-| `storage-file-delete` | `{path}` | boolean indicating whether the file existed |
-| `storage-list` | `{prefix?,after?}` | `{files:[{path,size}],next}`; at most 100 sorted file paths |
-| `storage-usage` | `null` | `{bytes,entries,limit_bytes,max_entries,max_file_bytes,max_value_bytes}` |
-| `storage-file-serve` | `{path,filename,download}` | `null`; stream a generated file as the HTTP response |
+| `request` | `get-context` (app, origin, user with roles, CSRF token, settings as JSON, panel action, LAN addresses), `get-form`, `log` | `get-form` needs `forms` |
+| `database` | `transaction`: 1–64 statements with typed parameters, returning columns, rows and affected counts | `database` |
+| `uploads` | `retain` a request's temporary upload at an unused path, `delete` a retained one | `uploads` |
+| `storage` | `set`, `get`, `delete` JSON values; `write-file`, `read-file`, `get-file-info`, `delete-file`, `list-files` (at most 100 sorted paths per page); `get-usage` | `storage` |
+| `responses` | `serve-file`: stream an upload, storage file or package asset as the response | the file's capability |
+| `files` | `size` and ranged `read` of the app's own files | the file's capability |
+| `realtime-control` | `restart` the realtime instance | `realtime` |
+| `realtime` | `send`, `send-file`, `close` a WebSocket connection; realtime instance only | `realtime` |
 
-All `storage-*` operations require the `storage` capability. They use a separate
-app-owned `storage/values` and `storage/files` directory under `app-data/APP_ID`,
-with encoded, case-sensitive names and no ambient filesystem access. Limits are
-64 MiB committed data, 4,096 entries, 128 KiB JSON values, and 1 MiB generated
-file writes/buffered reads. Logical names are at most 120 UTF-8 bytes; JSON keys
-cannot contain slashes. File paths may use logical slashes but cannot traverse
-directories or contain absolute/device paths, backslashes, or Windows reserved
-names. Listings expose logical paths, not encoded host filenames. Storage shares
-the app's normal backup/snapshot/rollback lifecycle. Pending filesystem jobs
-drain before snapshots, even after a guest request has timed out.
+Realtime apps also export `realtime-handler`, whose `on-open` receives the
+connection's peer: its address and, for a signed-in browser, the user.
 
-New hosts encode errors in the WIT error string as
-`{"loki_error":1,"status":403,"message":"..."}`. The Rust SDK maps this to
-`ErrorKind` and retains the status. It also accepts older plain-string errors.
-The WIT signature and protocol version remain unchanged. Successful file/asset
-markers replace only successful guest responses; they cannot override a later
-guest authorization/error response.
+Storage uses separate app-owned `storage/values` and `storage/files`
+directories under `app-data/APP_ID`, with encoded, case-sensitive names and no
+ambient filesystem access. Limits are 64 MiB committed data, 4,096 entries,
+128 KiB JSON values, and 1 MiB generated file writes/buffered reads. Logical names
+are at most 120 UTF-8 bytes; JSON keys cannot contain slashes. File paths may use
+logical slashes but cannot traverse directories or contain absolute/device paths,
+backslashes, or Windows reserved names. Listings expose logical paths, not encoded
+host filenames. Storage shares the app's normal backup/snapshot/rollback
+lifecycle. Pending filesystem jobs drain before snapshots, even after a guest
+request has timed out.
 
-The guest returns an ordinary successful HTTP response after `file` or `asset`;
-LOKI supplies the actual body, MIME handling, ranges, and download disposition.
-Files stream in bounded 64 KiB buffers rather than through Wasm linear memory.
-HTML, SVG, and unknown upload formats are downloaded instead of rendered inline.
-Package assets may contain the extension's own HTML, JavaScript, CSS, and fonts.
+After `serve-file`, the guest returns an ordinary 200 response; LOKI supplies
+the actual body, MIME handling, ranges, and download disposition. A guest that
+returns an error status instead keeps its own response. Files stream in bounded
+64 KiB buffers rather than through Wasm linear memory. HTML, SVG, and unknown
+upload formats are downloaded instead of rendered inline. Package assets may
+contain the extension's own HTML, JavaScript, CSS, and fonts, but never the
+component itself.
 
 Stable `user.id` comes from LOKI. Usernames, names, and email can change; email is
 unverified profile information. Guest code still applies its business rules,
 including any administrator-only operations, using the supplied current roles.
 
+LOKI 0.3 replaced the single JSON `platform.call` of `loki:app@0.1.0` with these
+interfaces, so apps built with an earlier SDK must be rebuilt (see
+[Manifest](#manifest)). In native unit tests, `loki_sdk::testing::with_host`
+still fakes the host by the old operation names and JSON, so existing tests keep
+working.
+
 ## Forms and uploads
 
 With `forms`, LOKI consumes URL-encoded/multipart requests, checks their
-`csrf_token` field, and provides them through `form`. The standard incoming body
-is then empty; components opting into this facility use `form`, not a second
-multipart parser. Every HTML form includes the `csrf` value from `context`.
-JSON or other raw requests instead include `X-CSRF-Token`. Requests with a
-different Origin are rejected. Read-only methods do not require a CSRF token.
+`csrf_token` field, and provides them through `get-form`. The standard incoming
+body is then empty; components opting into this facility use `get-form`, not a
+second multipart parser. Every HTML form includes the `csrf` value from the
+context. JSON or other raw requests instead include `X-CSRF-Token`. Requests with
+a different Origin are rejected. Read-only methods do not require a CSRF token.
 
 Multipart files stream to private temporary files. Guest code validates file
 names, media rules, and ownership using their metadata before calling
-`retain-upload`. Retained paths must be safe relative paths and cannot overwrite
+`uploads.retain`. Retained paths must be safe relative paths and cannot overwrite
 an existing file. Unretained uploads are removed when the request ends, including
 after a trap. The guest deletes retained files if its database operation fails.
 LOKI rejects traversal and symlink/junction escapes when opening downloads.
@@ -240,8 +239,8 @@ reach `/_loki/*` on the app's own origin.
 | `POST /_loki/panel` | Perform `context.panel_action`, then show the panel |
 
 `panel_action` is `{action, value, fields, files}`: a button's action and value,
-a form's fields as text, or uploaded files, which the app keeps with `retain-upload`
-(requires `uploads`). The app answers with JSON, at most 256 KiB:
+a form's fields as text, or uploaded files, which the app keeps with
+`uploads.retain` (requires `uploads`). The app answers with JSON, at most 256 KiB:
 
 ```json
 {"panel":{"sections":[{"title":"Dreams","items":[
@@ -299,7 +298,7 @@ still exports the `wasi:http` handler for its pages, and also exports
 | Export | When LOKI calls it |
 | --- | --- |
 | `on-start` | The instance started, or restarted with a fresh state |
-| `on-open(connection, info)` | A WebSocket connected. `info` is JSON `{remote, user}` |
+| `on-open(connection, peer)` | A WebSocket connected. `peer` has its `remote` address and, for a signed-in browser, the `user` |
 | `on-message(connection, data)` | A binary or text message arrived |
 | `on-close(connection)` | The connection closed, from either side |
 | `on-tick` | Every `tick_ms`, when set |
@@ -308,8 +307,8 @@ The instance answers with the `realtime` interface: `send(connection, data)`,
 `send-file(connection, source, path)` and `close(connection, code, reason)`.
 `send-file` streams the file from disk as consecutive 64 KiB binary messages, in
 order with other sends, so large downloads never pass through guest memory. Only
-the realtime instance can use connections. HTTP handlers can restart it with the
-`realtime-restart` host operation, for example after its settings change.
+the realtime instance can use connections. HTTP handlers can restart it with
+`realtime-control.restart`, for example after its settings change.
 
 ```json
 "capabilities": ["realtime"],

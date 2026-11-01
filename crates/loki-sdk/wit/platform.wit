@@ -1,36 +1,207 @@
-package loki:app@0.1.0;
+package loki:app@0.3.0;
 
-/// Host services are scoped to the installed app and the authenticated request.
-interface platform {
-    /// JSON messages; the protocol documents each bounded operation.
-    call: func(operation: string, input: string) -> result<string, string>;
-}
-
-/// Ranged reads of the app's own files, without copying whole files into the guest.
-interface files {
-    /// Uploads need `uploads`, storage files need `storage`, and assets are the
-    /// package's declared files other than the component itself.
+/// Types shared by the host interfaces.
+interface types {
+    /// Why a host call failed. `status` follows HTTP: 400 invalid input, 403 a
+    /// missing capability or access, 404 not found, 409 a conflict, 413 over a
+    /// limit, 503 unavailable, and 500 a host failure.
+    record error {
+        status: u16,
+        message: string,
+    }
+    /// Where one of the app's own files lives. Uploads need `uploads`, storage
+    /// files need `storage`, and assets are the package's declared files other
+    /// than the component itself.
     enum file-source {
         upload,
         storage,
         asset,
     }
+    /// A LOKI account, with the roles it holds in this app.
+    record user {
+        /// Stable across username and email changes; use it as the identity key.
+        id: string,
+        username: string,
+        name: string,
+        /// Unverified.
+        email: string,
+        bio: string,
+        /// Whether `{dashboard-url}/avatars/{id}` has a picture.
+        avatar: bool,
+        roles: list<string>,
+    }
+    /// A file uploaded with the current request. LOKI deletes it when the request
+    /// ends unless the app retains it.
+    record upload {
+        field: string,
+        name: string,
+        content-type: string,
+        size: u64,
+        token: string,
+    }
+}
+
+/// The request being handled.
+interface request {
+    use types.{error, user, upload};
+
+    /// An action from the app's panel in the LOKI dashboard.
+    record panel-action {
+        /// A button's action, or the form's.
+        action: string,
+        /// A button's value.
+        value: string,
+        fields: list<tuple<string, string>>,
+        files: list<upload>,
+    }
+    record context {
+        app-id: string,
+        /// The app's own origin, such as `https://notes.example.com`.
+        origin: string,
+        /// LOKI's identity-provider origin.
+        issuer: string,
+        dashboard-url: string,
+        /// The signed-in account, if any.
+        user: option<user>,
+        /// The token forms must send back as `csrf_token`.
+        csrf: string,
+        /// The app's settings, as a JSON object.
+        config: string,
+        panel-action: option<panel-action>,
+        /// The owner's LAN address for a realtime app, such as `0.0.0.0:4767`.
+        lan-bind: string,
+        /// This server's IPv4 addresses on its networks.
+        lan-ips: list<string>,
+    }
+    record form {
+        fields: list<tuple<string, string>>,
+        files: list<upload>,
+    }
+
+    get-context: func() -> context;
+    /// The submitted form, parsed by LOKI. Needs `forms`.
+    get-form: func() -> result<form, error>;
+    /// Writes a line to the app's log in the dashboard.
+    log: func(message: string);
+}
+
+/// The app's own SQLite database. Needs `database`.
+interface database {
+    use types.{error};
+
+    variant value {
+        null,
+        integer(s64),
+        real(f64),
+        text(string),
+    }
+    record statement {
+        sql: string,
+        params: list<value>,
+    }
+    record query-result {
+        columns: list<string>,
+        rows: list<list<value>>,
+        affected: u64,
+    }
+
+    /// Runs 1–64 statements in one transaction. Results hold at most 2,000 rows
+    /// and 4 MiB; store binary data as uploads or storage files, not blobs.
+    transaction: func(statements: list<statement>) -> result<list<query-result>, error>;
+}
+
+/// Files people upload. Needs `uploads`.
+interface uploads {
+    use types.{error};
+
+    /// Keeps an upload from the current request at `path`, which must be free.
+    retain: func(token: string, path: string) -> result<_, error>;
+    delete: func(path: string) -> result<_, error>;
+}
+
+/// JSON values and generated files that belong to the app. Needs `storage`.
+interface storage {
+    use types.{error};
+
+    record file-info {
+        path: string,
+        size: u64,
+    }
+    record file-page {
+        /// Sorted by path, at most 100.
+        files: list<file-info>,
+        /// Pass back as `after` for the next page.
+        next: option<string>,
+    }
+    record usage {
+        bytes: u64,
+        entries: u32,
+        limit-bytes: u64,
+        max-entries: u32,
+        max-file-bytes: u64,
+        max-value-bytes: u64,
+    }
+
+    /// Replaces a value: JSON text of at most 128 KiB.
+    set: func(key: string, json: string) -> result<_, error>;
+    get: func(key: string) -> result<option<string>, error>;
+    /// Whether the key existed.
+    delete: func(key: string) -> result<bool, error>;
+    /// Replaces a file of at most 1 MiB.
+    write-file: func(path: string, data: list<u8>) -> result<file-info, error>;
+    read-file: func(path: string) -> result<list<u8>, error>;
+    get-file-info: func(path: string) -> result<file-info, error>;
+    /// Whether the file existed.
+    delete-file: func(path: string) -> result<bool, error>;
+    list-files: func(prefix: string, after: option<string>) -> result<file-page, error>;
+    get-usage: func() -> result<usage, error>;
+}
+
+/// Answering with one of the app's files.
+interface responses {
+    use types.{error, file-source};
+
+    record serve-options {
+        /// The name to save or show the file as. Assets use their own name.
+        filename: option<string>,
+        /// Ask the browser to save the file instead of showing it.
+        download: bool,
+    }
+
+    /// LOKI streams the file, with range support, in place of the response body
+    /// the app returns. The app's response must have status 200.
+    serve-file: func(source: file-source, path: string, options: serve-options) -> result<_, error>;
+}
+
+/// Ranged reads of the app's own files, without copying whole files into the guest.
+interface files {
+    use types.{error, file-source};
+
     /// The file's size in bytes.
-    size: func(source: file-source, path: string) -> result<u64, string>;
+    size: func(source: file-source, path: string) -> result<u64, error>;
     /// Reads up to `length` bytes (at most 1 MiB) from `offset`. Fewer bytes are
     /// returned at the end of the file.
-    read: func(source: file-source, path: string, offset: u64, length: u32) -> result<list<u8>, string>;
+    read: func(source: file-source, path: string, offset: u64, length: u32) -> result<list<u8>, error>;
+}
+
+/// Restarting the app's realtime instance. Needs `realtime`.
+interface realtime-control {
+    use types.{error};
+
+    /// Closes every connection and starts the instance afresh.
+    restart: func() -> result<_, error>;
 }
 
 /// Connections to the app's realtime WebSocket endpoint. Only the realtime
 /// instance can use them.
 interface realtime {
-    use files.{file-source};
+    use types.{error, file-source};
+
     /// Queues one binary message. A connection that falls too far behind is closed.
-    send: func(connection: u64, data: list<u8>) -> result<_, string>;
+    send: func(connection: u64, data: list<u8>) -> result<_, error>;
     /// Streams a file as consecutive 64 KiB binary messages, in order with other
     /// sends. Returns the file's size.
-    send-file: func(connection: u64, source: file-source, path: string) -> result<u64, string>;
+    send-file: func(connection: u64, source: file-source, path: string) -> result<u64, error>;
     /// Closes the connection after its queued messages. `on-close` still follows.
     close: func(connection: u64, code: u16, reason: string);
 }
@@ -39,22 +210,37 @@ interface realtime {
 /// app alive for these calls and makes them one at a time, so memory persists
 /// between them.
 interface realtime-handler {
+    use types.{user};
+
+    /// Who opened a connection.
+    record peer {
+        /// The client's `IP:port`.
+        remote: string,
+        /// Absent on the app's LAN listener, which has no sign-in.
+        user: option<user>,
+    }
+
     /// The instance started, or restarted with a fresh state.
     on-start: func();
-    /// `info` is JSON: `{"remote": "IP:port", "user": null | {id, username, name, email, bio, avatar, roles}}`.
-    on-open: func(connection: u64, info: string);
+    on-open: func(connection: u64, peer: peer);
     on-message: func(connection: u64, data: list<u8>);
     on-close: func(connection: u64);
     /// Runs every `limits.realtime.tick_ms` milliseconds, when set.
     on-tick: func();
 }
 
+/// What every app can import.
 world host-api {
-    import platform;
+    import request;
+    import database;
+    import uploads;
+    import storage;
+    import responses;
+    import files;
+    import realtime-control;
 }
 
 world realtime-app {
-    import files;
     import realtime;
     export realtime-handler;
 }

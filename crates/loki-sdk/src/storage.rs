@@ -1,8 +1,6 @@
 //! Persistent app-scoped values and generated files, managed by the LOKI host.
-use crate::{Error, Response, Result, guest::call};
-use base64::{Engine, engine::general_purpose::STANDARD};
+use crate::{Error, Response, Result, guest::host};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
 
 /// Requires the `storage` manifest capability. State is shared by this app's
 /// users; include a stable user ID in your keys for per-user preferences.
@@ -37,25 +35,17 @@ impl Storage {
                 "Encoded JSON values are limited to 128 KiB.",
             ));
         }
-        call("storage-set", json!({"key":key,"value":value}))
+        host::set_json(key, &value)
     }
     /// Missing keys return `None`; malformed data remains an error.
     pub fn get_json<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
-        #[derive(Deserialize)]
-        struct Found {
-            found: bool,
-            #[serde(default)]
-            value: Value,
-        }
-        let result: Found = call("storage-get", json!({"key":key}))?;
-        if result.found {
-            Ok(Some(serde_json::from_value(result.value)?))
-        } else {
-            Ok(None)
+        match host::get_json(key)? {
+            Some(value) => Ok(Some(serde_json::from_value(value)?)),
+            None => Ok(None),
         }
     }
     pub fn delete_json(&self, key: &str) -> Result<bool> {
-        call("storage-delete", json!({"key":key}))
+        host::delete_json(key)
     }
     /// Atomically replace a generated file. Writes and buffered reads are
     /// bounded to 1 MiB. Use host uploads for large incoming media.
@@ -67,10 +57,7 @@ impl Storage {
                 "Generated files are limited to 1 MiB per write.",
             ));
         }
-        let _: FileInfo = call(
-            "storage-file-write",
-            json!({"path":path,"data":STANDARD.encode(bytes)}),
-        )?;
+        host::write_file(path, bytes)?;
         Ok(self.file(path))
     }
     pub fn file(&self, path: impl Into<String>) -> DataFile {
@@ -79,10 +66,10 @@ impl Storage {
     /// A sorted flat listing of logical paths. Pass `next` back as `after`.
     /// Pages contain at most 100 files and are not a snapshot across mutations.
     pub fn list_files(&self, prefix: &str, after: Option<&str>) -> Result<FilePage> {
-        call("storage-list", json!({"prefix":prefix,"after":after}))
+        host::list_files(prefix, after)
     }
     pub fn usage(&self) -> Result<StorageUsage> {
-        call("storage-usage", ())
+        host::usage()
     }
 }
 /// A logical generated-file path, not a path on the host computer.
@@ -95,26 +82,20 @@ impl DataFile {
         &self.path
     }
     pub fn read(&self) -> Result<Vec<u8>> {
-        #[derive(Deserialize)]
-        struct Bytes {
-            data: String,
-        }
-        let result: Bytes = call("storage-file-read", json!({"path":self.path}))?;
-        if result.data.len() > 1024usize.pow(2).div_ceil(3) * 4 {
+        let bytes = host::read_file(&self.path)?;
+        if bytes.len() > 1024 * 1024 {
             return Err(Error::new(413, "Generated file exceeds its read limit."));
         }
-        STANDARD
-            .decode(result.data)
-            .map_err(|_| Error::internal("Invalid file bytes from host."))
+        Ok(bytes)
     }
     pub fn read_text(&self) -> Result<String> {
         String::from_utf8(self.read()?).map_err(|_| Error::bad("File is not UTF-8 text."))
     }
     pub fn info(&self) -> Result<FileInfo> {
-        call("storage-file-info", json!({"path":self.path}))
+        host::file_info(&self.path)
     }
     pub fn delete(&self) -> Result<bool> {
-        call("storage-file-delete", json!({"path":self.path}))
+        host::delete_file(&self.path)
     }
     pub fn download(&self, filename: &str) -> Result<Response> {
         self.respond(filename, true)
@@ -123,10 +104,7 @@ impl DataFile {
         self.respond(filename, false)
     }
     fn respond(&self, filename: &str, download: bool) -> Result<Response> {
-        call::<()>(
-            "storage-file-serve",
-            json!({"path":self.path,"filename":filename,"download":download}),
-        )?;
+        host::serve_storage(&self.path, filename, download)?;
         Ok(Response::empty(200))
     }
 }
@@ -135,6 +113,8 @@ impl DataFile {
 mod tests {
     use super::*;
     use crate::{ErrorKind, testing};
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use serde_json::{Value, json};
     #[test]
     fn typed_values_distinguish_missing_null_and_invalid_data() {
         testing::with_host(

@@ -8,7 +8,8 @@ use axum::{
     http::{Request, StatusCode, header},
     response::Response,
 };
-use host::{database, link_files};
+use host::database;
+pub(crate) use host::{ConnectionPeer, ServeOptions, WitError};
 use http::execute;
 pub use http::{panel, resolve, serve};
 use serde_json::{Value, json};
@@ -80,11 +81,12 @@ pub(crate) struct Host {
     info: Value,
     form: Value,
     pending: Vec<PathBuf>,
-    file: Option<(String, FileSource, String)>,
+    file: Option<(String, FileSource, ServeOptions)>,
     /// Set only in an app's realtime instance.
     connections: Option<Arc<realtime::Connections>>,
 }
-/// Where an app's file lives. Matches `file-source` in the WIT, in the same order.
+/// Where an app's file lives. Matches `file-source` in the WIT's `types`, in the same order.
+#[allow(dead_code, reason = "only guests create these, through Lift")]
 #[derive(Clone, Copy, ComponentType, Lift, Lower)]
 #[component(enum)]
 #[repr(u8)]
@@ -175,26 +177,7 @@ pub async fn start(
     let mut linker = Linker::<Host>::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
-    linker
-        .instance("loki:app/platform@0.1.0")?
-        .func_wrap_async(
-            "call",
-            |mut context, (operation, input): (String, String)| {
-                Box::new(async move {
-                    let result = context
-                        .data_mut()
-                        .call(&operation, &input)
-                        .await
-                        .map(|v| v.to_string())
-                        .map_err(|e| {
-                            json!({"loki_error":1,"status":e.status.as_u16(),"message":e.message})
-                                .to_string()
-                        });
-                    Ok((result,))
-                })
-            },
-        )?;
-    link_files(&mut linker)?;
+    host::link(&mut linker)?;
     realtime::link(&mut linker)?;
     let pre = ProxyPre::new(linker.instantiate_pre(&component)?)?;
     let data = state.0.data.join("app-data").join(&app.id);

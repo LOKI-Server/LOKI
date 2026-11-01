@@ -1,5 +1,5 @@
 //! Serving an app's HTTP requests: routing by host, sign-in, forms, uploads, and streamed files.
-use super::{FileSource, Runtime, component_log, enter, new_store, running};
+use super::{FileSource, Runtime, ServeOptions, component_log, enter, new_store, running};
 use crate::{Error, Result, State, apps, auth, files, realtime};
 use axum::{
     body::Body,
@@ -123,7 +123,7 @@ async fn stream_file(
     runtime: &Runtime,
     path: &str,
     source: FileSource,
-    options: &str,
+    options: &ServeOptions,
     headers: &HeaderMap,
 ) -> Result<Response> {
     let asset = matches!(source, FileSource::Asset);
@@ -166,7 +166,6 @@ async fn stream_file(
     let count = if length == 0 { 0 } else { end - start + 1 };
     let mut file = tokio::fs::File::from_std(file.into_std());
     file.seek(std::io::SeekFrom::Start(start)).await?;
-    let options: Value = serde_json::from_str(options)?;
     let mut response = Response::builder()
         .status(status)
         .header(header::CONTENT_LENGTH, count)
@@ -180,12 +179,11 @@ async fn stream_file(
     };
     response = response.header(header::CONTENT_TYPE, content_type);
     if !asset {
-        let filename = options["filename"].as_str().unwrap_or("download");
+        let filename = options.filename.as_deref().unwrap_or("download");
         let encoded = url::form_urlencoded::byte_serialize(filename.as_bytes())
             .collect::<String>()
             .replace('+', "%20");
-        let download = options["download"].as_bool().unwrap_or(false)
-            || files::preview_type(relative).is_none();
+        let download = options.download || files::preview_type(relative).is_none();
         response = response.header(
             header::CONTENT_DISPOSITION,
             format!(

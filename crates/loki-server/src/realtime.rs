@@ -6,7 +6,7 @@
 //! or a tick. The instance answers through the `realtime` host interface.
 use crate::{
     Error, Result, State, apps,
-    components::{self, FileSource, Host, Runtime},
+    components::{self, ConnectionPeer, FileSource, Host, Runtime, WitError},
 };
 use axum::{
     body::Body,
@@ -57,7 +57,7 @@ pub struct Handle {
     lan: std::sync::Mutex<Option<oneshot::Sender<()>>>,
 }
 enum Event {
-    Open(u64, String),
+    Open(u64, ConnectionPeer),
     Message(u64, Vec<u8>),
     Close(u64),
     Restart,
@@ -81,7 +81,7 @@ impl Handle {
     async fn accept(
         self: Arc<Self>,
         socket: WebSocket,
-        info: String,
+        peer: ConnectionPeer,
         permit: OwnedSemaphorePermit,
     ) {
         let (out, queue) = mpsc::unbounded_channel();
@@ -91,7 +91,7 @@ impl Handle {
             queued: queued.clone(),
         });
         // The instance hears about the connection before any of its messages.
-        if self.events.send(Event::Open(id, info)).await.is_ok() {
+        if self.events.send(Event::Open(id, peer)).await.is_ok() {
             connection(socket, id, queue, queued, &self.events).await;
             let _ = self.events.send(Event::Close(id)).await;
         }
@@ -277,7 +277,7 @@ async fn connection(
 struct Live {
     store: Store<Host>,
     start: TypedFunc<(), ()>,
-    open: TypedFunc<(u64, String), ()>,
+    open: TypedFunc<(u64, ConnectionPeer), ()>,
     message: TypedFunc<(u64, Vec<u8>), ()>,
     close: TypedFunc<(u64,), ()>,
     tick: TypedFunc<(), ()>,
@@ -304,7 +304,7 @@ impl Live {
             .instantiate_async(&mut store)
             .await?;
         let interface = instance
-            .get_export_index(&mut store, None, "loki:app/realtime-handler@0.1.0")
+            .get_export_index(&mut store, None, "loki:app/realtime-handler@0.3.0")
             .ok_or_else(|| anyhow::anyhow!("The component does not export realtime-handler."))?;
         let mut index = |name: &str| {
             instance
@@ -357,7 +357,7 @@ impl Live {
     async fn event(&mut self, event: Call) -> anyhow::Result<()> {
         let fuel = self.fuel;
         match event {
-            Call::Open(id, info) => self.call(self.open, (id, info), fuel, EVENT_TIME).await,
+            Call::Open(id, peer) => self.call(self.open, (id, peer), fuel, EVENT_TIME).await,
             Call::Message(id, data) => self.call(self.message, (id, data), fuel, EVENT_TIME).await,
             Call::Close(id) => self.call(self.close, (id,), fuel, EVENT_TIME).await,
             Call::Tick => self.call(self.tick, (), fuel, EVENT_TIME).await,
@@ -365,7 +365,7 @@ impl Live {
     }
 }
 enum Call {
-    Open(u64, String),
+    Open(u64, ConnectionPeer),
     Message(u64, Vec<u8>),
     Close(u64),
     Tick,
@@ -586,14 +586,17 @@ pub(crate) async fn upgrade(
     if !handle.connections.reserve(handle.max_connections) {
         return Err(busy("This app has too many open connections."));
     }
-    let info = json!({"remote":remote,"user":user}).to_string();
+    let peer = ConnectionPeer {
+        remote,
+        user: serde_json::from_value(user)?,
+    };
     let size = handle.max_message_bytes;
     let failed = handle.connections.clone();
     Ok(socket
         .max_message_size(size)
         .max_frame_size(size)
         .on_failed_upgrade(move |_| failed.release())
-        .on_upgrade(move |socket| handle.accept(socket, info, permit)))
+        .on_upgrade(move |socket| handle.accept(socket, peer, permit)))
 }
 fn busy(message: &str) -> Error {
     Error::new(StatusCode::SERVICE_UNAVAILABLE, message)
@@ -630,13 +633,13 @@ async fn lan(
 
 /// The `realtime` host functions. They fail outside the realtime instance.
 pub(crate) fn link(linker: &mut Linker<Host>) -> Result<()> {
-    let mut realtime = linker.instance("loki:app/realtime@0.1.0")?;
+    let mut realtime = linker.instance("loki:app/realtime@0.3.0")?;
     realtime.func_wrap("send", |context, (id, data): (u64, Vec<u8>)| {
         let result = match context.data().connections() {
-            Some(connections) => connections.send(id, data),
-            None => Err(NOT_REALTIME.into()),
+            Some(connections) => connections.send(id, data).map_err(Error::bad),
+            None => Err(Error::bad(NOT_REALTIME)),
         };
-        Ok((result,))
+        Ok((result.map_err(WitError::from),))
     })?;
     realtime.func_wrap_async(
         "send-file",
@@ -644,18 +647,19 @@ pub(crate) fn link(linker: &mut Linker<Host>) -> Result<()> {
             Box::new(async move {
                 let host = context.data_mut();
                 let result = match host.connections().cloned() {
-                    None => Err(NOT_REALTIME.to_string()),
+                    None => Err(Error::bad(NOT_REALTIME)),
                     Some(connections) => match host.open(source, &path).await {
                         Ok(file) => match file.metadata() {
-                            Ok(metadata) => {
-                                connections.send_file(id, file).map(|()| metadata.len())
-                            }
-                            Err(e) => Err(e.to_string()),
+                            Ok(metadata) => connections
+                                .send_file(id, file)
+                                .map(|()| metadata.len())
+                                .map_err(Error::bad),
+                            Err(e) => Err(e.into()),
                         },
-                        Err(e) => Err(e.message),
+                        Err(e) => Err(e),
                     },
                 };
-                Ok((result,))
+                Ok((result.map_err(WitError::from),))
             })
         },
     )?;
