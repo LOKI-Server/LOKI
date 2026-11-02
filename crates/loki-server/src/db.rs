@@ -64,11 +64,14 @@ const MIGRATIONS: &[Migration] = &[
     // signing out of LOKI signs out of them too.
     Column("codes", "login_session", "TEXT"),
     Column("gateway_sessions", "login_session", "TEXT"),
+    Column("gateway_flows", "next", "TEXT NOT NULL DEFAULT '/'"),
+    Column("gateway_flows", "popup", "INTEGER NOT NULL DEFAULT 0"),
     // Where an app came from: `upload` or `registry`. Only registry apps are
     // offered registry updates.
     Column("apps", "source", "TEXT NOT NULL DEFAULT 'upload'"),
-    Column("gateway_flows", "next", "TEXT NOT NULL DEFAULT '/'"),
-    Column("gateway_flows", "popup", "INTEGER NOT NULL DEFAULT 0"),
+    // Again: a development build listed the step above before the gateway_flows
+    // columns, so databases it opened counted it as done without adding it.
+    Column("apps", "source", "TEXT NOT NULL DEFAULT 'upload'"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
@@ -160,6 +163,36 @@ mod tests {
                 .unwrap();
         assert_eq!(excluded, "[\"tmp\"]");
         pool.close().await;
+    }
+
+    /// LOKI 0.3.0 databases stop at 17 steps; a development build left some at
+    /// 18 without the `source` column. Both gain it.
+    #[tokio::test]
+    async fn apps_gain_their_source_from_released_and_development_databases() {
+        for done in [17, 18] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("loki.db");
+            let pool = SqlitePoolOptions::new()
+                .connect_with(
+                    SqliteConnectOptions::new()
+                        .filename(&path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::raw_sql(&format!("CREATE TABLE resources(id TEXT PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL,visibility TEXT NOT NULL DEFAULT 'restricted'); CREATE TABLE apps(id TEXT PRIMARY KEY REFERENCES resources(id) ON DELETE CASCADE, manifest TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, hostname TEXT NOT NULL DEFAULT '', config TEXT NOT NULL DEFAULT '{{}}', port INTEGER NOT NULL, secret TEXT NOT NULL, previous TEXT, error TEXT NOT NULL DEFAULT '', previous_config TEXT, lan_bind TEXT NOT NULL DEFAULT ''); INSERT INTO resources(id,kind,name) VALUES('voter','app','Voter'); INSERT INTO apps(id,manifest,port,secret) VALUES('voter','{{}}',7070,''); PRAGMA user_version={done};"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            let pool = open(&path).await.unwrap();
+            let source: String = sqlx::query_scalar("SELECT source FROM apps WHERE id='voter'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(source, "upload", "from {done} steps");
+            pool.close().await;
+        }
     }
 
     #[tokio::test]
