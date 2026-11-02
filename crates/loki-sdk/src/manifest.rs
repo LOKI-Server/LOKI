@@ -182,6 +182,8 @@ pub fn valid_id(value: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && !value.starts_with('-')
 }
+/// The app services an app can ask LOKI for.
+pub const CAPABILITIES: [&str; 5] = ["database", "uploads", "forms", "storage", "realtime"];
 /// Checks a manifest. LOKI runs only WASI components (`wasm32-wasip2`).
 pub fn validate_manifest(m: &Manifest) -> Result<()> {
     if m.protocol != 1
@@ -193,12 +195,9 @@ pub fn validate_manifest(m: &Manifest) -> Result<()> {
         || m.runtime != "wasi"
         || m.target != "wasm32-wasip2"
         || !m.entry.ends_with(".wasm")
-        || m.capabilities.iter().any(|s| {
-            !matches!(
-                s.as_str(),
-                "database" | "uploads" | "forms" | "storage" | "realtime"
-            )
-        })
+        || m.capabilities
+            .iter()
+            .any(|s| !CAPABILITIES.contains(&s.as_str()))
         || !m.limits.valid()
         || !safe_relative(&m.entry)
         || !m.files.contains_key(&m.entry)

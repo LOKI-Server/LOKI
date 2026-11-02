@@ -8,10 +8,11 @@ import { appsPage, overview, routesPage, sharesPage } from "../pages/services.js
 import { accountsPage, activityPage, avatar } from "../pages/people.js";
 import { accountPage, settingsPage } from "../pages/account.js";
 import { browse } from "../pages/files.js";
+import { marketplacePage } from "../pages/marketplace.js";
 import { folderPage, pairPage, syncPage } from "../pages/sync.js";
 
 const memberPages = { "/": overview, "/apps": appsPage, "/shares": sharesPage, "/sync": syncPage, "/pair": pairPage, "/account": accountPage };
-const ownerPages = { "/routes": routesPage, "/accounts": accountsPage, "/activity": activityPage, "/settings": settingsPage };
+const ownerPages = { "/apps/browse": marketplacePage, "/routes": routesPage, "/accounts": accountsPage, "/activity": activityPage, "/settings": settingsPage };
 const STALE_MS = 15000;
 
 export async function refreshState({ session = false } = {}) {

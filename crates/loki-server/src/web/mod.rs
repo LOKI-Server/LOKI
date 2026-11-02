@@ -47,6 +47,9 @@ pub fn router(state: State) -> Router {
             "/api/apps/import",
             post(import).layer(DefaultBodyLimit::max(537919488)),
         )
+        .route("/api/registry", get(registry_list))
+        .route("/api/registry/install", post(registry_install))
+        .route("/api/registry/icons/{id}", get(registry_icon))
         .route(
             "/api/avatar",
             post(avatar).layer(DefaultBodyLimit::max(5242880)),
@@ -282,6 +285,13 @@ async fn dashboard(
                         .get(&id)
                         .is_some_and(|r| r.ready)
                 );
+                if user.owner
+                    && let Some(version) =
+                        crate::registry::update_for(&state, &app, &manifest.version).await
+                {
+                    resource["update"] = json!(version);
+                }
+                resource["source"] = json!(app.source);
                 resource["manifest"] = json!(manifest);
                 if user.owner {
                     let mut config: Value = serde_json::from_str(&app.config)?;
@@ -466,11 +476,54 @@ async fn import(
         }
         file.flush().await?;
         drop(file);
-        apps::import(&state, path.clone(), &user.id).await
+        apps::import(&state, path.clone(), &user.id, "upload").await
     }
     .await;
     let _ = tokio::fs::remove_file(&path).await;
     Ok(Json(json!({"manifest":result?})))
+}
+#[derive(Deserialize)]
+struct RegistryQuery {
+    #[serde(default)]
+    refresh: bool,
+}
+async fn registry_list(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    Query(query): Query<RegistryQuery>,
+) -> Result<Json<Value>> {
+    auth::context(&state, &headers).await?.owner()?;
+    Ok(Json(crate::registry::list(&state, query.refresh).await?))
+}
+#[derive(Deserialize)]
+struct RegistryInstall {
+    id: String,
+}
+async fn registry_install(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    Json(input): Json<RegistryInstall>,
+) -> Result<Json<Value>> {
+    let ctx = auth::context(&state, &headers).await?;
+    let user = ctx.owner()?;
+    let manifest = crate::registry::install(&state, &input.id, &user.id).await?;
+    Ok(Json(json!({"manifest":manifest})))
+}
+async fn registry_icon(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response> {
+    auth::context(&state, &headers).await?.owner()?;
+    let png = crate::registry::icon(&state, &id).await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "private, max-age=86400"),
+        ],
+        png,
+    )
+        .into_response())
 }
 async fn avatar(
     ExtractState(state): ExtractState<State>,

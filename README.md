@@ -99,7 +99,8 @@ for generating Kotlin, C#, or TypeScript bindings, and the standard-library
 
 ## Install Bigshot Voter
 
-Download its package from the
+In **Applications**, choose **Browse apps** and install Bigshot Voter from the
+[LOKI app registry](https://loki-server.github.io/apps/). Or download its package from the
 [Bigshot Voter releases](https://github.com/LOKI-Server/bigshot-voter/releases), or build
 it from that repository:
 
@@ -109,7 +110,7 @@ rustup target add wasm32-wasip2
 cargo loki package
 ```
 
-Import the resulting `.loki-app` in **Applications**, grant access to Members or
+Import the resulting `.loki-app` in **Applications**. Then grant access to Members or
 selected people, and enable it. The same package works on all supported LOKI
 hosts. The owner automatically receives app administrator access. Without a
 public hostname, Bigshot uses `http://bigshot-voter.localhost:7070` (with your

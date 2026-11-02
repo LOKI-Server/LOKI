@@ -1,7 +1,7 @@
 // Overview and the three kinds of resource: applications, file shares, and routes.
 import { enc, esc, store } from "../lib/core.js";
 import { icon } from "../lib/icons.js";
-import { button, empty, heading, linkButton, status } from "../lib/ui.js";
+import { button, empty, heading, linkButton, status, tag } from "../lib/ui.js";
 
 const kinds = { app: "apps", share: "folder", route: "route", sync: "sync" };
 
@@ -21,7 +21,9 @@ export function cards(items) {
     // Apps that describe a panel are managed here, inside LOKI.
     const panel = r.kind === "app" && r.ready && r.manifest.panel ? button("Open panel", "app-panel", r.id, "", "subtle", "apps") : "";
     const manage = owner ? button("Manage", `${r.kind}-manage`, r.id, "", "ghost", "settings") : "";
-    return `<article class="card resource ${r.kind}" data-key="${esc(r.id)}"><div class="card-header"><span class="card-symbol" aria-hidden="true">${icon(kinds[r.kind])}</span>${resourceStatus(r)}</div><h2>${esc(r.name)}</h2><p>${esc(description)}</p>${r.error ? `<p class="help error-text">${icon("alert")}${esc(r.error)}</p>` : ""}<div class="actions">${panel}${open}${manage}</div></article>`;
+    // Set for apps installed from the app registry when it lists a newer release.
+    const update = r.update ? button(`Update to v${r.update}`, "registry-install", r.id, "", "subtle", "refresh") : "";
+    return `<article class="card resource ${r.kind}" data-key="${esc(r.id)}"><div class="card-header"><span class="card-symbol" aria-hidden="true">${icon(kinds[r.kind])}</span><div class="tags">${r.update ? tag("Update available") : ""}${resourceStatus(r)}</div></div><h2>${esc(r.name)}</h2><p>${esc(description)}</p>${r.error ? `<p class="help error-text">${icon("alert")}${esc(r.error)}</p>` : ""}<div class="actions">${update}${panel}${open}${manage}</div></article>`;
   }).join("")}</div>`;
 }
 
@@ -43,8 +45,9 @@ export function overview() {
 
 export function appsPage() {
   const items = store.state.resources.filter(r => r.kind === "app"), owner = store.session.user.owner;
-  return heading("Applications", "Independent services. One place to keep them together.", owner ? button("Import app package", "app-import", "", "", "primary", "upload") : "", "apps")
-    + (items.length ? cards(items) : empty("Bring a new branch to life.", owner ? "Import a portable WASI .loki-app package. Bigshot Voter is the first LOKI component." : "No applications have been shared with you yet.", owner ? button("Import app package", "app-import", "", "", "primary", "upload") : "", "ᚲ"));
+  const add = owner ? linkButton("Browse apps", "/apps/browse", "primary", "apps") + button("Import app package", "app-import", "", "", "subtle", "upload") : "";
+  return heading("Applications", "Independent services. One place to keep them together.", add, "apps")
+    + (items.length ? cards(items) : empty("Bring a new branch to life.", owner ? "Install a reviewed app from the LOKI app registry, or import a .loki-app package." : "No applications have been shared with you yet.", add, "ᚲ"));
 }
 
 export function sharesPage() {

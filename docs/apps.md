@@ -28,7 +28,8 @@ Implement a plain `fn(Request) -> Result<Response>` and export it with
 development account, installs the app and rebuilds it on changes; its data
 persists under `target/loki/dev/APP_ID`. `cargo loki package` builds the release
 component and writes the `.loki-app`. Import that in LOKI's **Applications**
-page, grant access, and enable it.
+page, grant access, and enable it. To let others install it, list it in the
+[app registry](#publishing-to-the-app-registry).
 
 App metadata lives in `[package.metadata.loki]` in `Cargo.toml`; the Cargo
 package version is the app version. See the
@@ -323,3 +324,52 @@ the previous package and data. Settings keep matching keys and gain new
 defaults. **Rollback** restores the previous package, settings and data
 snapshot; changes made since are lost. Data migrations run inside the app, and
 LOKI never runs installer scripts from a package.
+
+Apps installed from the app registry update the same way. When the registry
+lists a newer release, the app's card offers **Update**. Importing a package
+by hand over a registry app stops those offers for it.
+
+## Publishing to the app registry
+
+The registry, [LOKI-Server/apps](https://github.com/LOKI-Server/apps), is a
+reviewed list of apps. People browse it at https://loki-server.github.io/apps/,
+and owners install from it in LOKI under **Applications → Browse apps**. Each
+app is a folder holding `app.json`, which describes the latest release, and an
+optional `icon.png`:
+
+```json
+{
+  "id": "my-app",
+  "name": "My app",
+  "description": "What it does.",
+  "source": "https://github.com/me/my-app",
+  "version": "1.2.0",
+  "url": "https://github.com/me/my-app/releases/download/v1.2.0/my-app-1.2.0.loki-app",
+  "sha256": "…",
+  "size": 287908,
+  "sdk": "0.3.0",
+  "capabilities": ["database", "forms"]
+}
+```
+
+To add an app or release a new version:
+
+1. Publish the `.loki-app` at a permanent https link, such as a GitHub release
+   asset.
+2. In a clone of your fork of the registry, run
+   `cargo loki registry add <link> --source <repository> [--icon icon.png]`.
+   It downloads the package, checks it as LOKI does, and writes
+   `apps/<id>/app.json`.
+3. Open a pull request. A new app also adds its folder to `CODEOWNERS`, so later
+   updates need its author's approval.
+
+Reviewers run `cargo loki registry check`, which downloads every package and
+confirms it matches its entry. Merging to `main` republishes the site and its
+`index.json`.
+
+LOKI reads `index.json` from the address under **Server settings → App
+registry** (empty turns it off) and checks it for updates every few hours. It
+installs a release only when the download's size and SHA-256 match the entry
+and the package's ID, version, SDK and capabilities match too, so it installs
+exactly the file that was reviewed. Apps built with a newer SDK than the server
+are listed with a request to update LOKI.

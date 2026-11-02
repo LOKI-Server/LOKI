@@ -20,6 +20,8 @@ pub mod manifest;
 pub mod panel;
 #[cfg(feature = "realtime")]
 pub mod realtime;
+#[cfg(feature = "manifest")]
+pub mod registry;
 #[cfg(feature = "guest")]
 pub use guest::*;
 

@@ -555,6 +555,7 @@ pub(super) async fn settings(state: &State, input: SettingsChange) -> Result<Val
         return Err(Error::bad("Invalid settings."));
     }
     caddy::admin_origin(&settings)?;
+    settings.registry_url = crate::registry::validate_url(&settings.registry_url)?;
     let old = state.0.settings.read().await.clone();
     if old.caddy_enabled
         && settings.caddy_enabled

@@ -27,6 +27,9 @@ pub struct App {
     pub error: String,
     /// An extra listener, such as `0.0.0.0:4767`, for a realtime app's sockets on the LAN.
     pub lan_bind: String,
+    /// `upload` for an imported package, `registry` for an app installed from the
+    /// app registry.
+    pub source: String,
 }
 pub struct Runtime {
     pub ready: bool,
@@ -205,7 +208,13 @@ pub fn origin(id: &str, port: i64, hostname: &str) -> String {
         format!("https://{hostname}")
     }
 }
-pub async fn import(state: &State, package: PathBuf, actor: &str) -> Result<Manifest> {
+/// Installs or updates an app from a package. `source` is `upload` or `registry`.
+pub async fn import(
+    state: &State,
+    package: PathBuf,
+    actor: &str,
+    source: &str,
+) -> Result<Manifest> {
     let _guard = state.0.operations.lock().await;
     let staged = state.0.data.join("staging").join(auth::id());
     let dest = staged.clone();
@@ -266,12 +275,13 @@ pub async fn import(state: &State, package: PathBuf, actor: &str) -> Result<Mani
             .iter()
             .map(|f| (f.key.clone(), f.default.clone()))
             .collect();
-        sqlx::query("INSERT INTO apps(id,manifest,port,secret,config) VALUES(?,?,?,?,?)")
+        sqlx::query("INSERT INTO apps(id,manifest,port,secret,config,source) VALUES(?,?,?,?,?,?)")
             .bind(&m.id)
             .bind(serde_json::to_string(&m)?)
             .bind(i64::from(port))
             .bind(&secret)
             .bind(serde_json::to_string(&config)?)
+            .bind(source)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -287,9 +297,10 @@ pub async fn import(state: &State, package: PathBuf, actor: &str) -> Result<Mani
                 )
             })
             .collect();
-        sqlx::query("UPDATE apps SET manifest=?,config=?,error='' WHERE id=?")
+        sqlx::query("UPDATE apps SET manifest=?,config=?,error='',source=? WHERE id=?")
             .bind(serde_json::to_string(&m)?)
             .bind(serde_json::to_string(&config)?)
+            .bind(source)
             .bind(&m.id)
             .execute(&state.0.db)
             .await?;

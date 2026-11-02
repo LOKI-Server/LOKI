@@ -66,6 +66,11 @@ const FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../static/pages/sync.js"),
     ),
     (
+        "pages/marketplace.js",
+        JS,
+        include_bytes!("../static/pages/marketplace.js"),
+    ),
+    (
         "pages/panel.js",
         JS,
         include_bytes!("../static/pages/panel.js"),

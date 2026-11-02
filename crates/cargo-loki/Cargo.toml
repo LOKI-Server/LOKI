@@ -21,8 +21,9 @@ hex = "0.4"
 zip = { version = "9.2", default-features = false, features = ["deflate"] }
 wasmparser = "0.252"
 toml = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 rand = "0.10"
+semver = "1"
 ctrlc = "3"
 
 [dev-dependencies]

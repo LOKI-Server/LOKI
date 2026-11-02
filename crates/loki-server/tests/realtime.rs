@@ -128,7 +128,7 @@ async fn realtime(bytes: &[u8], sdk: &str) {
         archive.write_all(&data).unwrap();
     }
     archive.finish().unwrap();
-    apps::import(&state, package, &uid).await.unwrap();
+    apps::import(&state, package, &uid, "upload").await.unwrap();
     // The page routes below are public; the socket would be open either way.
     sqlx::query("UPDATE resources SET visibility='public' WHERE id=?")
         .bind(APP)

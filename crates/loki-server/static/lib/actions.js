@@ -10,6 +10,7 @@ import { browseUrl, preview } from "../pages/files.js";
 import { conflictsDialog, deviceRename, folderForm, folderManage, historyDialog, pairDialog } from "../pages/sync.js";
 import { panelAction, panelDialog } from "../pages/panel.js";
 import { previewPackage } from "./package.js";
+import { forget, installDialog, registry, search } from "../pages/marketplace.js";
 
 let busy = false;
 
@@ -199,6 +200,25 @@ export async function onClick(event) {
   try {
     if (dialogs[action]) return dialogs[action](id);
     if (action === "app-panel") return await panelDialog(id);
+    if (action === "registry-install") return await installDialog(id);
+    if (action === "registry-refresh") {
+      b.disabled = true;
+      try { await registry(true); } finally { b.disabled = false; }
+      return await refresh();
+    }
+    if (action === "registry-confirm") {
+      const label = b.innerHTML;
+      b.disabled = true;
+      b.textContent = "Downloading and installing…";
+      let result;
+      try { result = await api("/api/registry/install", { id }); }
+      catch (error) { b.innerHTML = label; throw error; }
+      finally { b.disabled = false; }
+      close();
+      forget();
+      toast(`${result.manifest.name} ${result.manifest.version} installed.`);
+      return await refresh();
+    }
     if (action === "panel-action") {
       if (b.dataset.confirm && !(await ask([b.dataset.confirm, "", b.dataset.label]))) return;
       return await panelAction(id, { action: b.dataset.name, value: b.dataset.value, fields: {} });
@@ -291,6 +311,7 @@ export async function onClick(event) {
 /** Keeps a "characters left" count beside text boxes that have one. */
 export function onInput(event) {
   const e = event.target;
+  if (e.matches?.("[data-registry-search]")) return search(e);
   if (!e.dataset?.count) return;
   const counter = document.getElementById(e.dataset.count);
   if (counter) counter.textContent = Number(e.maxLength) - [...e.value].length;

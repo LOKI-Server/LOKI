@@ -64,6 +64,9 @@ const MIGRATIONS: &[Migration] = &[
     // signing out of LOKI signs out of them too.
     Column("codes", "login_session", "TEXT"),
     Column("gateway_sessions", "login_session", "TEXT"),
+    // Where an app came from: `upload` or `registry`. Only registry apps are
+    // offered registry updates.
+    Column("apps", "source", "TEXT NOT NULL DEFAULT 'upload'"),
     Column("gateway_flows", "next", "TEXT NOT NULL DEFAULT '/'"),
     Column("gateway_flows", "popup", "INTEGER NOT NULL DEFAULT 0"),
 ];

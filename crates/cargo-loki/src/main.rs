@@ -4,6 +4,7 @@ use std::path::PathBuf;
 mod dev;
 mod package;
 mod project;
+mod registry;
 mod scaffold;
 
 #[derive(Parser)]
@@ -52,6 +53,35 @@ enum Command {
         port: u16,
         #[arg(long)]
         no_watch: bool,
+    },
+    /// Add apps to, or check, a clone of the LOKI app registry.
+    #[command(subcommand)]
+    Registry(Registry),
+}
+#[derive(Subcommand)]
+enum Registry {
+    /// Write apps/<id>/app.json for a released .loki-app. Run it again with a new
+    /// release's link to update the app.
+    Add {
+        /// The https:// download link of the .loki-app, such as a GitHub release asset.
+        url: String,
+        /// The app's source code, so people can review it before installing.
+        #[arg(long)]
+        source: Option<String>,
+        /// A square PNG icon, 64 to 1024 pixels, up to 256 KiB.
+        #[arg(long)]
+        icon: Option<PathBuf>,
+        /// The registry clone.
+        #[arg(long, default_value = ".")]
+        registry: PathBuf,
+    },
+    /// Check every entry, downloading each package to confirm it matches.
+    Check {
+        /// Skip the downloads and check only the entries and icons.
+        #[arg(long)]
+        offline: bool,
+        #[arg(long, default_value = ".")]
+        registry: PathBuf,
     },
 }
 #[derive(Args, Clone, Debug)]
@@ -114,5 +144,20 @@ fn main() -> Result<()> {
             port,
             no_watch,
         } => dev::run(build, server, port, no_watch),
+        Command::Registry(Registry::Add {
+            url,
+            source,
+            icon,
+            registry,
+        }) => {
+            println!(
+                "{}",
+                registry::add(&registry, &url, source, icon.as_deref())?.display()
+            );
+            Ok(())
+        }
+        Command::Registry(Registry::Check { offline, registry }) => {
+            registry::check(&registry, offline)
+        }
     }
 }

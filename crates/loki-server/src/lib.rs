@@ -10,6 +10,7 @@ pub mod files;
 pub mod identity;
 pub mod platform;
 pub mod realtime;
+pub mod registry;
 pub mod startup;
 pub mod storage;
 pub mod sync;
@@ -119,6 +120,8 @@ pub struct Settings {
     pub startup: bool,
     pub sync_quota_mb: u64,
     pub sync_max_file_mb: u64,
+    /// Where the app registry's `index.json` lives. Empty turns the registry off.
+    pub registry_url: String,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -142,6 +145,7 @@ impl Default for Settings {
             startup: false,
             sync_quota_mb: 10240,
             sync_max_file_mb: 2048,
+            registry_url: registry::DEFAULT_URL.into(),
         }
     }
 }
@@ -186,6 +190,8 @@ pub struct Inner {
     pub sockets: Arc<Semaphore>,
     /// Shared by blob uploads and commits; exclusive for garbage collection.
     pub sync_blobs: RwLock<()>,
+    /// The last app registry index LOKI read; see [`registry`].
+    pub registry: Mutex<Option<Arc<registry::Cache>>>,
 }
 impl State {
     pub async fn open(data: PathBuf, bind: std::net::SocketAddr) -> anyhow::Result<Self> {
@@ -276,6 +282,7 @@ impl State {
             sync_waiters: Semaphore::new(SYNC_WAITERS),
             sockets: Arc::new(Semaphore::new(SOCKETS)),
             sync_blobs: RwLock::new(()),
+            registry: Mutex::new(None),
         }));
         Ok(http)
     }

@@ -62,7 +62,7 @@ async fn sandbox(bytes: &[u8], sdk: &str) {
         .unwrap();
     archive.write_all(bytes).unwrap();
     archive.finish().unwrap();
-    apps::import(&state, package, &uid).await.unwrap();
+    apps::import(&state, package, &uid, "upload").await.unwrap();
     apps::action(&state, "wasi-probe", "enable").await.unwrap();
     let router = web::router(state.clone());
     assert_eq!(request(&router, "/", "").await.0, StatusCode::SEE_OTHER);
@@ -118,7 +118,7 @@ async fn sandbox(bytes: &[u8], sdk: &str) {
         .unwrap();
     archive.write_all(bytes).unwrap();
     archive.finish().unwrap();
-    apps::import(&state, package, &uid).await.unwrap();
+    apps::import(&state, package, &uid, "upload").await.unwrap();
     let (status, _, stored) = request(&router, "/storage", &cookie).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(stored["preferences"]["value"]["theme"], "forest");

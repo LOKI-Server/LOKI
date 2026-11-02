@@ -44,3 +44,12 @@ LOKI installation, enables startup, or configures Caddy/public exposure.
 The assigned port is saved with the profile to keep its identity issuer stable;
 use `--port 0` again to resume it. To start with a fresh profile and another port,
 use a different `CARGO_TARGET_DIR`.
+
+`registry add <link>` lists a released `.loki-app` in a clone of the
+[LOKI app registry](https://github.com/LOKI-Server/apps): it downloads the
+package, checks it, and writes `apps/ID/app.json` with its version, size and
+SHA-256. Add `--source` for the app's repository and `--icon` for a square PNG.
+Run it again with a newer release's link to update the entry. `registry check`
+validates every entry and downloads each package to confirm it matches;
+`--offline` skips the downloads. Both work in the current directory unless given
+`--registry`.

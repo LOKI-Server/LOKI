@@ -159,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let monitor = tokio::spawn(apps::monitor(state.clone()));
     let sync_maintenance = tokio::spawn(loki_server::sync::maintain(state.clone()));
+    let registry_checks = tokio::spawn(loki_server::registry::maintain(state.clone()));
     let stop = Arc::new(AtomicBool::new(false));
     let tray = if cli.no_tray {
         None
@@ -177,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
     }).await?;
     monitor.abort();
     sync_maintenance.abort();
+    registry_checks.abort();
     stop.store(true, Ordering::Relaxed);
     if let Some(tray) = tray {
         let _ = tray.join();

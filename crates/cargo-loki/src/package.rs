@@ -224,10 +224,10 @@ fn collect(root: &Path, relative: &Path, files: &mut BTreeMap<String, PathBuf>) 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::project::{CargoPackage, Target};
-    fn fixture() -> (tempfile::TempDir, Project, PathBuf) {
+    pub(crate) fn fixture() -> (tempfile::TempDir, Project, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().to_path_buf();
         std::fs::create_dir(root.join("static")).unwrap();

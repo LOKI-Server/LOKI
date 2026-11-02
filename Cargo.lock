@@ -510,6 +510,7 @@ dependencies = [
  "loki-sdk",
  "rand 0.10.3",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

@@ -98,7 +98,7 @@ async fn installation(directory: &std::path::Path) -> (State, axum::Router, Stri
     archive.start_file("probe.wasm", options).unwrap();
     archive.write_all(&build.wasm).unwrap();
     archive.finish().unwrap();
-    apps::import(&state, package, &uid).await.unwrap();
+    apps::import(&state, package, &uid, "upload").await.unwrap();
     apps::action(&state, "wasi-probe", "enable").await.unwrap();
     let router = web::router(state.clone());
 
