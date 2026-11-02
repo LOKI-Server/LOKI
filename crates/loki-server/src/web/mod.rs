@@ -302,6 +302,7 @@ async fn dashboard(
                     }
                     resource["config"] = config;
                     resource["lan_bind"] = json!(app.lan_bind);
+                    resource["storage_mib"] = json!(app.storage_mib);
                     resource["error"] = json!(app.error);
                     resource["previous"] = json!(app.previous.is_some());
                 }

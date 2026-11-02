@@ -63,6 +63,23 @@ impl Storage {
     pub fn file(&self, path: impl Into<String>) -> DataFile {
         DataFile { path: path.into() }
     }
+    /// Adds at most 1 MiB to the end of a file, creating it if needed. A file built
+    /// this way can grow to the app's whole quota; read it back in ranges (the
+    /// realtime feature's `FileReader`) rather than with [`DataFile::read`].
+    pub fn append(&self, path: &str, bytes: impl AsRef<[u8]>) -> Result<FileInfo> {
+        let bytes = bytes.as_ref();
+        if bytes.len() > 1024 * 1024 {
+            return Err(Error::new(413, "Append at most 1 MiB at a time."));
+        }
+        host::append_file(path, bytes)
+    }
+    /// Moves a file in one step. With `replace` false, fails with 409 when `to`
+    /// exists. Write a large file under a temporary name with [`Storage::append`],
+    /// then rename it over the old one, so readers never see half a file.
+    pub fn rename(&self, from: &str, to: &str, replace: bool) -> Result<DataFile> {
+        host::rename_file(from, to, replace)?;
+        Ok(self.file(to))
+    }
     /// A sorted flat listing of logical paths. Pass `next` back as `after`.
     /// Pages contain at most 100 files and are not a snapshot across mutations.
     pub fn list_files(&self, prefix: &str, after: Option<&str>) -> Result<FilePage> {

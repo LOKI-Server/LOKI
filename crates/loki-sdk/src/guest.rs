@@ -11,7 +11,7 @@ pub(crate) mod bindings {
     wit_bindgen::generate!({path:"wit",world:"host-api"});
 }
 
-/// Calls to the typed host API (`loki:app@0.3.0`). In native tests a
+/// Calls to the typed host API (`loki:app@0.3.1`). In native tests a
 /// [`testing::with_host`] fake answers them instead, by operation name and JSON.
 // Arguments go unused on targets that are neither WASI nor a test.
 #[allow(unused_variables)]
@@ -339,6 +339,59 @@ pub(crate) mod host {
                 max_value_bytes: u.max_value_bytes,
             })
         })
+    }
+    pub fn append_file(path: &str, bytes: &[u8]) -> Result<FileInfo> {
+        #[cfg(any(test, feature = "testing"))]
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        host!(
+            "storage-file-append",
+            json!({"path":path,"data":STANDARD.encode(bytes)}),
+            |f: FileInfo| Ok(f),
+            Ok(wit::storage::append_file(path, bytes)?.into())
+        )
+    }
+    pub fn rename_file(from: &str, to: &str, replace: bool) -> Result<()> {
+        host!(
+            "storage-file-rename",
+            json!({"from":from,"to":to,"replace":replace}),
+            |r: Value| Ok(()),
+            { Ok(wit::storage::rename_file(from, to, replace)?) }
+        )
+    }
+    #[cfg(feature = "realtime")]
+    pub fn call_realtime(room: &str, data: &[u8]) -> Result<Vec<u8>> {
+        #[cfg(any(test, feature = "testing"))]
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        #[cfg(any(test, feature = "testing"))]
+        #[derive(Deserialize)]
+        struct Bytes {
+            data: String,
+        }
+        host!(
+            "realtime-call",
+            json!({"room":room,"data":STANDARD.encode(data)}),
+            |b: Bytes| STANDARD
+                .decode(b.data)
+                .map_err(|_| Error::internal("Invalid answer bytes from host.")),
+            { Ok(wit::realtime_control::call(room, data)?) }
+        )
+    }
+    #[cfg(feature = "realtime")]
+    pub fn list_rooms() -> Result<Vec<crate::realtime::RoomInfo>> {
+        host!(
+            "realtime-rooms",
+            Value::Null,
+            |rooms: Vec<crate::realtime::RoomInfo>| Ok(rooms),
+            {
+                Ok(wit::realtime_control::list_rooms()?
+                    .into_iter()
+                    .map(|r| crate::realtime::RoomInfo {
+                        id: r.id,
+                        connections: r.connections,
+                    })
+                    .collect())
+            }
+        )
     }
     #[cfg(feature = "realtime")]
     pub fn restart_realtime() -> Result<()> {
@@ -825,6 +878,11 @@ impl Router {
     pub fn panel(self, handler: Handler) -> Self {
         self.get("/_loki/panel", handler)
             .post("/_loki/panel", handler)
+    }
+    /// A job LOKI runs on a timer, declared under `schedules` in the app's metadata
+    /// with the same `name`. It runs without a user; answer 200 when it succeeded.
+    pub fn schedule(self, name: &str, handler: Handler) -> Self {
+        self.post(&format!("/_loki/schedule/{name}"), handler)
     }
     pub fn handle(&self, mut request: Request) -> Result<Response> {
         let mut path_matched = false;

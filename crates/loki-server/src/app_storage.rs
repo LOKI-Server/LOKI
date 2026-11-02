@@ -12,8 +12,10 @@ use wasmtime::component::{ComponentType, Lower};
 
 pub const VALUE_BYTES: u64 = 128 * 1024;
 pub const FILE_BYTES: u64 = 1024 * 1024;
-const TOTAL_BYTES: u64 = 64 * 1024 * 1024;
-const ENTRIES: usize = 4096;
+#[cfg(test)]
+const TOTAL_BYTES: u64 = loki_sdk::manifest::STORAGE_MIB * 1024 * 1024;
+#[cfg(test)]
+const ENTRIES: usize = loki_sdk::manifest::STORAGE_ENTRIES;
 
 /// Matches `file-info` in the WIT.
 #[derive(Clone, Debug, ComponentType, Lower)]
@@ -50,6 +52,8 @@ pub(crate) struct Storage {
     lock: Arc<tokio::sync::Mutex<()>>,
     quota: u64,
     entries: usize,
+    /// Bytes and entries in use, counted once and then kept up to date.
+    totals: std::sync::Mutex<Option<(u64, usize)>>,
 }
 fn io(error: std::io::Error) -> Error {
     match error.kind() {
@@ -88,7 +92,12 @@ fn name(path: &str, key: bool) -> Result<String> {
     Ok(hex::encode(path.as_bytes()))
 }
 impl Storage {
+    #[cfg(test)]
     pub fn open(path: &Path) -> Result<Arc<Self>> {
+        Self::open_with(path, TOTAL_BYTES, ENTRIES)
+    }
+    /// Opens the app's storage with its quota in bytes and entries.
+    pub fn open_with(path: &Path, quota: u64, entries: usize) -> Result<Arc<Self>> {
         if let Ok(meta) = std::fs::symlink_metadata(path) {
             if meta.file_type().is_symlink() {
                 return Err(Error::forbidden());
@@ -118,7 +127,7 @@ impl Storage {
             }
             let dir = root.open_dir(kind).map_err(io)?;
             for (index, entry) in dir.entries().map_err(io)?.enumerate() {
-                if index >= ENTRIES {
+                if index >= entries {
                     return Err(limit("App storage entry limit exceeded."));
                 }
                 let entry = entry.map_err(io)?;
@@ -133,9 +142,31 @@ impl Storage {
             values: directory("values")?,
             files: directory("files")?,
             lock: Arc::new(tokio::sync::Mutex::new(())),
-            quota: TOTAL_BYTES,
-            entries: ENTRIES,
+            quota,
+            entries,
+            totals: std::sync::Mutex::new(None),
         }))
+    }
+    /// Bytes and entries in use. Counted from disk the first time.
+    fn totals(&self) -> Result<(u64, usize)> {
+        if let Some(totals) = *self.totals.lock().unwrap() {
+            return Ok(totals);
+        }
+        let totals = self.scan()?;
+        *self.totals.lock().unwrap() = Some(totals);
+        Ok(totals)
+    }
+    /// Records bytes added and removed and the change in entries, or forgets the
+    /// totals when the change is unknown.
+    fn changed(&self, change: Option<(u64, u64, isize)>) {
+        let mut totals = self.totals.lock().unwrap();
+        *totals = match (*totals, change) {
+            (Some((bytes, count)), Some((added, removed, entries))) => Some((
+                bytes.saturating_add(added).saturating_sub(removed),
+                count.saturating_add_signed(entries),
+            )),
+            _ => None,
+        };
     }
     fn scan(&self) -> Result<(u64, usize)> {
         let mut bytes = 0u64;
@@ -170,7 +201,7 @@ impl Storage {
         if bytes.len() as u64 > max {
             return Err(limit("Storage value or file exceeds its size limit."));
         }
-        let (total, count) = self.scan()?;
+        let (total, count) = self.totals()?;
         let old = Self::existing(dir, name)?;
         if total.saturating_sub(old.unwrap_or(0)) + bytes.len() as u64 > self.quota
             || (old.is_none() && count >= self.entries)
@@ -201,6 +232,13 @@ impl Storage {
         })();
         if result.is_err() {
             let _ = dir.remove_file(&temporary);
+            self.changed(None);
+        } else {
+            self.changed(Some((
+                bytes.len() as u64,
+                old.unwrap_or(0),
+                isize::from(old.is_none()),
+            )));
         }
         result
     }
@@ -250,7 +288,7 @@ impl Storage {
             .transpose()
     }
     pub fn delete_value(&self, key: &str) -> Result<bool> {
-        Self::remove(&self.values, &name(key, true)?)
+        self.remove(&self.values, &name(key, true)?)
     }
     pub fn write_file(&self, path: &str, bytes: &[u8]) -> Result<FileInfo> {
         let key = name(path, false)?;
@@ -264,7 +302,82 @@ impl Storage {
         })
     }
     pub fn read_file(&self, path: &str) -> Result<Vec<u8>> {
-        Self::read(&self.files, &name(path, false)?, FILE_BYTES)?.ok_or_else(Error::not_found)
+        Self::read(&self.files, &name(path, false)?, FILE_BYTES)
+            .map_err(|e| {
+                if e.status == StatusCode::PAYLOAD_TOO_LARGE {
+                    limit("This file is over 1 MiB; read it in ranges with files.read.")
+                } else {
+                    e
+                }
+            })?
+            .ok_or_else(Error::not_found)
+    }
+    /// Adds at most 1 MiB to the end of a file, creating it if needed. The file may
+    /// grow to the quota.
+    pub fn append_file(&self, path: &str, bytes: &[u8]) -> Result<FileInfo> {
+        let key = name(path, false)?;
+        if bytes.len() as u64 > FILE_BYTES {
+            return Err(limit("Append at most 1 MiB at a time."));
+        }
+        let (total, count) = self.totals()?;
+        let old = Self::existing(&self.files, &key)?;
+        if total + bytes.len() as u64 > self.quota || (old.is_none() && count >= self.entries) {
+            return Err(limit("App storage quota or entry limit exceeded."));
+        }
+        let result = (|| -> Result<u64> {
+            let mut options = OpenOptions::new();
+            options.append(true).create(true);
+            #[cfg(unix)]
+            {
+                use cap_std::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = self.files.open_with(&key, &options).map_err(io)?;
+            regular(&file.metadata().map_err(io)?)?;
+            file.write_all(bytes).map_err(io)?;
+            file.sync_data().map_err(io)?;
+            Ok(file.metadata().map_err(io)?.len())
+        })();
+        match result {
+            Ok(size) => {
+                self.changed(Some((bytes.len() as u64, 0, isize::from(old.is_none()))));
+                Ok(FileInfo {
+                    path: path.into(),
+                    size,
+                })
+            }
+            Err(e) => {
+                self.changed(None);
+                Err(e)
+            }
+        }
+    }
+    /// Moves a file in one step, replacing `to` only when asked.
+    pub fn rename_file(&self, from: &str, to: &str, replace: bool) -> Result<()> {
+        let (source, target) = (name(from, false)?, name(to, false)?);
+        Self::existing(&self.files, &source)?.ok_or_else(Error::not_found)?;
+        if source == target {
+            return Ok(());
+        }
+        let replaced = Self::existing(&self.files, &target)?;
+        if replaced.is_some() && !replace {
+            return Err(Error::new(StatusCode::CONFLICT, "That file already exists."));
+        }
+        self.totals()?;
+        match self.files.rename(&source, &self.files, &target).map_err(io) {
+            Ok(()) => {
+                self.changed(Some((
+                    0,
+                    replaced.unwrap_or(0),
+                    -isize::from(replaced.is_some()),
+                )));
+                Ok(())
+            }
+            Err(e) => {
+                self.changed(None);
+                Err(e)
+            }
+        }
     }
     pub fn file_info(&self, path: &str) -> Result<FileInfo> {
         let size =
@@ -275,13 +388,17 @@ impl Storage {
         })
     }
     pub fn delete_file(&self, path: &str) -> Result<bool> {
-        Self::remove(&self.files, &name(path, false)?)
+        self.remove(&self.files, &name(path, false)?)
     }
-    fn remove(dir: &Dir, name: &str) -> Result<bool> {
-        if Self::existing(dir, name)?.is_none() {
+    fn remove(&self, dir: &Dir, name: &str) -> Result<bool> {
+        let Some(size) = Self::existing(dir, name)? else {
             return Ok(false);
+        };
+        if let Err(e) = dir.remove_file(name) {
+            self.changed(None);
+            return Err(io(e));
         }
-        dir.remove_file(name).map_err(io)?;
+        self.changed(Some((0, size, -1)));
         Ok(true)
     }
     /// Files under `prefix`, sorted by path, 100 at a time after the `after` cursor.
@@ -315,7 +432,7 @@ impl Storage {
         Ok(FilePage { files, next })
     }
     pub fn usage(&self) -> Result<Usage> {
-        let (bytes, entries) = self.scan()?;
+        let (bytes, entries) = self.totals()?;
         Ok(Usage {
             bytes,
             entries: entries as u32,

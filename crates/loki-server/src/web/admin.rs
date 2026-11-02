@@ -477,6 +477,9 @@ pub(super) struct AppConfig {
     lan_bind: String,
     #[serde(default)]
     config: Value,
+    /// The app's storage quota in MiB; absent keeps the quota the app asks for.
+    #[serde(default)]
+    storage_mib: Option<i64>,
 }
 /// Saves an app's hostname, LAN address and settings, rolling back if it won't start.
 pub(super) async fn app_config(state: &State, id: &str, input: AppConfig) -> Result<Value> {
@@ -500,11 +503,18 @@ pub(super) async fn app_config(state: &State, id: &str, input: AppConfig) -> Res
         }
     }
     apps::validate_config(&manifest, &config)?;
+    let storage_mib = input
+        .storage_mib
+        .filter(|_| manifest.capabilities.iter().any(|c| c == "storage"));
+    if storage_mib.is_some_and(|mib| !(1..=1_048_576).contains(&mib)) {
+        return Err(Error::bad("Choose a storage quota of 1 MiB to 1 TiB."));
+    }
     let serialized = serde_json::to_string(&config)?;
-    sqlx::query("UPDATE apps SET hostname=?,config=?,lan_bind=? WHERE id=?")
+    sqlx::query("UPDATE apps SET hostname=?,config=?,lan_bind=?,storage_mib=? WHERE id=?")
         .bind(&host)
         .bind(serialized)
         .bind(&lan_bind)
+        .bind(storage_mib)
         .bind(id)
         .execute(&state.0.db)
         .await?;
@@ -517,10 +527,11 @@ pub(super) async fn app_config(state: &State, id: &str, input: AppConfig) -> Res
     }
     .await;
     if let Err(e) = result {
-        sqlx::query("UPDATE apps SET hostname=?,config=?,lan_bind=? WHERE id=?")
+        sqlx::query("UPDATE apps SET hostname=?,config=?,lan_bind=?,storage_mib=? WHERE id=?")
             .bind(&app.hostname)
             .bind(&app.config)
             .bind(&app.lan_bind)
+            .bind(app.storage_mib)
             .bind(id)
             .execute(&state.0.db)
             .await?;

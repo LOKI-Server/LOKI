@@ -8,7 +8,7 @@
 //   alongside this one, so older apps keep linking.
 // - LOKI's tests run apps frozen at each supported SDK
 //   (crates/loki-server/tests/fixtures/frozen).
-package loki:app@0.3.0;
+package loki:app@0.3.1;
 
 /// Types shared by the host interfaces.
 interface types {
@@ -48,6 +48,12 @@ interface types {
         content-type: string,
         size: u64,
         token: string,
+    }
+    /// One of a realtime app's running instances. The main instance's `id` is empty.
+    /// (0.3.1)
+    record room-info {
+        id: string,
+        connections: u32,
     }
 }
 
@@ -165,6 +171,12 @@ interface storage {
     delete-file: func(path: string) -> result<bool, error>;
     list-files: func(prefix: string, after: option<string>) -> result<file-page, error>;
     get-usage: func() -> result<usage, error>;
+    /// Adds at most 1 MiB to the end of a file, creating it if needed. A file built
+    /// this way may grow to the app's quota; read it with `files.read`. (0.3.1)
+    append-file: func(path: string, data: list<u8>) -> result<file-info, error>;
+    /// Moves a file in one step. Fails with 409 when `to` exists, unless `replace`.
+    /// Append to a temporary file and rename it to replace a large file safely. (0.3.1)
+    rename-file: func(%from: string, to: string, replace: bool) -> result<_, error>;
 }
 
 /// Answering with one of the app's files.
@@ -194,18 +206,23 @@ interface files {
     read: func(source: file-source, path: string, offset: u64, length: u32) -> result<list<u8>, error>;
 }
 
-/// Restarting the app's realtime instance. Needs `realtime`.
+/// Restarting and asking the app's realtime instances. Needs `realtime`.
 interface realtime-control {
-    use types.{error};
+    use types.{error, room-info};
 
-    /// Closes every connection and starts the instance afresh.
+    /// Closes every connection and starts the instance afresh. Rooms close.
     restart: func() -> result<_, error>;
+    /// Asks a running instance (`room` empty for the main one) through its `on-call`
+    /// export, and returns its answer. 404 for a room that isn't running. (0.3.1)
+    call: func(room: string, data: list<u8>) -> result<list<u8>, error>;
+    /// The running instances, sorted by room. (0.3.1)
+    list-rooms: func() -> result<list<room-info>, error>;
 }
 
 /// Connections to the app's realtime WebSocket endpoint. Only the realtime
-/// instance can use them.
+/// instances can use them, each its own connections.
 interface realtime {
-    use types.{error, file-source};
+    use types.{error, file-source, room-info};
 
     /// Queues one binary message. A connection that falls too far behind is closed.
     send: func(connection: u64, data: list<u8>) -> result<_, error>;
@@ -214,6 +231,28 @@ interface realtime {
     send-file: func(connection: u64, source: file-source, path: string) -> result<u64, error>;
     /// Closes the connection after its queued messages. `on-close` still follows.
     close: func(connection: u64, code: u16, reason: string);
+    /// Queues one text message. (0.3.1)
+    send-text: func(connection: u64, text: string) -> result<_, error>;
+    /// Queues the same binary message for each of these connections that is open,
+    /// and returns how many. (0.3.1)
+    broadcast: func(connections: list<u64>, data: list<u8>) -> u32;
+    /// Calls `on-timer(id)` after `delay-ms`, replacing a timer with the same id. At
+    /// most 256 wait at once. (0.3.1)
+    set-timer: func(id: u64, delay-ms: u32) -> result<_, error>;
+    cancel-timer: func(id: u64);
+    /// This instance's room; empty for the main instance. (0.3.1)
+    room: func() -> string;
+    /// Starts a room, if it isn't running. Rooms also start when someone connects to
+    /// `{path}/{room}`, and close after `limits.realtime.rooms.idle_seconds` with no
+    /// connections. (0.3.1)
+    open-room: func(id: string) -> result<_, error>;
+    /// Closes a room's connections and ends it. (0.3.1)
+    close-room: func(id: string) -> result<_, error>;
+    /// Hands `data` to another running room's `on-post`; empty for the main
+    /// instance. (0.3.1)
+    post: func(room: string, data: list<u8>) -> result<_, error>;
+    /// The running instances, sorted by room. (0.3.1)
+    list-rooms: func() -> list<room-info>;
 }
 
 /// Exported by apps with the `realtime` capability. LOKI keeps one instance of the
@@ -240,6 +279,18 @@ interface realtime-handler {
     on-tick: func();
 }
 
+/// More events, exported by apps built with SDK 0.5 or later. (0.3.1)
+interface realtime-events {
+    /// `realtime-control.call` from the app's HTTP side or another instance.
+    on-call: func(data: list<u8>) -> list<u8>;
+    /// A timer from `set-timer` ran out.
+    on-timer: func(id: u64);
+    /// Another room posted to this one.
+    on-post: func(%from: string, data: list<u8>);
+    /// Several messages arrived together, in order; in place of `on-message` each.
+    on-messages: func(messages: list<tuple<u64, list<u8>>>);
+}
+
 /// What every app can import.
 world host-api {
     import request;
@@ -254,4 +305,5 @@ world host-api {
 world realtime-app {
     import realtime;
     export realtime-handler;
+    export realtime-events;
 }

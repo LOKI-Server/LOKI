@@ -15,6 +15,10 @@
 //! }
 //! loki_sdk::export_realtime!(handle, Echo);
 //! ```
+//!
+//! With `limits.realtime.rooms` set, each room (`{path}/{room}`) is a separate
+//! instance of the same type, with its own memory and connections, running in
+//! parallel with the others. [`room`] says which one is running.
 use crate::{Error, Result, User};
 use std::io::{Read, Seek, SeekFrom};
 
@@ -84,6 +88,36 @@ pub trait RealtimeApp: Sized {
     }
     /// Runs every `limits.realtime.tick_ms` milliseconds, when set.
     fn tick(&mut self) {}
+    /// Several messages arrived together, in order. Handles each with
+    /// [`RealtimeApp::message`] unless overridden.
+    fn messages(&mut self, messages: Vec<(Connection, Vec<u8>)>) {
+        for (connection, data) in messages {
+            self.message(connection, data);
+        }
+    }
+    /// A timer set with [`set_timer`] ran out.
+    fn timer(&mut self, id: u64) {
+        let _ = id;
+    }
+    /// The app's HTTP side, or another instance, asked this one with [`call`]. The
+    /// answer goes back to the caller.
+    fn call(&mut self, data: Vec<u8>) -> Vec<u8> {
+        let _ = data;
+        Vec::new()
+    }
+    /// Another room sent this one data with [`post`]. `from` is empty for the main
+    /// instance.
+    fn post(&mut self, from: String, data: Vec<u8>) {
+        let _ = (from, data);
+    }
+}
+
+/// One running instance of a realtime app, as [`rooms`] lists it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RoomInfo {
+    /// The room; empty for the main instance.
+    pub id: String,
+    pub connections: u32,
 }
 
 /// Who opened a connection.
@@ -107,6 +141,17 @@ impl Connection {
         }
         #[cfg(target_arch = "wasm32")]
         return bindings::loki::app::realtime::send(self.0, data).map_err(Into::into);
+        #[cfg(not(target_arch = "wasm32"))]
+        Err(no_host())
+    }
+    /// Queues one text message.
+    pub fn send_text(self, text: &str) -> Result<()> {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(result) = testing::send(self, testing::Sent::Text(text.into())) {
+            return result.map(|_| ());
+        }
+        #[cfg(target_arch = "wasm32")]
+        return bindings::loki::app::realtime::send_text(self.0, text).map_err(Into::into);
         #[cfg(not(target_arch = "wasm32"))]
         Err(no_host())
     }
@@ -140,9 +185,109 @@ impl Connection {
 }
 
 /// Closes every connection and starts the realtime instance afresh, for example after
-/// its settings change. Callable from HTTP handlers too.
+/// its settings change. Rooms close. Callable from HTTP handlers too.
 pub fn restart() -> Result<()> {
     crate::guest::host::restart_realtime()
+}
+
+/// Queues the same binary message for each of these connections that is open in
+/// this instance, copying it once. Returns how many it was queued for.
+pub fn broadcast(connections: impl IntoIterator<Item = Connection>, data: &[u8]) -> u32 {
+    let ids: Vec<u64> = connections.into_iter().map(|c| c.0).collect();
+    #[cfg(any(test, feature = "testing"))]
+    if let Some(sent) = testing::broadcast(&ids, data) {
+        return sent;
+    }
+    #[cfg(target_arch = "wasm32")]
+    return bindings::loki::app::realtime::broadcast(&ids, data);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (ids, data);
+        0
+    }
+}
+/// Calls [`RealtimeApp::timer`] with `id` after `delay`, replacing a waiting timer with
+/// the same id. At most 256 wait at once. Timers end with the instance.
+pub fn set_timer(id: u64, delay: std::time::Duration) -> Result<()> {
+    let ms = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
+    #[cfg(any(test, feature = "testing"))]
+    if let Some(result) = testing::timer(id, Some(ms)) {
+        return result;
+    }
+    #[cfg(target_arch = "wasm32")]
+    return bindings::loki::app::realtime::set_timer(id, ms).map_err(Into::into);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = ms;
+        Err(no_host())
+    }
+}
+pub fn cancel_timer(id: u64) {
+    #[cfg(any(test, feature = "testing"))]
+    if testing::timer(id, None).is_some() {
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    bindings::loki::app::realtime::cancel_timer(id);
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = id;
+}
+/// The room this instance serves; empty for the main instance.
+pub fn room() -> String {
+    #[cfg(any(test, feature = "testing"))]
+    if let Some(room) = testing::room() {
+        return room;
+    }
+    #[cfg(target_arch = "wasm32")]
+    return bindings::loki::app::realtime::room();
+    #[cfg(not(target_arch = "wasm32"))]
+    String::new()
+}
+/// Starts a room, if it isn't running. Rooms also start when someone connects to
+/// `{path}/{room}`, and close once idle.
+pub fn open_room(id: &str) -> Result<()> {
+    #[cfg(target_arch = "wasm32")]
+    return bindings::loki::app::realtime::open_room(id).map_err(Into::into);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = id;
+        Err(no_host())
+    }
+}
+/// Closes a room's connections and ends it.
+pub fn close_room(id: &str) -> Result<()> {
+    #[cfg(target_arch = "wasm32")]
+    return bindings::loki::app::realtime::close_room(id).map_err(Into::into);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = id;
+        Err(no_host())
+    }
+}
+/// Hands `data` to another running room's [`RealtimeApp::post`]; `""` is the main
+/// instance. Only realtime instances can post.
+pub fn post(room: &str, data: &[u8]) -> Result<()> {
+    #[cfg(any(test, feature = "testing"))]
+    if let Some(result) = testing::post(room, data) {
+        return result;
+    }
+    #[cfg(target_arch = "wasm32")]
+    return bindings::loki::app::realtime::post(room, data).map_err(Into::into);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (room, data);
+        Err(no_host())
+    }
+}
+/// Asks a running instance (`""` for the main one) through its [`RealtimeApp::call`]
+/// and returns its answer, for example to show live state in a page or panel.
+/// Callable from HTTP handlers and from other rooms.
+pub fn call(room: &str, data: &[u8]) -> Result<Vec<u8>> {
+    crate::guest::host::call_realtime(room, data)
+}
+/// The running instances, sorted by room.
+pub fn rooms() -> Result<Vec<RoomInfo>> {
+    crate::guest::host::list_rooms()
 }
 
 /// The size of one of the app's files.
@@ -319,6 +464,36 @@ macro_rules! export_realtime {
                 });
             }
         }
+        impl $crate::realtime::bindings::exports::loki::app::realtime_events::Guest
+            for __LokiRealtime
+        {
+            fn on_call(data: ::std::vec::Vec<u8>) -> ::std::vec::Vec<u8> {
+                let mut answer = ::std::vec::Vec::new();
+                $crate::realtime::__private::with(&__LOKI_REALTIME, |app: &mut $app| {
+                    answer = $crate::realtime::RealtimeApp::call(app, data)
+                });
+                answer
+            }
+            fn on_timer(id: u64) {
+                $crate::realtime::__private::with(&__LOKI_REALTIME, |app: &mut $app| {
+                    $crate::realtime::RealtimeApp::timer(app, id)
+                });
+            }
+            fn on_post(from: ::std::string::String, data: ::std::vec::Vec<u8>) {
+                $crate::realtime::__private::with(&__LOKI_REALTIME, |app: &mut $app| {
+                    $crate::realtime::RealtimeApp::post(app, from, data)
+                });
+            }
+            fn on_messages(messages: ::std::vec::Vec<(u64, ::std::vec::Vec<u8>)>) {
+                let messages = messages
+                    .into_iter()
+                    .map(|(c, d)| ($crate::realtime::Connection(c), d))
+                    .collect();
+                $crate::realtime::__private::with(&__LOKI_REALTIME, |app: &mut $app| {
+                    $crate::realtime::RealtimeApp::messages(app, messages)
+                });
+            }
+        }
         $crate::realtime::bindings::__loki_export_realtime!(__LokiRealtime with_types_in $crate::realtime::bindings);
     };
 }
@@ -333,6 +508,7 @@ pub mod testing {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Sent {
         Data(Vec<u8>),
+        Text(String),
         File(FileSource, String),
         Close(u16, String),
     }
@@ -340,6 +516,9 @@ pub mod testing {
     struct Host {
         files: HashMap<(FileSource, String), Vec<u8>>,
         sent: Vec<(Connection, Sent)>,
+        timers: Vec<(u64, Option<u32>)>,
+        posts: Vec<(String, Vec<u8>)>,
+        room: String,
     }
     thread_local! {static HOST: RefCell<Option<Host>> = const { RefCell::new(None) };}
 
@@ -356,7 +535,7 @@ pub mod testing {
         }
         let host = Host {
             files: files.into_iter().map(|(s, p, d)| ((s, p), d)).collect(),
-            sent: Vec::new(),
+            ..Host::default()
         };
         HOST.with(|h| *h.borrow_mut() = Some(host));
         let _restore = Restore;
@@ -368,6 +547,59 @@ pub mod testing {
                 .unwrap_or_default()
         });
         (result, sent)
+    }
+    /// Pretends the code under test runs in `room`, for the rest of this test.
+    pub fn set_room(room: &str) {
+        HOST.with(|h| {
+            if let Some(host) = h.borrow_mut().as_mut() {
+                host.room = room.into();
+            }
+        });
+    }
+    /// Timers set (with their delay in milliseconds) or cancelled so far, clearing the record.
+    pub fn take_timers() -> Vec<(u64, Option<u32>)> {
+        HOST.with(|h| {
+            h.borrow_mut()
+                .as_mut()
+                .map(|h| std::mem::take(&mut h.timers))
+                .unwrap_or_default()
+        })
+    }
+    /// Data posted to other rooms so far, clearing the record.
+    pub fn take_posts() -> Vec<(String, Vec<u8>)> {
+        HOST.with(|h| {
+            h.borrow_mut()
+                .as_mut()
+                .map(|h| std::mem::take(&mut h.posts))
+                .unwrap_or_default()
+        })
+    }
+    pub(super) fn broadcast(ids: &[u64], data: &[u8]) -> Option<u32> {
+        HOST.with(|h| {
+            let mut host = h.borrow_mut();
+            let host = host.as_mut()?;
+            for id in ids {
+                host.sent.push((Connection(*id), Sent::Data(data.to_vec())));
+            }
+            Some(ids.len() as u32)
+        })
+    }
+    pub(super) fn timer(id: u64, delay: Option<u32>) -> Option<Result<()>> {
+        HOST.with(|h| {
+            let mut host = h.borrow_mut();
+            host.as_mut()?.timers.push((id, delay));
+            Some(Ok(()))
+        })
+    }
+    pub(super) fn post(room: &str, data: &[u8]) -> Option<Result<()>> {
+        HOST.with(|h| {
+            let mut host = h.borrow_mut();
+            host.as_mut()?.posts.push((room.into(), data.to_vec()));
+            Some(Ok(()))
+        })
+    }
+    pub(super) fn room() -> Option<String> {
+        HOST.with(|h| h.borrow().as_ref().map(|h| h.room.clone()))
     }
     /// What the app has sent so far in this test, clearing the record.
     pub fn take_sent() -> Vec<(Connection, Sent)> {

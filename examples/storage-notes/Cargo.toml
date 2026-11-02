@@ -13,7 +13,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-loki-sdk = { version = "0.4.0", path = "../../crates/loki-sdk", features = ["templates"] }
+loki-sdk = { version = "0.5.0", path = "../../crates/loki-sdk", features = ["templates"] }
 askama = { version = "0.12", default-features = false }
 serde = { version = "1", features = ["derive"] }
 

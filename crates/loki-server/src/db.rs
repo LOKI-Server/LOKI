@@ -72,6 +72,8 @@ const MIGRATIONS: &[Migration] = &[
     // Again: a development build listed the step above before the gateway_flows
     // columns, so databases it opened counted it as done without adding it.
     Column("apps", "source", "TEXT NOT NULL DEFAULT 'upload'"),
+    // The owner's storage quota for an app, in MiB; NULL keeps the app's own.
+    Column("apps", "storage_mib", "INTEGER"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;

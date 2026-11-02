@@ -1,11 +1,15 @@
 //! Serving an app's HTTP requests: routing by host, sign-in, forms, uploads, and streamed files.
-use super::{FileSource, Runtime, ServeOptions, component_log, enter, new_store, running};
+use super::{
+    FileSource, Host, Permit, Runtime, ServeOptions, component_log, enter, new_store, running,
+    with_runtime,
+};
 use crate::{Error, Result, State, apps, auth, files, realtime};
 use axum::{
     body::Body,
     http::{HeaderMap, Request, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
 };
+use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 
@@ -15,9 +19,13 @@ use std::{
     time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use wasmtime::Store;
 use wasmtime_wasi_http::p2::{
     WasiHttpView,
-    bindings::http::types::{ErrorCode, Scheme},
+    bindings::{
+        Proxy,
+        http::types::{ErrorCode, Scheme},
+    },
 };
 struct UploadCleanup(Vec<PathBuf>);
 impl Drop for UploadCleanup {
@@ -27,6 +35,22 @@ impl Drop for UploadCleanup {
         }
     }
 }
+/// A file `serve-file` chose to answer with: its path, where it lives, and how.
+pub(crate) type ServedFile = Arc<std::sync::Mutex<Option<(String, FileSource, ServeOptions)>>>;
+/// An idle instance kept for an app's next request.
+pub(crate) struct Warm {
+    store: Store<Host>,
+    proxy: Proxy,
+    uses: u32,
+    _slot: tokio::sync::OwnedSemaphorePermit,
+}
+/// Requests one kept instance serves before it is replaced, bounding leaks.
+const WARM_USES: u32 = 1000;
+/// The most a streamed response body may carry.
+const RESPONSE_BYTES: usize = 1024 * 1024 * 1024;
+
+/// Runs one request in an instance of the app. The response streams as the app writes
+/// it; the instance and `permit` stay held until the body ends or the time limit passes.
 pub(super) async fn execute(
     _state: &State,
     runtime: Arc<Runtime>,
@@ -34,8 +58,9 @@ pub(super) async fn execute(
     info: Value,
     form: Value,
     pending: Vec<PathBuf>,
+    permit: Permit,
 ) -> Result<Response> {
-    let _cleanup = UploadCleanup(pending.clone());
+    let cleanup = UploadCleanup(pending.clone());
     if !runtime.active.load(Ordering::SeqCst) {
         return Err(Error::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -43,8 +68,26 @@ pub(super) async fn execute(
         ));
     }
     let limits = runtime.manifest.limits.clone();
-    let mut store = new_store(&runtime, info, form, pending, None)?;
+    // Health checks always get a fresh instance, so they prove the app can start.
+    let reuse = limits.reuse_instances && request.uri().path() != runtime.manifest.health;
+    let warm = if reuse {
+        runtime.warm.lock().unwrap().pop()
+    } else {
+        None
+    };
+    let (mut store, proxy, uses) = match warm {
+        Some(warm) => {
+            let mut store = warm.store;
+            let host = store.data_mut();
+            host.info = with_runtime(&runtime, info);
+            host.form = form;
+            host.pending = pending;
+            (store, Some(warm.proxy), warm.uses)
+        }
+        None => (new_store(&runtime, info, form, pending, None)?, None, 0),
+    };
     store.set_fuel(limits.fuel)?;
+    let served = store.data().file.clone();
     // Authentication credentials stay in the host; identity comes from context.
     request.headers_mut().remove(header::COOKIE);
     request.headers_mut().remove(header::AUTHORIZATION);
@@ -63,46 +106,59 @@ pub(super) async fn execute(
         request,
     )?;
     let out = store.data_mut().http().new_response_outparam(sender)?;
-    let run = async {
-        let proxy = runtime.pre.instantiate_async(&mut store).await?;
-        let call = proxy
-            .wasi_http_incoming_handler()
-            .call_handle(&mut store, incoming, out);
-        tokio::pin!(call);
-        // Read the response concurrently, so WASI stream backpressure cannot deadlock.
-        let response = async {
-            let response = receiver
-                .await
-                .map_err(|_| anyhow::anyhow!("Component did not return a response"))?
-                .map_err(|e| anyhow::anyhow!("Component HTTP error: {e:?}"))?;
-            let (parts, body) = response.into_parts();
-            let bytes = http_body_util::Limited::new(body, 8 * 1024 * 1024)
-                .collect()
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                .to_bytes();
-            Ok::<_, anyhow::Error>(Response::from_parts(parts, Body::from(bytes)))
-        };
-        let (_, response) =
-            tokio::try_join!(async { call.await.map_err(anyhow::Error::from) }, response)?;
-        Ok::<_, anyhow::Error>(response)
-    };
-    let result = tokio::time::timeout(Duration::from_secs(limits.timeout_seconds), run).await;
-    let mut response = match result {
-        Ok(Ok(response)) => response,
-        failed => {
-            let detail = match failed {
-                Ok(Err(e)) => format!("{e:#}"),
-                _ => "Component request exceeded its time limit".into(),
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(limits.timeout_seconds);
+    let (done, finished) = tokio::sync::oneshot::channel();
+    let task_runtime = runtime.clone();
+    // The guest writes its body while it runs, so it runs beside the response.
+    tokio::spawn(async move {
+        let _permit = permit;
+        let _cleanup = cleanup;
+        let runtime = task_runtime;
+        let result = tokio::time::timeout_at(deadline, async {
+            let proxy = match proxy {
+                Some(proxy) => proxy,
+                None => runtime.pre.instantiate_async(&mut store).await?,
             };
-            component_log(&runtime, &detail);
-            return Err(Error::new(
-                StatusCode::BAD_GATEWAY,
-                "The application request failed or exceeded its resource limit. LOKI is still available.",
-            ));
+            proxy
+                .wasi_http_incoming_handler()
+                .call_handle(&mut store, incoming, out)
+                .await?;
+            Ok::<_, anyhow::Error>(proxy)
+        })
+        .await;
+        let result = match result {
+            Ok(Ok(proxy)) => {
+                if reuse && uses + 1 < WARM_USES {
+                    keep(&runtime, store, proxy, uses + 1);
+                }
+                Ok(())
+            }
+            Ok(Err(e)) => Err(format!("{e:#}")),
+            Err(_) => Err("Component request exceeded its time limit".to_string()),
+        };
+        if let Err(detail) = &result {
+            component_log(&runtime, detail);
+        }
+        let _ = done.send(result);
+    });
+    let response = match receiver.await {
+        Ok(Ok(response)) => response,
+        Ok(Err(e)) => {
+            component_log(&runtime, &format!("Component HTTP error: {e:?}"));
+            return Err(failed());
+        }
+        // The instance ended without answering; a failure has been logged already.
+        Err(_) => {
+            if let Ok(Ok(())) = finished.await {
+                component_log(&runtime, "Component did not return a response");
+            }
+            return Err(failed());
         }
     };
-    if let Some((path, asset, options)) = store.data_mut().file.take()
+    let (parts, body) = response.into_parts();
+    let mut response = Response::from_parts(parts, buffer(body).await.ok_or_else(failed)?);
+    let file = served.lock().unwrap().take();
+    if let Some((path, asset, options)) = file
         && response.status().is_success()
     {
         response = stream_file(&runtime, &path, asset, &options, &headers).await?;
@@ -118,6 +174,67 @@ pub(super) async fn execute(
         .insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
     response.headers_mut().remove(header::SET_COOKIE);
     Ok(response)
+}
+/// Waits briefly for the body to finish, so an ordinary response is sent whole with
+/// its length. A large or slow one streams instead. None when the app failed first.
+async fn buffer<B>(mut body: B) -> Option<Body>
+where
+    B: http_body::Body<Data = bytes::Bytes> + Send + Unpin + 'static,
+    B::Error: Into<axum::BoxError>,
+{
+    let mut prefix = bytes::BytesMut::new();
+    let wait = tokio::time::sleep(Duration::from_millis(100));
+    tokio::pin!(wait);
+    loop {
+        tokio::select! {
+            frame = body.frame() => match frame {
+                None => return Some(Body::from(prefix.freeze())),
+                Some(Err(_)) => return None,
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        prefix.extend_from_slice(&data);
+                    }
+                    if prefix.len() > 64 * 1024 {
+                        break;
+                    }
+                }
+            },
+            () = &mut wait => break,
+        }
+    }
+    let first = futures_util::stream::once(std::future::ready(Ok::<_, axum::BoxError>(
+        http_body::Frame::data(prefix.freeze()),
+    )));
+    let rest = http_body_util::BodyStream::new(http_body_util::Limited::new(body, RESPONSE_BYTES));
+    Some(Body::new(http_body_util::StreamBody::new(first.chain(rest))))
+}
+fn failed() -> Error {
+    Error::new(
+        StatusCode::BAD_GATEWAY,
+        "The application request failed or exceeded its resource limit. LOKI is still available.",
+    )
+}
+/// Keeps a finished instance for the next request, if LOKI has room for it.
+fn keep(runtime: &Arc<Runtime>, mut store: Store<Host>, proxy: Proxy, uses: u32) {
+    if !runtime.active.load(Ordering::SeqCst) {
+        return;
+    }
+    let Ok(slot) = runtime.warm_slots.clone().try_acquire_owned() else {
+        return;
+    };
+    let mut warm = runtime.warm.lock().unwrap();
+    if warm.len() >= runtime.manifest.limits.concurrent_requests {
+        return;
+    }
+    // Uploads were retained or removed with the request.
+    store.data_mut().pending.clear();
+    *store.data().file.lock().unwrap() = None;
+    warm.push(Warm {
+        store,
+        proxy,
+        uses,
+        _slot: slot,
+    });
 }
 async fn stream_file(
     runtime: &Runtime,
@@ -306,7 +423,7 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
     // Realtime sockets are open to anyone who can reach the app, so players need no
     // LOKI account. A signed-in, same-origin browser also says who it is.
     if let Some(settings) = manifest.realtime()
-        && path == settings.path
+        && let Some(room) = realtime::room_of(&settings, &path)
         && request.method() == axum::http::Method::GET
         && realtime::is_upgrade(request.headers())
     {
@@ -322,7 +439,7 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
             Some(user) => user_info(state, user, &app.id, &manifest).await?,
             None => Value::Null,
         };
-        return realtime::upgrade(state, &app.id, request, user, true).await;
+        return realtime::upgrade(state, &app.id, room, request, user, true).await;
     }
     if !allowed {
         // A browser gets a page of the app's own to sign in from, not an instant
@@ -346,7 +463,7 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
     };
     let info = json!({"user":user_value,"csrf":csrf,"issuer":state.0.settings.read().await.public_url,"dashboard_url":dashboard_url(state,&origin).await});
     let runtime = running(state, &app.id).await?;
-    let _permit = enter(state, &runtime).await?;
+    let permit = enter(state, &runtime).await?;
     let mut form = Value::Null;
     let mut pending = Vec::new();
     let method = request.method().clone();
@@ -422,7 +539,7 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
             .headers_mut()
             .insert("x-loki-head", "1".parse().unwrap());
     }
-    let mut response = execute(state, runtime, request, info, form, pending).await?;
+    let mut response = execute(state, runtime, request, info, form, pending, permit).await?;
     if method == axum::http::Method::HEAD {
         *response.body_mut() = Body::empty();
     }
@@ -459,7 +576,7 @@ pub async fn panel(
         return Err(Error::forbidden());
     }
     let mut info = json!({"user":user_info(state, user, app, &runtime.manifest).await?,"csrf":"","issuer":state.0.settings.read().await.public_url});
-    let _permit = enter(state, &runtime).await?;
+    let permit = enter(state, &runtime).await?;
     let mut pending = Vec::new();
     let method = if let Some(request) = request {
         let (parts, body) = request.into_parts();
@@ -515,7 +632,7 @@ pub async fn panel(
         .uri("/_loki/panel")
         .header(header::HOST, url::Url::parse(&runtime.origin)?.authority())
         .body(Body::empty())?;
-    let response = execute(state, runtime, request, info, Value::Null, pending).await?;
+    let response = execute(state, runtime, request, info, Value::Null, pending, permit).await?;
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
         .await

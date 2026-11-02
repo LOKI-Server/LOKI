@@ -29,7 +29,7 @@ capabilities and permissions are enforced by LOKI even when the SDK is bypassed.
 
 The `manifest` feature exposes shared package and app registry types and validation
 for native tooling without pulling in guest bindings. All LOKI crates share one
-version, currently 0.4.0.
+version, currently 0.5.0.
 
 ## Persistent app storage
 
@@ -63,9 +63,24 @@ keys return `None`; stored JSON `null` stays distinct from an absent key.
 support `info`, bounded `read`, `read_text`, and safe `inline` responses. Active
 formats such as HTML and SVG are downloaded rather than rendered inline.
 
-Limits per app: **64 MiB total**, **4,096 values/files**, **128 KiB per encoded
-JSON value**, and **1 MiB per generated-file write or buffered read**. Existing
-large incoming media should use host uploads. File listings are sorted, flat
+Limits per app: **64 MiB total** and **4,096 values/files** unless the app asks
+for more with `storage_mib` (up to 4096) and `storage_entries` (up to 65,536) in
+its `limits`, **128 KiB per encoded JSON value**, and **1 MiB per generated-file
+write or buffered read**. The owner can change an app's quota in its settings.
+Existing large incoming media should use host uploads.
+
+Files larger than 1 MiB, such as a game world, grow with `Storage.append` and are
+read back in ranges. Append a new version under a temporary name and `rename` it
+over the old one, so nothing ever reads half a file:
+
+```rust,ignore
+Storage.file("world.tmp").delete()?; // a leftover from an interrupted save
+for chunk in world.chunks(1024 * 1024) {
+    Storage.append("world.tmp", chunk)?;
+}
+Storage.rename("world.tmp", "world.bin", true)?;
+```
+ File listings are sorted, flat
 pages of at most 100 logical paths. Cursors do not give a snapshot across writes.
 `usage()` reports the limits and committed byte/entry counts. Writes are atomic
 replacements and are serialized across concurrent requests; rejected writes keep
@@ -98,7 +113,7 @@ Cargo.toml to opt into the services you need:
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-loki-sdk = { version = "0.4.0", features = ["templates"] }
+loki-sdk = { version = "0.5.0", features = ["templates"] }
 serde = { version = "1", features = ["derive"] }
 
 [package.metadata.loki]
@@ -175,10 +190,19 @@ return that response directly. `asset("static/style.css")` works the same way.
 File bytes stay outside Wasm memory. Roll back retained uploads yourself if a
 later application database operation fails.
 
-Each request gets a fresh guest instance. Store persistent state in the app
-database/uploads, and declare any needed limits in Cargo metadata. Arbitrary
-outbound networking, native library loading, and background threads are not
-provided by the current host. Use `request.body(MAX)` / `json(MAX)` only for
+Each request gets a fresh guest instance unless `reuse_instances = true` in the
+app's limits, which keeps finished instances (and their memory, such as caches)
+for later requests; LOKI may still start a fresh one at any time. Store persistent
+state in the app database/uploads, and declare any needed limits in Cargo
+metadata. Native library loading and background threads are not provided.
+
+With the `outbound` capability and the hosts listed under `outbound`,
+`loki_sdk::fetch::get(url)`, `post_json(url, &value)` and `send(Outgoing)` make
+HTTP(S) requests; anything else fails with 403. `fetch::testing::with_network`
+fakes the network in native tests.
+
+Jobs declared under `schedules` (`{name, every_minutes}`) run on a timer, without
+a user: route them with `Router::schedule("name", handler)` and answer 200. Use `request.body(MAX)` / `json(MAX)` only for
 bounded small bodies rather than reading multipart media into memory.
 
 ## Realtime apps
@@ -220,6 +244,20 @@ impl RealtimeApp for Room {
 loki_sdk::export_realtime!(handle, Room);
 ```
 
+`Connection::send` sends binary messages and `send_text` text ones;
+`realtime::broadcast(connections, data)` sends one message to many, copied once.
+`realtime::set_timer(id, delay)` calls `RealtimeApp::timer(id)` later.
+`realtime::call(room, data)` lets an HTTP handler or panel ask a running instance
+for live state, answered by `RealtimeApp::call`. Messages that arrive while the
+instance is busy come together in `RealtimeApp::messages`, which calls `message`
+for each unless you override it.
+
+With `rooms` in the realtime limits, each room (`{path}/{room}`) is its own
+instance of the same type, running in parallel with the others; `realtime::room()`
+says which one is running, `realtime::post(room, data)` reaches another room's
+`RealtimeApp::post`, and `realtime::rooms()` lists them with their connection
+counts. See the [app guide](../../docs/apps.md#rooms).
+
 `Connection::send_file(FileSource::Upload, path)` streams a large file to one
 connection without loading it into the guest. `realtime::file_size`,
 `realtime::read_file` and `FileReader` (`Read + Seek`) read the app's files in
@@ -228,7 +266,8 @@ Connections are anonymous by default: anyone who can reach the app can connect,
 so check your own credentials in the protocol if you need them.
 
 For native tests, `realtime::testing::with_host(files, test)` installs fake files
-and returns what each connection was sent.
+and returns what each connection was sent; `take_timers`, `take_posts` and
+`set_room` cover timers, posts and rooms.
 
 ## Panels in the LOKI dashboard
 
@@ -284,9 +323,13 @@ as `{"loki_error":1,"status":403,"message":"..."}`:
 | `storage-list` | `{prefix, after}` | `{files:[{path, size}], next}` |
 | `storage-usage` | `null` | `StorageUsage` as JSON |
 | `realtime-restart` | `null` | `null` |
+| `storage-file-append` | `{path, data}` (base64) | `{path, size}` |
+| `storage-file-rename` | `{from, to, replace}` | `null` |
+| `realtime-call` | `{room, data}` (base64) | `{data}` (base64) |
+| `realtime-rooms` | `null` | `[{id, connections}]` |
 
 These are the names and shapes of the host API before 0.3, kept so existing
-tests still work; in WASI the SDK calls the typed `loki:app@0.3.0` interfaces.
+tests still work; in WASI the SDK calls the typed `loki:app@0.3.1` interfaces.
 The previous fake is restored after the test, including after a panic. This
 allows checking SQL parameter binding and upload decisions without Wasmtime;
 the real LOKI host still enforces access and capability limits in production.

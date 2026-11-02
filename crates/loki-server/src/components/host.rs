@@ -1,4 +1,4 @@
-//! The typed host API an app imports (`loki:app@0.3.0`): its request context and
+//! The typed host API an app imports (`loki:app@0.3.x`): its request context and
 //! form, SQLite database, uploads, storage, file responses, and logs.
 use super::{FileSource, Host, component_log};
 use crate::{Error, Result, app_storage, apps, files, realtime};
@@ -236,7 +236,7 @@ pub(crate) struct ServeOptions {
 
 /// Links every host interface an app can import, except `realtime`.
 pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
-    let mut request = linker.instance("loki:app/request@0.3.0")?;
+    let mut request = linker.instance("loki:app/request@0.3.1")?;
     request.func_wrap("get-context", |store, ()| {
         let context: Context = serde_json::from_value(store.data().info.clone())?;
         Ok((context,))
@@ -247,7 +247,7 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         Ok(())
     })?;
 
-    let mut database = linker.instance("loki:app/database@0.3.0")?;
+    let mut database = linker.instance("loki:app/database@0.3.1")?;
     database.func_wrap_async("transaction", |store, (statements,): (Vec<Statement>,)| {
         Box::new(async move {
             let host = store.data();
@@ -262,7 +262,7 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         })
     })?;
 
-    let mut uploads = linker.instance("loki:app/uploads@0.3.0")?;
+    let mut uploads = linker.instance("loki:app/uploads@0.3.1")?;
     uploads.func_wrap("retain", |mut store, (token, path): (String, String)| {
         Ok((store
             .data_mut()
@@ -273,7 +273,7 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         Ok((store.data().delete_upload(&path).map_err(WitError::from),))
     })?;
 
-    let mut storage = linker.instance("loki:app/storage@0.3.0")?;
+    let mut storage = linker.instance("loki:app/storage@0.3.1")?;
     macro_rules! storage {
         ($name:literal, |$s:ident, $args:tt: $types:ty| $work:expr) => {
             storage.func_wrap_async($name, |store, $args: $types| {
@@ -302,8 +302,14 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         |s, (prefix, after): (String, Option<String>)| s.list_files(&prefix, after.as_deref())
     );
     storage!("get-usage", |s, (): ()| s.usage());
+    storage!("append-file", |s, (path, data): (String, Vec<u8>)| s
+        .append_file(&path, &data));
+    storage!(
+        "rename-file",
+        |s, (from, to, replace): (String, String, bool)| s.rename_file(&from, &to, replace)
+    );
 
-    let mut responses = linker.instance("loki:app/responses@0.3.0")?;
+    let mut responses = linker.instance("loki:app/responses@0.3.1")?;
     responses.func_wrap_async(
         "serve-file",
         |mut store, (source, path, options): (FileSource, String, ServeOptions)| {
@@ -314,7 +320,7 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    let mut files = linker.instance("loki:app/files@0.3.0")?;
+    let mut files = linker.instance("loki:app/files@0.3.1")?;
     files.func_wrap_async("size", |mut store, (source, path): (FileSource, String)| {
         Box::new(async move {
             let result = match store.data_mut().open(source, &path).await {
@@ -342,14 +348,31 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker
-        .instance("loki:app/realtime-control@0.3.0")?
-        .func_wrap_async("restart", |mut store, ()| {
-            Box::new(async move {
-                let result = store.data_mut().restart_realtime().await;
-                Ok((result.map_err(WitError::from),))
-            })
-        })?;
+    let mut control = linker.instance("loki:app/realtime-control@0.3.1")?;
+    control.func_wrap_async("restart", |mut store, ()| {
+        Box::new(async move {
+            let result = store.data_mut().restart_realtime().await;
+            Ok((result.map_err(WitError::from),))
+        })
+    })?;
+    control.func_wrap_async("call", |store, (room, data): (String, Vec<u8>)| {
+        Box::new(async move {
+            let host = store.data();
+            let result = if host.instance().is_some_and(|i| i.is(&room)) {
+                Err(Error::bad("An instance cannot call itself."))
+            } else {
+                match host.realtime() {
+                    Ok(handle) => handle.call(&room, data).await,
+                    Err(e) => Err(e),
+                }
+            };
+            Ok((result.map_err(WitError::from),))
+        })
+    })?;
+    control.func_wrap("list-rooms", |store, ()| {
+        let result = store.data().realtime().map(|handle| handle.list());
+        Ok((result.map_err(WitError::from),))
+    })?;
     Ok(())
 }
 /// Reads at most 1 MiB from `offset`; less at the end of the file.
@@ -362,8 +385,8 @@ fn read_range(mut file: std::fs::File, offset: u64, length: u32) -> std::io::Res
     Ok(data)
 }
 impl Host {
-    pub(crate) fn connections(&self) -> Option<&Arc<realtime::Connections>> {
-        self.connections.as_ref()
+    pub(crate) fn instance(&self) -> Option<&Arc<realtime::Instance>> {
+        self.instance.as_ref()
     }
     /// Opens one of the app's own files, applying the same rules as serving it.
     pub(crate) async fn open(&mut self, source: FileSource, path: &str) -> Result<std::fs::File> {
@@ -476,22 +499,21 @@ impl Host {
                 self.storage()?.open_file(&path).await?;
             }
         }
-        self.file = Some((path, source, options));
+        *self.file.lock().unwrap() = Some((path, source, options));
         Ok(())
     }
-    async fn restart_realtime(&mut self) -> Result<()> {
+    /// The app's realtime side, for an app with the `realtime` capability.
+    fn realtime(&self) -> Result<Arc<realtime::Handle>> {
         self.capability("realtime")?;
-        self.runtime
-            .realtime
-            .get()
-            .ok_or_else(|| {
-                Error::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "The realtime instance is not running.",
-                )
-            })?
-            .restart()
-            .await;
+        self.runtime.realtime.get().cloned().ok_or_else(|| {
+            Error::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The realtime instance is not running.",
+            )
+        })
+    }
+    async fn restart_realtime(&mut self) -> Result<()> {
+        self.realtime()?.restart().await;
         Ok(())
     }
 }

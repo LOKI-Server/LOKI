@@ -154,8 +154,15 @@ impl Default for Settings {
 const PASSWORD_HASHES: usize = 2;
 /// Requests LOKI handles at once. Storage operations drain all but their own.
 pub(crate) const REQUESTS: u32 = 1024;
-/// WASI component requests running at once across every app.
-const COMPONENT_REQUESTS: usize = 8;
+/// WASI component requests running at once across every app: two per CPU core,
+/// within 8–64.
+fn component_requests() -> usize {
+    std::thread::available_parallelism()
+        .map_or(8, |n| n.get() * 2)
+        .clamp(8, 64)
+}
+/// Long-lived realtime instances (an app's main instance and its rooms) across every app.
+pub(crate) const REALTIME_INSTANCES: usize = 192;
 /// Sync long polls waiting at once.
 const SYNC_WAITERS: usize = 256;
 /// Open realtime WebSocket connections across every app.
@@ -182,6 +189,12 @@ pub struct Inner {
     pub requests: Semaphore,
     pub wasm_engine: tokio::sync::OnceCell<wasmtime::Engine>,
     pub component_slots: Arc<Semaphore>,
+    /// The size of `component_slots`.
+    pub component_requests: usize,
+    /// Claimed by each running realtime instance.
+    pub realtime_instances: Arc<Semaphore>,
+    /// Claimed by each idle instance an app keeps for its next request.
+    pub warm_instances: Arc<Semaphore>,
     pub startup: startup::Manager,
     /// Bumped after every sync commit and before maintenance, waking long polls.
     pub sync_wake: tokio::sync::watch::Sender<u64>,
@@ -276,7 +289,10 @@ impl State {
             maintenance: std::sync::atomic::AtomicBool::new(false),
             requests: Semaphore::new(REQUESTS as usize),
             wasm_engine: tokio::sync::OnceCell::new(),
-            component_slots: Arc::new(Semaphore::new(COMPONENT_REQUESTS)),
+            component_slots: Arc::new(Semaphore::new(component_requests())),
+            component_requests: component_requests(),
+            realtime_instances: Arc::new(Semaphore::new(REALTIME_INSTANCES)),
+            warm_instances: Arc::new(Semaphore::new(components::WARM_INSTANCES)),
             startup,
             sync_wake: tokio::sync::watch::Sender::new(0),
             sync_waiters: Semaphore::new(SYNC_WAITERS),

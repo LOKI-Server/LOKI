@@ -30,6 +30,8 @@ pub struct App {
     /// `upload` for an imported package, `registry` for an app installed from the
     /// app registry.
     pub source: String,
+    /// The owner's storage quota for the app in MiB, in place of the app's own.
+    pub storage_mib: Option<i64>,
 }
 pub struct Runtime {
     pub ready: bool,

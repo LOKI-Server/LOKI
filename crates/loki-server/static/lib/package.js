@@ -5,7 +5,7 @@ import { $, esc, fmt, resource, store } from "./core.js";
 import { tag } from "./ui.js";
 
 const MAX_PACKAGE = 536870912, MAX_MANIFEST = 131072, MAX_FILES = 2048;
-const CAPABILITIES = ["database", "uploads", "forms", "storage", "realtime"];
+const CAPABILITIES = ["database", "uploads", "forms", "storage", "realtime", "outbound"];
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 const notPackage = () => new Error("This file is not a LOKI app package.");
@@ -112,7 +112,7 @@ function summary(m, names, file, installed, issues) {
   const order = installed && SEMVER.test(m.version) ? compareVersions(m.version, installed.manifest.version) : 1, was = installed?.manifest.version;
   const change = !installed ? tag("New app") : order === 0 ? tag(`Reinstalls v${was}`, "warn") : order < 0 ? tag(`Older than v${was}`, "bad") : tag(`Updates v${was}`);
   return `<div class="package-preview"><h3>${esc(m.name || m.id || "Unnamed app")}</h3><div class="tags">${tag(`v${m.version}`)}${change}</div>${m.description ? `<p>${esc(m.description)}</p>` : ""}`
-    + `<dl class="kv">${row("App ID", `<span class="kv-str">${esc(m.id)}</span>`)}${row("Built with", m.built_with ? `loki-sdk ${esc(m.built_with.sdk)} · cargo-loki ${esc(m.built_with.cargo_loki)}` : '<span class="kv-none">Unknown (before LOKI 0.3)</span>')}${row("Capabilities", list(m.capabilities || []))}${row("Roles", list(m.roles || []))}${row("Settings", m.fields?.length ? esc(m.fields.map(f => f.label || f.key).join(", ")) : '<span class="kv-none">None</span>')}${row("Panel", m.panel ? "Yes" : "No")}${row("Package", `${esc(fmt(file.size))}, ${names.size} files`)}</dl>`
+    + `<dl class="kv">${row("App ID", `<span class="kv-str">${esc(m.id)}</span>`)}${row("Built with", m.built_with ? `loki-sdk ${esc(m.built_with.sdk)} · cargo-loki ${esc(m.built_with.cargo_loki)}` : '<span class="kv-none">Unknown (before LOKI 0.3)</span>')}${row("Capabilities", list(m.capabilities || []))}${m.outbound?.length ? row("Sends requests to", list(m.outbound)) : ""}${m.schedules?.length ? row("Scheduled jobs", esc(m.schedules.map(j => `${j.name} (every ${j.every_minutes} min)`).join(", "))) : ""}${row("Roles", list(m.roles || []))}${row("Settings", m.fields?.length ? esc(m.fields.map(f => f.label || f.key).join(", ")) : '<span class="kv-none">None</span>')}${row("Panel", m.panel ? "Yes" : "No")}${row("Package", `${esc(fmt(file.size))}, ${names.size} files`)}</dl>`
     + (installed && !issues.length ? '<p class="help">LOKI stops the installed version and snapshots its data before updating.</p>' : "")
     + (issues.length ? `<div class="notice error">LOKI cannot import this package:<ul>${issues.map(i => `<li>${i}</li>`).join("")}</ul></div>` : "")
     + "</div>";

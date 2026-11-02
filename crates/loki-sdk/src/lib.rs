@@ -14,6 +14,8 @@ mod storage;
 #[cfg(feature = "guest")]
 pub use storage::*;
 #[cfg(feature = "guest")]
+pub mod fetch;
+#[cfg(feature = "guest")]
 mod guest;
 #[cfg(feature = "manifest")]
 pub mod manifest;

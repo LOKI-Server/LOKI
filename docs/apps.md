@@ -7,7 +7,7 @@ storage and file streaming, so the app needs no web server, account system or
 database library of its own.
 
 Apps export the standard `wasi:http/incoming-handler` and import LOKI's typed
-host interfaces, the `loki:app@0.3.0` package in
+host interfaces, the `loki:app@0.3.1` package in
 [`crates/loki-sdk/wit/platform.wit`](../crates/loki-sdk/wit/platform.wit). Rust
 apps use the [`loki-sdk`](../crates/loki-sdk/README.md) crate and the
 [`cargo-loki`](../crates/cargo-loki/README.md) tool, and never touch the WIT
@@ -61,19 +61,24 @@ package` writes:
   },
   "fields": [],
   "files": {"my_app.wasm": "SHA256_HEX", "static/style.css": "SHA256_HEX"},
-  "built_with": {"sdk": "0.4.0", "cargo_loki": "0.4.0"}
+  "built_with": {"sdk": "0.5.0", "cargo_loki": "0.5.0"}
 }
 ```
 
 - **IDs** are lowercase ASCII letters, digits and hyphens, at most 64 bytes;
   `loki-` is reserved. **Versions** use semver.
 - **Capabilities** are opt-in: `database`, `uploads`, `forms`, `storage`,
-  `realtime`. LOKI enforces them even if the SDK is bypassed.
+  `realtime`, `outbound`. LOKI enforces them even if the SDK is bypassed.
 - **Fields** are the app's settings, shown to the owner: kinds `text`, `secret`,
   `number` and `bool`. Secrets are masked in the dashboard.
 - **Limits** accept `memory_mib` 16–256, `fuel` 100,000–10,000,000,000 per
   request (roughly one unit per Wasm instruction), `timeout_seconds` 1–120,
-  `concurrent_requests` 1–8 and `request_bytes` 1 KiB–1 GiB.
+  `concurrent_requests` 1–8, `request_bytes` 1 KiB–1 GiB, `storage_mib` 1–4096
+  (default 64), `storage_entries` 16–65,536 (default 4,096) and
+  `reuse_instances` (default false; see [Database and execution](#database-and-execution)).
+- **Outbound** lists the hosts an app with `outbound` may send requests to; see
+  [Outgoing requests](#outgoing-requests).
+- **Schedules** are jobs LOKI runs on a timer; see [Scheduled jobs](#scheduled-jobs).
 - **Health:** a GET to `health` must succeed before the app goes live. It runs
   without a user and may create the app's database tables.
 - **Files:** every entry must be listed with its SHA-256. Links, traversal,
@@ -96,8 +101,8 @@ LOKI 0.3.
 
 LOKI keeps that promise by:
 
-- only adding to the `loki:app@0.3` host interfaces, as 0.3.x versions, never
-  changing or removing what an app imports;
+- only adding to the `loki:app@0.3` host interfaces, as 0.3.x versions (now
+  0.3.1), never changing or removing what an app imports;
 - providing any breaking new interface version alongside the old one;
 - testing every change against apps frozen at each supported SDK.
 
@@ -174,11 +179,12 @@ reusing a spent one ends the sign-in.
 | `request` | `get-context` (app, origin, user with roles, CSRF token, settings as JSON, panel action, LAN addresses), `get-form`, `log` | `get-form` needs `forms` |
 | `database` | `transaction`: 1–64 statements with typed parameters, returning columns, rows and affected counts | `database` |
 | `uploads` | `retain` a request's upload at a new path, `delete` a retained one | `uploads` |
-| `storage` | `set`, `get`, `delete` JSON values; `write-file`, `read-file`, `get-file-info`, `delete-file`, `list-files`, `get-usage` | `storage` |
+| `storage` | `set`, `get`, `delete` JSON values; `write-file`, `read-file`, `get-file-info`, `delete-file`, `list-files`, `get-usage`, `append-file`, `rename-file` | `storage` |
 | `responses` | `serve-file`: answer with an upload, storage file or package asset | that file's capability |
 | `files` | `size` and ranged `read` (at most 1 MiB) of the app's own files | that file's capability |
-| `realtime-control` | `restart` the realtime instance | `realtime` |
-| `realtime` | `send`, `send-file`, `close` a WebSocket connection; realtime instance only | `realtime` |
+| `realtime-control` | `restart` the realtime instances, `call` one, `list-rooms` | `realtime` |
+| `realtime` | `send`, `send-text`, `broadcast`, `send-file`, `close` a WebSocket connection; `set-timer`, `cancel-timer`; `room`, `open-room`, `close-room`, `post`, `list-rooms`; realtime instances only | `realtime` |
+| `wasi:http/outgoing-handler` | Standard outgoing HTTP(S) requests, to listed hosts | `outbound` |
 
 Every service is scoped to the installed app. A failed call returns an `error`
 whose `status` follows HTTP: 400 invalid input, 403 a missing capability or
@@ -193,9 +199,15 @@ download rather than display. Assets are the package's declared files other than
 the component.
 
 **Storage** holds JSON values (128 KiB each) and generated files (1 MiB per write
-or read) under `app-data/APP_ID/storage`, up to 64 MiB and 4,096 entries. Names
-are at most 120 UTF-8 bytes; keys can't contain slashes, and file paths can't
-traverse or name devices. Listings return up to 100 sorted paths per page.
+or read) under `app-data/APP_ID/storage`, up to the app's quota: `storage_mib`
+(64 MiB unless the app asks for more, up to 4 GiB) and `storage_entries`. The
+owner can set a different quota in the app's settings. `append-file` adds up to
+1 MiB at a time, so a file such as a game world can grow to the whole quota; read
+it back in ranges with `files.read`. `rename-file` moves a file in one step:
+append a new version under a temporary name, then rename it over the old one, so
+nothing ever reads half a file. Names are at most 120 UTF-8 bytes; keys can't
+contain slashes, and file paths can't traverse or name devices. Listings return up
+to 100 sorted paths per page.
 
 ## Forms and uploads
 
@@ -222,11 +234,57 @@ The database can grow to 256 MiB. Store binary data as uploads or storage files,
 not blobs. ATTACH, PRAGMA, virtual tables and file-loading functions are blocked.
 
 Each request runs in a fresh instance, so Rust globals don't persist; keep state
-in the database or storage. Instances are bounded by the manifest's memory, fuel
-and time limits, and at most eight component requests run at once across LOKI.
-Responses built in the app are limited to 8 MiB. Apps get no environment, stdio,
-directories, sockets or outgoing HTTP. A trap or an exhausted limit fails that
-request only; LOKI and other requests carry on.
+in the database or storage. With `"reuse_instances": true` in `limits`, LOKI keeps
+finished instances for the next request instead, so memory such as parsed
+templates or caches carries over. Any request may still get a fresh instance: an
+instance is replaced after a trap, a timeout or 1,000 requests, and health checks
+always get a new one. Don't keep anything there you can't rebuild.
+
+Instances are bounded by the manifest's memory, fuel and time limits, and LOKI
+runs two component requests per CPU core at once (8–64) across every app.
+Responses stream as the app writes them, up to 1 GiB, within `timeout_seconds`;
+short ones are sent whole with their length. LOKI compiles each component once
+and keeps the result in `cache/components` in its data folder, so apps start in
+milliseconds after the first time. Apps get no environment, stdio, directories or
+sockets, and no outgoing HTTP without `outbound`. A trap or an exhausted limit
+fails that request only; LOKI and other requests carry on.
+
+## Outgoing requests
+
+With the `outbound` capability, an app can send HTTP and HTTPS requests to the
+hosts its manifest lists, for example to announce itself to a server list or call
+a webhook:
+
+```json
+"capabilities": ["outbound"],
+"outbound": ["api.example.com", "*.discord.com", "192.168.1.20:8080"]
+```
+
+- An entry is a hostname or IP address; `*.example.com` matches any subdomain,
+  not `example.com` itself. Without a port, ports 80 and 443 are allowed. At most
+  32 entries.
+- LOKI refuses addresses on this machine or a private network (loopback,
+  10.x, 192.168.x, link-local and the like) unless the entry is that IP address
+  itself, so a listed name can't be pointed at your LAN.
+- Requests connect within 10 seconds and must start answering within 30. An app
+  may have 8 requests waiting at once.
+- Apps use the standard `wasi:http/outgoing-handler`; the Rust SDK wraps it as
+  `loki_sdk::fetch`. A refused request fails with 403.
+
+## Scheduled jobs
+
+LOKI can run jobs on a timer while the app is enabled, such as cleaning up old
+rooms or posting a daily summary:
+
+```json
+"schedules": [{"name": "cleanup", "every_minutes": 60}]
+```
+
+Every `every_minutes` (1–10,080) LOKI sends `POST /_loki/schedule/NAME` to the
+app's own handler, without a user, within the app's request limits. The first run
+comes one interval after the app starts. A job still running when the next is due
+makes that one skip. Requests to `/_loki/schedule/*` from outside never reach the
+app. Failures go to the app's log. In Rust, `Router::schedule("cleanup", handler)`.
 
 ## Panels
 
@@ -269,7 +327,8 @@ typed builders in `loki_sdk::panel` and `Router::panel`.
 With `realtime`, an app also gets one long-lived instance that LOKI keeps running
 while the app is enabled, for game servers, chat and live dashboards. LOKI calls
 it one event at a time, so its memory persists and needs no locks. The
-component also exports `realtime-handler`:
+component also exports `realtime-handler`, and apps built with SDK 0.5 or later
+`realtime-events` too:
 
 | Export | When LOKI calls it |
 | --- | --- |
@@ -278,11 +337,44 @@ component also exports `realtime-handler`:
 | `on-message(connection, data)` | A message arrived |
 | `on-close(connection)` | The connection closed, from either side |
 | `on-tick` | Every `tick_ms`, when set |
+| `on-messages(messages)` | Several messages were waiting, in order, in place of `on-message` each (`realtime-events`) |
+| `on-timer(id)` | A timer from `set-timer` ran out (`realtime-events`) |
+| `on-call(data) -> data` | `realtime-control.call` asked this instance something (`realtime-events`) |
+| `on-post(from, data)` | Another room posted to this one (`realtime-events`) |
 
-It answers with `realtime.send`, `send-file` (streams a file as 64 KiB messages,
-in order with other sends) and `close`. HTTP handlers can restart it with
-`realtime-control.restart`, for example after a settings change. The SDK's
-`FileReader` reads large files in ranges with `Read + Seek`.
+It answers with `realtime.send` (binary), `send-text`, `broadcast` (one message
+to many connections, copied once), `send-file` (streams a file as 64 KiB messages,
+in order with other sends) and `close`. `set-timer(id, delay-ms)` calls `on-timer`
+once, replacing a waiting timer with the same id; at most 256 wait at once, and
+they end with the instance. HTTP handlers can restart the instance with
+`realtime-control.restart`, for example after a settings change, and ask it for
+live state, such as who is playing, with `realtime-control.call`: the instance
+answers from `on-call` within five seconds. The SDK's `FileReader` reads large
+files in ranges with `Read + Seek`.
+
+### Rooms
+
+With `rooms` in its realtime limits, each room is a separate instance of the app,
+with its own memory, connections, ticks and timers. Rooms run in parallel with
+each other, so one busy match doesn't slow the rest.
+
+```json
+"limits": {"realtime": {"path": "/multiplayer", "rooms": {"max": 16, "idle_seconds": 60}}}
+```
+
+- Clients connect to `{path}/{room}`, such as `/multiplayer/lobby-3`; room names
+  are 1–64 lowercase letters, digits and hyphens. `{path}` alone reaches the main
+  instance, which always runs.
+- A room starts on its first connection, or when an instance calls `open-room`,
+  and closes after `idle_seconds` (5–3,600) with no connections, or on
+  `close-room`. At most `max` rooms (1–64) run at once; past that, connections to
+  a new room get 503.
+- `room()` tells an instance which room it is; it's empty for the main instance.
+  `post(room, data)` hands data to another room's `on-post`, and `list-rooms`
+  lists the running instances with their connection counts.
+- `max_connections` counts every room together. A room that fails closes its
+  connections with 1011 and ends; the next connection starts it afresh. Restarting
+  the app closes every room.
 
 ```json
 "capabilities": ["realtime"],
@@ -296,6 +388,7 @@ in order with other sends) and `close`. HTTP handlers can restart it with
 | `max_message_bytes` | 64 KiB | 1 KiB–2 MiB, incoming |
 | `tick_ms` | none | none, or 20–1000 |
 | `event_fuel` | 5,000,000 | 100,000–100,000,000 per event |
+| `rooms` | none | none, or `{max, idle_seconds}`: 1–64 rooms, idle 5–3,600 s (default 16, 60) |
 
 `on-start` gets the request `fuel` and `timeout_seconds`; other events get
 `event_fuel` and five seconds.
@@ -347,7 +440,7 @@ optional `icon.png`:
   "url": "https://github.com/me/my-app/releases/download/v1.2.0/my-app-1.2.0.loki-app",
   "sha256": "…",
   "size": 287908,
-  "sdk": "0.4.0",
+  "sdk": "0.5.0",
   "capabilities": ["database", "forms"]
 }
 ```

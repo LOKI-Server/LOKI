@@ -7,7 +7,7 @@ APIs and pass arguments directly, without invoking a shell.
 | Command | Purpose |
 | --- | --- |
 | `cargo xtask bundle` | Assemble LOKI, official Caddy, and license/source notices into a runtime directory. |
-| `cargo xtask benchmark SERVER` | Measure an initialized server's idle resident memory and one-core CPU usage. |
+| `cargo xtask benchmark SERVER` | Measure an initialized server's idle resident memory and one-core CPU usage. With `--package APP.loki-app --requests N`, also measure the app's request rate and latency (`--path`, `--concurrency`). |
 | `cargo xtask setup-smoke SERVER` | Exercise owner setup, local cookies with an HTTPS public URL, data relocation, and restart. |
 | `cargo xtask sdk-smoke --tool TOOL --server SERVER --offline` | Scaffold/check/package an SDK plugin; verify preview SSO, assets, watched rebuilds, failed-build preservation, stable ports, and Ctrl+C cleanup. |
 | `cargo xtask storage-smoke --loki SERVER --package PACKAGE` | Exercise Branch Notes JSON/SQL/files, user isolation, ranges, rollback, and backup/restore. |
