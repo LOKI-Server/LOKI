@@ -7,7 +7,7 @@
 ; The installation contains executables/assets only. LOKI selects its data
 ; directory and registers optional sign-in startup through its setup/web UI.
 
-#define AppVersion "0.3.0"
+#define AppVersion "0.4.0"
 #define BundleDir "..\target\bundle"
 
 [Setup]
