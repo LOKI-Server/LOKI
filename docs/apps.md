@@ -364,7 +364,7 @@ To add an app or release a new version:
    updates need its author's approval.
 
 Reviewers run `cargo loki registry check`, which downloads every package and
-confirms it matches its entry. Merging to `main` republishes the site and its
+confirms it matches its entry. Merging to `master` republishes the site and its
 `index.json`.
 
 LOKI reads `index.json` from the address under **Server settings → App
