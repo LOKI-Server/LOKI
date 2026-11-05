@@ -108,6 +108,8 @@ async fn main() -> anyhow::Result<()> {
                 "codes",
                 "gateway_sessions",
                 "sync_devices",
+                "file_devices",
+                "devices",
                 "recovery_codes",
                 "resets",
             ] {

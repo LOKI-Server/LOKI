@@ -5,9 +5,9 @@ import { navigate, refresh, routable } from "./router.js";
 import { submitSetup, submitStartupAware } from "../pages/auth.js";
 import { appManage, folderPicker, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
 import { userManage } from "../pages/people.js";
-import { passwordProof } from "../pages/account.js";
+import { passwordProof, deviceRename, pairDialog } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
-import { conflictsDialog, deviceRename, folderForm, folderManage, historyDialog, pairDialog } from "../pages/sync.js";
+import { conflictsDialog, folderForm, folderManage, historyDialog } from "../pages/sync.js";
 import { panelAction, panelDialog } from "../pages/panel.js";
 import { previewPackage } from "./package.js";
 import { forget, installDialog, registry, search } from "../pages/marketplace.js";
@@ -121,7 +121,7 @@ export async function onSubmit(event) {
       await navigate("/sync", { replace: true });
       return;
     }
-    else if (kind === "sync-device-rename") { await act(kind, id, data); close(); toast("Device renamed."); }
+    else if (kind === "device-rename" || kind === "sync-device-rename") { await act(kind, id, data); close(); toast("Device renamed."); }
     else if (kind === "sync-quota") { await act(kind, id, { mb: data.mb === "" ? null : Number(data.mb) }); toast("Quota saved."); }
     else if (kind === "device-code") { pairDialog(await act("device-lookup", "", data)); return; }
     else if (kind === "panel-upload") {
@@ -160,6 +160,8 @@ const dialogs = {
   "mfa-disable": () => modal("Disable two-factor authentication", `<form data-form="mfa-disable">${passwordProof()}<div class="actions"><button>Continue</button></div></form>`),
   "sync-manage": id => syncManage(id),
   "sync-pair": () => navigate("/pair"),
+  "device-pair": () => navigate("/pair"),
+  "device-rename": id => deviceRename(id),
   "sync-folder-new": () => modal("New sync folder", folderForm()),
   "sync-folder-manage": id => folderManage(id),
   "sync-device-rename": id => deviceRename(id),
@@ -280,13 +282,13 @@ export async function onClick(event) {
     else if (action === "group-delete") await act(action, id);
     else if (action === "share-delete") { await act("resource-delete", id); close(); }
     else if (action === "session-revoke") await act(action, id);
-    else if (action === "sync-device-revoke") await act(action, id);
+    else if (action === "device-revoke" || action === "sync-device-revoke") await act(action, id);
     else if (action === "device-approve" || action === "device-deny") {
       await act(action, "", { code: b.dataset.code });
       close();
       toast(action === "device-approve" ? "Device approved. It will finish signing in by itself." : "Sign-in declined.");
       await refresh();
-      return await navigate(b.dataset.kind === "sync" ? "/sync" : "/");
+      return await navigate("/account");
     }
     else if (action === "sync-restore" || action === "sync-conflict-resolve") {
       await act(action, id, { history_id: Number(b.dataset.history), keep: b.dataset.keep });

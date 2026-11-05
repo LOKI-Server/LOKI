@@ -1,5 +1,5 @@
 // Save sync: folders kept the same across a person's devices, with version history.
-// Devices use the /sync/v1 API; this page pairs them and manages what they sync.
+// Devices use /sync/v1; account settings manage their shared sign-in.
 import { ago, api, enc, esc, fmt, modal, store } from "../lib/core.js";
 import { icon } from "../lib/icons.js";
 import { button, empty, field, heading, linkButton, table, tag } from "../lib/ui.js";
@@ -32,12 +32,11 @@ export function syncPage() {
       button("Manage", "sync-folder-manage", f.id, "", "ghost", "settings"),
     ],
   })));
-  const devices = sync.devices.map(d => `<div class="session-row" data-key="${esc(d.id)}"><span class="session-icon" aria-hidden="true">${icon("server")}</span><div><strong>${esc(d.name)}</strong>${d.platform ? tag(d.platform, "dim") : ""}<small>Last seen ${ago(d.last_seen)} · paired ${ago(d.created)}</small></div><div class="actions">${button("Rename", "sync-device-rename", d.id, "", "ghost", "edit")}${button("Sign out", "sync-device-revoke", d.id, "", "ghost", "logout")}</div></div>`).join("");
-  return heading("Save sync", "Your saves and files, the same on every device.", button("Pair a device", "sync-pair", "", "", "primary", "plus"), "sync")
+  return heading("Save sync", "Your saves and files, the same on every device.", linkButton("Devices & sign-in", "/account", "subtle", "account"), "sync")
     + (conflicts ? `<div class="pending-banner">${icon("alert")}<span>${conflicts} conflicting version${conflicts === 1 ? "" : "s"} need${conflicts === 1 ? "s" : ""} a decision. Open the folder to choose.</span></div>` : "")
     + `<div class="split"><div class="stack"><section class="card"><div class="card-header"><h2>Folders</h2>${button("New folder", "sync-folder-new", "", "", "subtle", "plus")}</div>${sync.folders.length ? folders : '<p class="help">Create a folder, then map it to a local directory on each device, such as RetroArch’s saves folder.</p>'}</section></div>`
     + `<div class="stack"><section class="card"><h2>Storage</h2><progress class="quota" max="${sync.quota}" value="${Math.min(sync.usage, sync.quota)}" aria-label="Storage used"></progress><p><strong>${fmt(sync.usage)}</strong> of ${fmt(sync.quota)} used, including version history.</p><small>Files up to ${fmt(sync.max_file_bytes)} each.</small></section>`
-    + `<section class="card"><h2>Devices</h2>${devices ? `<div class="session-list">${devices}</div>` : '<p class="help">No devices yet. Install a LOKI sync client and pair it with a code.</p>'}<p class="help">Server address for clients: <span class="mono">${esc(store.session.public_url)}</span></p></section></div></div>`;
+    + `<section class="card"><h2>Device sign-in</h2><p>Pair devices and manage their access from your account.</p>${linkButton("Account & devices", "/account", "subtle", "account")}</section></div></div>`;
 }
 
 export async function folderPage(id, { path = "", page = 0 } = {}) {
@@ -116,24 +115,6 @@ export function folderManage(id) {
   const f = store.state.sync.folders.find(f => f.id === id);
   modal(f.name, folderForm(f) + `<section class="dialog-section"><h3>Delete this folder</h3><p>Removes the folder, its files, and their history from the server. Files already on your devices stay there, but stop syncing.</p><form data-form="sync-folder-delete" data-id="${esc(id)}">${field("confirm", `Type “${f.name}” to confirm`, "", "text", "required autocomplete=off")}<div class="actions"><button class="danger">${icon("trash")}Delete folder</button></div></form></section>`);
 }
-export function deviceRename(id) {
-  const d = store.state.sync.devices.find(d => d.id === id);
-  modal("Rename device", `<form data-form="sync-device-rename" data-id="${esc(id)}">${field("name", "Device name", d.name, "text", "required maxlength=80")}<div class="actions"><button>Save</button></div></form>`);
-}
-
-// Any device that signs in with a code comes here: sync clients, and apps on
-// consoles, phones and desktops.
-export function pairPage() {
-  const code = new URLSearchParams(location.search).get("code") || "";
-  return heading("Sign in a device", "Approve a code shown on a device, so it can use your account without your password.", store.state.sync ? linkButton("Back to Save sync", "/sync", "subtle", "left") : "", "sync")
-    + `<section class="card narrow"><form data-form="device-code">${field("code", "Code shown on your device", code, "text", "required autocomplete=off autocapitalize=characters placeholder=ABCD-EFGH maxlength=12")}<p class="help">Codes expire after ten minutes. Only approve devices you are setting up yourself.</p><div class="actions"><button>${icon("check")}Continue</button></div></form></section>`;
-}
-export function pairDialog(device) {
-  const sync = device.kind === "sync";
-  const reach = sync ? "read and change everything in your sync folders until you sign it out" : `use ${esc(device.service)} as you until you sign out of it there`;
-  modal(sync ? "Approve this device?" : `Sign in to ${device.service}?`, `<div class="session-row"><span class="session-icon" aria-hidden="true">${icon("server")}</span><div><strong>${esc(device.name)}</strong>${device.platform ? tag(device.platform, "dim") : ""}<small>Code ${esc(device.code)}${sync ? "" : ` · ${esc(device.service)}`}</small></div></div><p>This device will be able to ${reach}.</p><div class="actions">${button("Approve", "device-approve", "", `data-code="${esc(device.code)}" data-kind="${esc(device.kind)}"`, "primary", "check")}${button("Decline", "device-deny", "", `data-code="${esc(device.code)}" data-kind="${esc(device.kind)}"`, "danger", "close")}</div>`);
-}
-
 export function quotaSection(userId) {
   const sync = store.state.sync;
   if (!sync) return "";

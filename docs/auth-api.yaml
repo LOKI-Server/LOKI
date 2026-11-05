@@ -1,0 +1,311 @@
+openapi: 3.1.0
+info:
+  title: LOKI account device API
+  version: 1.0.0
+  description: One native device sign-in for sync and file browsing. Every service
+    still enforces resource permissions. See auth-api.md.
+servers:
+- url: /
+security:
+- accountDevice: []
+paths:
+  /auth/v1:
+    get:
+      operationId: accountDiscovery
+      summary: Discover shared native account sign-in
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Discovery'
+      security: []
+  /auth/v1/pair:
+    post:
+      operationId: accountPair
+      summary: Request a code approved under Account → Devices
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pairing'
+        '400':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceInfo'
+  /auth/v1/pair/poll:
+    post:
+      operationId: accountPoll
+      summary: Collect a single-use approved account credential
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignedIn'
+        '400':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '428':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Poll'
+  /auth/v1/login:
+    post:
+      operationId: accountLogin
+      summary: Password/MFA sign-in, independent of sync permission
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignedIn'
+        '400':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Login'
+  /auth/v1/me:
+    get:
+      operationId: accountMe
+      summary: Get this device, user, and current sync access
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/v1/device:
+    delete:
+      operationId: accountSignOut
+      summary: Revoke this device across sync and file access
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: See auth-api.md for status and machine-readable error codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  securitySchemes:
+    accountDevice:
+      type: http
+      scheme: bearer
+  schemas:
+    Error:
+      $ref: files-api.yaml#/components/schemas/Error
+    Login:
+      $ref: files-api.yaml#/components/schemas/Login
+    SignedIn:
+      $ref: files-api.yaml#/components/schemas/SignedIn
+    User:
+      $ref: files-api.yaml#/components/schemas/User
+    Device:
+      $ref: files-api.yaml#/components/schemas/Device
+    Access:
+      type: object
+      properties:
+        sync:
+          type: boolean
+      required:
+      - sync
+    Me:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        device:
+          $ref: '#/components/schemas/Device'
+        access:
+          $ref: '#/components/schemas/Access'
+      required:
+      - user
+      - device
+      - access
+    DeviceInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        platform:
+          type: string
+          maxLength: 40
+          default: ''
+      required:
+      - name
+    Poll:
+      type: object
+      properties:
+        device_code:
+          type: string
+      required:
+      - device_code
+    Pairing:
+      type: object
+      properties:
+        device_code:
+          type: string
+        user_code:
+          type: string
+        verification_uri:
+          type: string
+          format: uri
+        verification_uri_complete:
+          type: string
+          format: uri
+        interval:
+          type: integer
+          minimum: 0
+        expires_in:
+          type: integer
+          minimum: 0
+      required:
+      - device_code
+      - user_code
+      - verification_uri
+      - verification_uri_complete
+      - interval
+      - expires_in
+    Discovery:
+      type: object
+      properties:
+        protocol:
+          type: integer
+          const: 1
+        server:
+          type: string
+        name:
+          type: string
+        pairing:
+          type: boolean
+          const: true
+        services:
+          type: array
+          items:
+            type: string
+          examples:
+          - - sync
+            - files
+      required:
+      - protocol
+      - server
+      - name
+      - pairing
+      - services
+    Ok:
+      $ref: files-api.yaml#/components/schemas/Ok

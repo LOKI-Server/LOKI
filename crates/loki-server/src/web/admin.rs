@@ -68,6 +68,8 @@ pub(super) async fn user_status(state: &State, id: &str, input: StatusChange) ->
         "codes",
         "gateway_sessions",
         "sync_devices",
+        "file_devices",
+        "devices",
     ] {
         sqlx::query(&format!("DELETE FROM {table} WHERE user_id=?"))
             .bind(id)

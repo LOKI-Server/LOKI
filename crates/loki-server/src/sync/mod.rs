@@ -53,53 +53,17 @@ pub fn router() -> Router<State> {
         .route("/api/sync/folders/{id}/history", get(api::browser_history))
 }
 
-/// A device acting for its user. Built only from a bearer token, never a cookie,
-/// so these routes need no CSRF protection.
-pub(crate) struct Caller {
-    pub user: User,
-    pub device: String,
-}
+pub(crate) use crate::devices::Caller;
 pub(crate) async fn caller(state: &State, headers: &HeaderMap) -> Result<Caller> {
-    let signed_out = || {
-        Error::coded(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "This device is signed out. Pair it again.",
-        )
-    };
-    let raw = headers
-        .get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .ok_or_else(signed_out)?;
-    let device: Option<(String, String, i64, i64)> =
-        sqlx::query_as("SELECT id,user_id,auth_version,last_seen FROM sync_devices WHERE token=?")
-            .bind(auth::digest(raw.trim()))
-            .fetch_optional(&state.0.db)
-            .await?;
-    let (device, user_id, version, last_seen) = device.ok_or_else(signed_out)?;
-    let user: User =
-        sqlx::query_as("SELECT * FROM users WHERE id=? AND auth_version=? AND status='approved'")
-            .bind(&user_id)
-            .bind(version)
-            .fetch_optional(&state.0.db)
-            .await?
-            .ok_or_else(signed_out)?;
-    if !auth::allowed(state, Some(&user), RESOURCE, "access").await? {
+    let caller = crate::devices::caller(state, headers).await?;
+    if !auth::allowed(state, Some(&caller.user), RESOURCE, "access").await? {
         return Err(Error::coded(
             StatusCode::FORBIDDEN,
             "forbidden",
             "Your account no longer has access to sync. Ask the server owner.",
         ));
     }
-    if last_seen < auth::now() - 60 {
-        sqlx::query("UPDATE sync_devices SET last_seen=? WHERE id=?")
-            .bind(auth::now())
-            .bind(&device)
-            .execute(&state.0.db)
-            .await?;
-    }
-    Ok(Caller { user, device })
+    Ok(caller)
 }
 /// The signed-in browser user, when they may use sync.
 pub(crate) async fn browser(state: &State, headers: &HeaderMap) -> Result<User> {
@@ -171,7 +135,7 @@ pub async fn summary(state: &State, user: &User) -> Result<Option<Value>> {
     if user.status != "approved" || !auth::allowed(state, Some(user), RESOURCE, "access").await? {
         return Ok(None);
     }
-    let devices = sqlx::query("SELECT id,name,platform,created,last_seen FROM sync_devices WHERE user_id=? ORDER BY last_seen DESC")
+    let devices = sqlx::query("SELECT id,name,platform,created,last_seen FROM devices WHERE user_id=? ORDER BY last_seen DESC")
         .bind(&user.id)
         .fetch_all(&state.0.db)
         .await?
@@ -284,7 +248,7 @@ pub async fn action(
             crate::device_codes::decide(state, user, &input.code, approve).await
         }
         "sync-device-revoke" => {
-            sqlx::query("DELETE FROM sync_devices WHERE id=? AND user_id=?")
+            sqlx::query("DELETE FROM devices WHERE id=? AND user_id=?")
                 .bind(id)
                 .bind(&user.id)
                 .execute(&state.0.db)
@@ -293,7 +257,7 @@ pub async fn action(
         }
         "sync-device-rename" => {
             let input: DeviceName = args(data)?;
-            sqlx::query("UPDATE sync_devices SET name=? WHERE id=? AND user_id=?")
+            sqlx::query("UPDATE devices SET name=? WHERE id=? AND user_id=?")
                 .bind(valid_name(&input.name, 80)?)
                 .bind(id)
                 .bind(&user.id)

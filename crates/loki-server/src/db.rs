@@ -74,6 +74,11 @@ const MIGRATIONS: &[Migration] = &[
     Column("apps", "source", "TEXT NOT NULL DEFAULT 'upload'"),
     // The owner's storage quota for an app, in MiB; NULL keeps the app's own.
     Column("apps", "storage_mib", "INTEGER"),
+    // Keep existing credentials and IDs while moving native sign-in to the account.
+    Sql("INSERT OR IGNORE INTO devices SELECT * FROM sync_devices"),
+    Sql("INSERT OR IGNORE INTO devices SELECT * FROM file_devices"),
+    Sql("DELETE FROM sync_devices"),
+    Sql("DELETE FROM file_devices"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
@@ -124,6 +129,64 @@ pub async fn settings(pool: &SqlitePool) -> anyhow::Result<Settings> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn existing_native_devices_keep_tokens_and_ids_when_account_sign_in_is_unified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("loki.db");
+        let pool = open(&path).await.unwrap();
+        sqlx::query("INSERT INTO users(id,username,display_name,password,status,created) VALUES('u','user','User','','approved',1)")
+            .execute(&pool).await.unwrap();
+        for (table, id) in [
+            ("sync_devices", "sync-device"),
+            ("file_devices", "file-device"),
+        ] {
+            sqlx::query(&format!("INSERT INTO {table}(id,user_id,name,token,auth_version,created,last_seen) VALUES(?,'u',?,?,0,1,1)"))
+                .bind(id).bind(id).bind(crate::auth::digest(id)).execute(&pool).await.unwrap();
+        }
+        sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 4))
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = open(&path).await.unwrap();
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT id,token FROM devices ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("file-device".into(), crate::auth::digest("file-device")),
+                ("sync-device".into(), crate::auth::digest("sync-device"))
+            ]
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM sync_devices")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM file_devices")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        pool.close().await;
+        let pool = open(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM devices")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            2
+        );
+        pool.close().await;
+    }
 
     #[tokio::test]
     async fn existing_shares_gain_empty_exclusions_and_keep_them_after_reopening() {

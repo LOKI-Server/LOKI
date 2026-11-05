@@ -12,6 +12,8 @@ use std::path::{Component, Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
+pub mod api;
+
 pub fn parse_excluded_extensions(input: &str) -> Result<Vec<String>> {
     if input.len() > 4096 {
         return Err(Error::bad(
@@ -200,6 +202,10 @@ pub async fn list(
     Query(query): Query<Browse>,
 ) -> Result<Json<serde_json::Value>> {
     let share = share(&state, &headers, &id).await?;
+    list_share(share, query).await
+}
+
+pub(super) async fn list_share(share: Share, query: Browse) -> Result<Json<serde_json::Value>> {
     let path = query.path.clone();
     let (entries, total) = tokio::task::spawn_blocking(move || -> Result<(Vec<Entry>, usize)> {
         let (dir, path) = confined(&share.root, &path)?;
@@ -331,8 +337,11 @@ pub async fn download(
     Query(query): Query<Browse>,
 ) -> Result<Response> {
     let share = share(&state, &headers, &id).await?;
-    let path = query.path.clone();
-    let (file, path) = tokio::task::spawn_blocking(move || -> Result<_> {
+    serve_file(share, &headers, query, false).await
+}
+
+pub(super) async fn open_file(share: Share, path: String) -> Result<(std::fs::File, PathBuf)> {
+    tokio::task::spawn_blocking(move || -> Result<_> {
         let (dir, path) = confined(&share.root, &path)?;
         if excluded(&path, &share.excluded_extensions) {
             return Err(Error::not_found());
@@ -345,11 +354,37 @@ pub async fn download(
         check_opened_file(&file, &path, &share.excluded_extensions)?;
         Ok((file, path))
     })
-    .await??;
-    let length = file.metadata()?.len();
+    .await?
+}
+
+/// Filesystem timestamps can predate Unix time or exceed HTTP's year range.
+/// `httpdate` panics for these, so omit the validator when it cannot be encoded.
+fn http_date(time: std::time::SystemTime) -> Option<String> {
+    let seconds = time.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    (seconds < 253402300800).then(|| httpdate::fmt_http_date(time))
+}
+
+pub(super) async fn serve_file(
+    share: Share,
+    headers: &HeaderMap,
+    query: Browse,
+    head: bool,
+) -> Result<Response> {
+    let (file, path) = open_file(share, query.path).await?;
+    let metadata = file.metadata()?;
+    let length = metadata.len();
+    let modified = metadata.modified().ok().and_then(http_date);
     let mut file = tokio::fs::File::from_std(file);
     let mut status = StatusCode::OK;
-    let (start, end) = if let Some(value) = headers.get(header::RANGE) {
+    // A stale validator must restart the transfer, not splice two versions.
+    // Weak ETags (and unrecognized validators) never satisfy If-Range.
+    let use_range = !head
+        && headers.get(header::IF_RANGE).is_none_or(|value| {
+            modified
+                .as_deref()
+                .is_some_and(|date| value.as_bytes() == date.as_bytes())
+        });
+    let (start, end) = if let Some(value) = headers.get(header::RANGE).filter(|_| use_range) {
         match value.to_str().ok().and_then(|s| range(s, length)) {
             Some(r) => {
                 status = StatusCode::PARTIAL_CONTENT;
@@ -400,6 +435,12 @@ pub async fn download(
             header::CONTENT_RANGE,
             format!("bytes {start}-{end}/{length}"),
         );
+    }
+    if let Some(modified) = modified {
+        response = response.header(header::LAST_MODIFIED, modified);
+    }
+    if head {
+        return Ok(response.body(Body::empty())?);
     }
     Ok(response.body(Body::from_stream(ReaderStream::with_capacity(
         file.take(count),

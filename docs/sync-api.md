@@ -54,7 +54,15 @@ loopback.
 
 ## Authentication
 
-Every other endpoint except pairing and login needs a device token:
+Native sign-in is shared with file browsing. New clients use
+[the account device API](auth-api.md) under `/auth/v1` for discovery, pairing,
+password/MFA login, current device details, and sign-out. Reuse that token for
+`/sync/v1` and `/files/v1`; never ask for a separate file-access login. Existing
+sync device tokens are migrated automatically and remain valid. The original
+sync sign-in routes below remain compatibility aliases; they still require
+sync access when signing in.
+
+Every sync data endpoint needs an account device token:
 
 ```text
 Authorization: Bearer <token>
@@ -62,7 +70,7 @@ Authorization: Bearer <token>
 
 The API never accepts LOKI's browser session cookie; a request without a bearer
 token returns `401`. Each token belongs to one named device, which the user can
-see, rename, and revoke in the dashboard under **Save sync**. Store the token
+see, rename, and revoke in the dashboard under **Account → Devices**. Store the token
 like a password (Android Keystore, Windows Credential Manager, a `0600` file).
 
 A token stops working when the device is revoked or signs out, the user changes
@@ -76,7 +84,7 @@ later without re-pairing.
 
 Pairing works like TV sign-in: the device never sees the password.
 
-1. `POST /sync/v1/pair`:
+1. `POST /auth/v1/pair` (or compatibility `/sync/v1/pair`):
 
    ```json
    {"name":"AYN Thor","platform":"android"}
@@ -101,7 +109,7 @@ Pairing works like TV sign-in: the device never sees the password.
    `verification_uri_complete`. The user signs in to LOKI in any browser,
    checks the device name and platform, and approves or declines. Codes use
    consonants only and are accepted with or without the dash, in any case.
-3. Poll `POST /sync/v1/pair/poll` every `interval` seconds:
+3. Poll `POST /auth/v1/pair/poll` every `interval` seconds:
 
    ```json
    {"device_code":"6f1c2d…opaque…"}
@@ -131,7 +139,7 @@ without a `code` means try again later.
 
 ### Password login (headless clients)
 
-For scripts and devices with no browser nearby, `POST /sync/v1/login`:
+For scripts and devices with no browser nearby, `POST /auth/v1/login` (or compatibility `/sync/v1/login`):
 
 ```json
 {"username":"aspen","password":"…","code":"123456","name":"Steam Deck","platform":"linux"}

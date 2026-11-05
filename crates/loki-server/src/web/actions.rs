@@ -44,6 +44,19 @@ pub(super) async fn action(
         "mfa-start" => account::mfa_start(state, ctx.approved()?, args(data)?).await?,
         "mfa-enable" => account::mfa_enable(state, user, args(data)?).await?,
         "mfa-disable" => account::mfa_disable(state, user, args(data)?).await?,
+        "device-revoke" => {
+            crate::devices::revoke(state, ctx.approved()?, &id).await?;
+            ok()
+        }
+        "device-rename" => {
+            #[derive(Deserialize)]
+            struct Name {
+                name: String,
+            }
+            let input: Name = args(data)?;
+            crate::devices::rename(state, ctx.approved()?, &id, &input.name).await?;
+            ok()
+        }
         "device-lookup" => {
             let input: account::Code = args(data)?;
             crate::device_codes::lookup(state, ctx.approved()?, &input.code).await?

@@ -90,6 +90,808 @@ async fn installation() -> (tempfile::TempDir, State, Browser) {
     (tmp, state, browser)
 }
 
+async fn file_api(
+    app: &Router,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, axum::http::HeaderMap, bytes::Bytes) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::HOST, "127.0.0.1:7070");
+    if !token.is_empty() {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    for (key, value) in headers {
+        request = request.header(*key, *value);
+    }
+    let body = match body {
+        Some(value) => {
+            request = request.header(header::CONTENT_TYPE, "application/json");
+            Body::from(value.to_string())
+        }
+        None => Body::empty(),
+    };
+    let response = app
+        .clone()
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, body)
+}
+
+async fn download_device(app: &Router, username: &str) -> Value {
+    let (status, _, body) = file_api(app, "", "POST", "/files/v1/login",
+        Some(json!({"username":username,"password":"owner-password-123","name":"Downloader","platform":"test"})), &[]).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    serde_json::from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+async fn account_pairing_works_for_files_and_sync_and_is_managed_from_account() {
+    let (_tmp, state, mut owner) = installation().await;
+    let app = web::router(state.clone());
+    let (status, _, bytes) = file_api(
+        &app,
+        "",
+        "POST",
+        "/auth/v1/pair",
+        Some(json!({"name":"Combined client","platform":"test"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let pair: Value = serde_json::from_slice(&bytes).unwrap();
+    let shown = owner
+        .action("device-lookup", "", json!({"code":pair["user_code"]}))
+        .await;
+    assert_eq!(shown["kind"], "account");
+    assert_eq!(shown["service"], "LOKI account");
+    owner
+        .action("device-approve", "", json!({"code":pair["user_code"]}))
+        .await;
+    let (status, _, bytes) = file_api(
+        &app,
+        "",
+        "POST",
+        "/auth/v1/pair/poll",
+        Some(json!({"device_code":pair["device_code"]})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let issued: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(issued["access"]["sync"], true);
+    let token = issued["token"].as_str().unwrap();
+    let id = issued["device"]["id"].as_str().unwrap();
+    for path in [
+        "/auth/v1/me",
+        "/sync/v1/me",
+        "/files/v1/me",
+        "/files/v1/shares",
+    ] {
+        assert_eq!(
+            file_api(&app, token, "GET", path, None, &[]).await.0,
+            StatusCode::OK,
+            "{path}"
+        );
+    }
+    let (_, dashboard) = owner.request("GET", "/api/state", None).await;
+    assert_eq!(dashboard["devices"][0]["id"], id);
+    assert!(dashboard["devices"][0].get("token").is_none());
+    owner
+        .action("device-rename", id, json!({"name":"Renamed device"}))
+        .await;
+    let (_, _, bytes) = file_api(&app, token, "GET", "/auth/v1/me", None, &[]).await;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap()["device"]["name"],
+        "Renamed device"
+    );
+    owner.action("device-revoke", id, json!({})).await;
+    for path in ["/auth/v1/me", "/sync/v1/me", "/files/v1/me"] {
+        assert_eq!(
+            file_api(&app, token, "GET", path, None, &[]).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        file_api(
+            &app,
+            "",
+            "POST",
+            "/auth/v1/pair/poll",
+            Some(json!({"device_code":pair["device_code"]})),
+            &[]
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    state.0.db.close().await;
+}
+
+#[tokio::test]
+async fn accounts_without_sync_can_pair_and_manage_their_devices() {
+    let (_tmp, state, _owner) = installation().await;
+    sqlx::query("INSERT INTO users(id,username,display_name,password,status,created) SELECT 'reader','reader','Reader',password,'approved',created FROM users WHERE owner=1")
+        .execute(&state.0.db).await.unwrap();
+    let app = web::router(state.clone());
+    let mut reader = Browser::new(app.clone());
+    reader.session().await;
+    reader
+        .post(
+            "/api/login",
+            json!({"username":"reader","password":"owner-password-123"}),
+        )
+        .await;
+    reader.session().await;
+    let (_, _, bytes) = file_api(
+        &app,
+        "",
+        "POST",
+        "/auth/v1/pair",
+        Some(json!({"name":"File reader"})),
+        &[],
+    )
+    .await;
+    let pair: Value = serde_json::from_slice(&bytes).unwrap();
+    reader
+        .action("device-approve", "", json!({"code":pair["user_code"]}))
+        .await;
+    let (status, _, bytes) = file_api(
+        &app,
+        "",
+        "POST",
+        "/auth/v1/pair/poll",
+        Some(json!({"device_code":pair["device_code"]})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let issued: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(issued["access"]["sync"], false);
+    let token = issued["token"].as_str().unwrap();
+    assert_eq!(
+        file_api(&app, token, "GET", "/files/v1/shares", None, &[])
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        file_api(&app, token, "GET", "/sync/v1/me", None, &[])
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    reader
+        .action(
+            "device-rename",
+            issued["device"]["id"].as_str().unwrap(),
+            json!({"name":"Reader"}),
+        )
+        .await;
+    let (_, dashboard) = reader.request("GET", "/api/state", None).await;
+    assert!(dashboard.get("sync").is_none());
+    assert_eq!(dashboard["devices"][0]["name"], "Reader");
+    reader
+        .action(
+            "device-revoke",
+            issued["device"]["id"].as_str().unwrap(),
+            json!({}),
+        )
+        .await;
+    assert_eq!(
+        file_api(&app, token, "GET", "/files/v1/me", None, &[])
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    state.0.db.close().await;
+}
+
+#[tokio::test]
+async fn upgrading_reuses_old_sync_and_file_tokens_without_signing_in_again() {
+    let (tmp, state, _owner) = installation().await;
+    for (table, id) in [("sync_devices", "old-sync"), ("file_devices", "old-files")] {
+        sqlx::query(&format!("INSERT INTO {table}(id,user_id,name,token,auth_version,created,last_seen) SELECT ?,id,?,?,auth_version,1,1 FROM users WHERE owner=1"))
+            .bind(id).bind(id).bind(auth::digest(id)).execute(&state.0.db).await.unwrap();
+    }
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&state.0.db)
+        .await
+        .unwrap();
+    sqlx::query(&format!("PRAGMA user_version={}", version - 4))
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    state.0.db.close().await;
+    let upgraded = State::open(tmp.path().into(), "127.0.0.1:7070".parse().unwrap())
+        .await
+        .unwrap();
+    let app = web::router(upgraded.clone());
+    for token in ["old-sync", "old-files"] {
+        for path in ["/auth/v1/me", "/sync/v1/me", "/files/v1/me"] {
+            assert_eq!(
+                file_api(&app, token, "GET", path, None, &[]).await.0,
+                StatusCode::OK,
+                "{token} {path}"
+            );
+        }
+        assert_eq!(
+            file_api(&app, token, "DELETE", "/auth/v1/device", None, &[])
+                .await
+                .0,
+            StatusCode::OK
+        );
+        for path in ["/sync/v1/me", "/files/v1/me"] {
+            assert_eq!(
+                file_api(&app, token, "GET", path, None, &[]).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+    }
+    upgraded.0.db.close().await;
+}
+
+#[tokio::test]
+async fn native_downloads_browse_hash_resume_and_reject_unsafe_paths() {
+    use sha2::{Digest, Sha256};
+    let (tmp, state, mut owner) = installation().await;
+    let root = tmp.path().join("shared");
+    std::fs::create_dir_all(root.join("nested")).unwrap();
+    std::fs::write(root.join("日本語.txt"), b"0123456789").unwrap();
+    std::fs::write(root.join("empty"), b"").unwrap();
+    std::fs::write(root.join("hidden.TMP"), b"secret").unwrap();
+    std::fs::write(root.join("nested/hidden.tmp"), b"secret").unwrap();
+    for n in 0..110 {
+        std::fs::write(root.join(format!("item{n:03}")), b"x").unwrap();
+    }
+    let share = owner
+        .action(
+            "share-save",
+            "",
+            json!({"name":"Archive","root":root,"excluded_extensions":"tmp"}),
+        )
+        .await;
+    let id = share["id"].as_str().unwrap();
+    let app = web::router(state.clone());
+    let (status, headers, bytes) = file_api(&app, "", "GET", "/files/v1", None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap()["read_only"],
+        true
+    );
+    let device = download_device(&app, "owner").await;
+    let token = device["token"].as_str().unwrap();
+    let (_, _, bytes) = file_api(&app, token, "GET", "/files/v1/shares", None, &[]).await;
+    let shares: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(shares["shares"][0]["id"], id);
+    assert!(
+        shares
+            .to_string()
+            .find(&root.to_string_lossy().to_string())
+            .is_none()
+    );
+    let prefix = format!("/files/v1/shares/{id}");
+    let (_, _, bytes) = file_api(&app, token, "GET", &format!("{prefix}/entries"), None, &[]).await;
+    let listing: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(listing["total"], 113);
+    assert_eq!(listing["entries"].as_array().unwrap().len(), 100);
+    assert_eq!(listing["entries"][0]["name"], "nested");
+    let (_, _, bytes) = file_api(
+        &app,
+        token,
+        "GET",
+        &format!("{prefix}/entries?page=1"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap()["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        13
+    );
+    for suffix in ["page=1000", "sort=wrong"] {
+        assert_eq!(
+            file_api(
+                &app,
+                token,
+                "GET",
+                &format!("{prefix}/entries?{suffix}"),
+                None,
+                &[]
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let encoded = url::form_urlencoded::byte_serialize("日本語.txt".as_bytes()).collect::<String>();
+    let uri = format!("{prefix}/file?path={encoded}");
+    let (status, headers, bytes) = file_api(&app, token, "GET", &uri, None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&bytes[..], b"0123456789");
+    assert_eq!(headers[header::CONTENT_LENGTH], "10");
+    assert_eq!(headers[header::ACCEPT_RANGES], "bytes");
+    assert!(
+        headers[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment;")
+    );
+    assert!(
+        headers[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .contains(&encoded)
+    );
+    let date = headers[header::LAST_MODIFIED].to_str().unwrap();
+    let (status, headers, bytes) =
+        file_api(&app, token, "HEAD", &uri, None, &[("range", "bytes=2-5")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_LENGTH], "10");
+    assert!(bytes.is_empty());
+    for (range, expected) in [
+        ("bytes=2-5", &b"2345"[..]),
+        ("bytes=7-", &b"789"[..]),
+        ("bytes=-3", &b"789"[..]),
+    ] {
+        let (status, _, bytes) = file_api(
+            &app,
+            token,
+            "GET",
+            &uri,
+            None,
+            &[("range", range), ("if-range", date)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(&bytes[..], expected);
+    }
+    let (status, headers, _) =
+        file_api(&app, token, "GET", &uri, None, &[("range", "bytes=99-")]).await;
+    assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(headers[header::CONTENT_RANGE], "bytes */10");
+    for validator in ["Thu, 01 Jan 1970 00:00:00 GMT", "W/\"old\""] {
+        let (status, _, bytes) = file_api(
+            &app,
+            token,
+            "GET",
+            &uri,
+            None,
+            &[("range", "bytes=7-"), ("if-range", validator)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&bytes[..], b"0123456789");
+    }
+    for (checksum, expected) in [
+        (false, Value::Null),
+        (true, json!(hex::encode(Sha256::digest(b"0123456789")))),
+    ] {
+        let (status, _, bytes) = file_api(
+            &app,
+            token,
+            "GET",
+            &format!("{prefix}/metadata?path={encoded}&checksum={checksum}"),
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let meta: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(meta["size"], 10);
+        assert_eq!(meta["sha256"], expected);
+        assert_eq!(meta["last_modified"], date);
+    }
+    for endpoint in ["file", "metadata"] {
+        for name in ["hidden.TMP", "nested/hidden.tmp", "nested", "missing"] {
+            assert_eq!(
+                file_api(
+                    &app,
+                    token,
+                    "GET",
+                    &format!("{prefix}/{endpoint}?path={name}"),
+                    None,
+                    &[]
+                )
+                .await
+                .0,
+                StatusCode::NOT_FOUND,
+                "{endpoint}: {name}"
+            );
+        }
+        for name in ["..%2Floki.db", "%2Fetc%2Fpasswd", "C%3Asecret", "a%5Cb"] {
+            assert_eq!(
+                file_api(
+                    &app,
+                    token,
+                    "GET",
+                    &format!("{prefix}/{endpoint}?path={name}"),
+                    None,
+                    &[]
+                )
+                .await
+                .0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+    }
+    let (status, _, bytes) = file_api(
+        &app,
+        token,
+        "GET",
+        &format!("{prefix}/file?path=empty"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(bytes.is_empty());
+    assert_eq!(
+        file_api(
+            &app,
+            token,
+            "GET",
+            &format!("{prefix}/file?path=empty"),
+            None,
+            &[("range", "bytes=0-")]
+        )
+        .await
+        .0,
+        StatusCode::RANGE_NOT_SATISFIABLE
+    );
+    // A valid filesystem timestamp outside HTTP's range must not panic.
+    std::fs::File::options()
+        .write(true)
+        .open(root.join("empty"))
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH - std::time::Duration::from_secs(1))
+        .unwrap();
+    let (status, headers, _) = file_api(
+        &app,
+        token,
+        "HEAD",
+        &format!("{prefix}/file?path=empty"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!headers.contains_key(header::LAST_MODIFIED));
+    let (status, _, bytes) = file_api(
+        &app,
+        token,
+        "GET",
+        &format!("{prefix}/metadata?path=empty&checksum=true"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let meta: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(meta["last_modified"].is_null());
+    assert_eq!(meta["sha256"], hex::encode(Sha256::digest(b"")));
+    assert_eq!(
+        file_api(&app, token, "PUT", &uri, None, &[]).await.0,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    assert_eq!(std::fs::read(root.join("hidden.TMP")).unwrap(), b"secret");
+    state
+        .0
+        .maintenance
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        file_api(&app, token, "GET", &uri, None, &[]).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    state.0.db.close().await;
+}
+
+#[tokio::test]
+async fn native_device_credentials_are_shared_and_permissions_are_live() {
+    let (tmp, state, mut owner) = installation().await;
+    // Approved account with no Save sync grant.
+    sqlx::query("INSERT INTO users(id,username,display_name,password,status,created) SELECT 'reader','reader','Reader',password,'approved',created FROM users WHERE owner=1")
+        .execute(&state.0.db).await.unwrap();
+    sqlx::query("INSERT INTO memberships(user_id,group_id) VALUES('reader','members')")
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    let root = tmp.path().join("shared");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("readme"), b"contents").unwrap();
+    let share = owner
+        .action("share-save", "", json!({"name":"Archive","root":root}))
+        .await;
+    let id = share["id"].as_str().unwrap();
+    let app = web::router(state.clone());
+    let device = download_device(&app, "reader").await;
+    let token = device["token"].as_str().unwrap();
+    let prefix = format!("/files/v1/shares/{id}");
+    assert_eq!(
+        file_api(&app, token, "GET", "/sync/v1/me", None, &[])
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        file_api(&app, token, "GET", &format!("/api/shares/{id}"), None, &[])
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    for endpoint in [
+        prefix.clone(),
+        format!("{prefix}/entries"),
+        format!("{prefix}/metadata?path=readme"),
+        format!("{prefix}/file?path=readme"),
+    ] {
+        assert_eq!(
+            file_api(&app, token, "GET", &endpoint, None, &[]).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let (_, _, bytes) = file_api(&app, token, "GET", "/files/v1/shares", None, &[]).await;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap()["shares"],
+        json!([])
+    );
+    for access in [
+        json!({"visibility":"members","grants":[]}),
+        json!({"visibility":"restricted","grants":[{"subject_kind":"user","subject":"reader","role":"access"}]}),
+        json!({"visibility":"restricted","grants":[{"subject_kind":"group","subject":"members","role":"access"}]}),
+        json!({"visibility":"public","grants":[]}),
+    ] {
+        owner.action("resource-access", id, access).await;
+        assert_eq!(
+            file_api(
+                &app,
+                token,
+                "GET",
+                &format!("{prefix}/file?path=readme"),
+                None,
+                &[]
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+    }
+    // Even a public share requires a device token on the native API.
+    assert_eq!(
+        file_api(
+            &app,
+            "",
+            "GET",
+            &format!("{prefix}/file?path=readme"),
+            None,
+            &[("cookie", &owner.cookie)]
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let sync = file_api(
+        &app,
+        "",
+        "POST",
+        "/sync/v1/login",
+        Some(json!({"username":"owner","password":"owner-password-123","name":"Sync"})),
+        &[],
+    )
+    .await;
+    assert_eq!(sync.0, StatusCode::OK);
+    let sync: Value = serde_json::from_slice(&sync.2).unwrap();
+    assert_eq!(
+        file_api(
+            &app,
+            sync["token"].as_str().unwrap(),
+            "GET",
+            "/files/v1/me",
+            None,
+            &[]
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    owner
+        .action(
+            "resource-access",
+            id,
+            json!({"visibility":"restricted","grants":[]}),
+        )
+        .await;
+    assert_eq!(
+        file_api(
+            &app,
+            token,
+            "GET",
+            &format!("{prefix}/file?path=readme"),
+            None,
+            &[]
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    owner
+        .action("user-status", "reader", json!({"status":"suspended"}))
+        .await;
+    assert_eq!(
+        file_api(&app, token, "GET", "/files/v1/me", None, &[])
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    state.0.db.close().await;
+}
+
+#[tokio::test]
+async fn download_devices_can_be_revoked_without_cross_account_access() {
+    let (_tmp, state, mut owner) = installation().await;
+    let app = web::router(state.clone());
+    let device = download_device(&app, "owner").await;
+    let token = device["token"].as_str().unwrap();
+    let id = device["device"]["id"].as_str().unwrap();
+    let stored: String = sqlx::query_scalar("SELECT token FROM devices WHERE id=?")
+        .bind(id)
+        .fetch_one(&state.0.db)
+        .await
+        .unwrap();
+    assert_eq!(stored, auth::digest(token));
+    let (_, _, bytes) = file_api(&app, token, "GET", "/files/v1/devices", None, &[]).await;
+    let devices: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(devices["devices"][0]["id"], id);
+    assert!(devices["devices"][0].get("token").is_none());
+    sqlx::query("INSERT INTO users(id,username,display_name,password,status,created) SELECT 'other','other','Other',password,'approved',created FROM users WHERE owner=1")
+        .execute(&state.0.db).await.unwrap();
+    let other = download_device(&app, "other").await;
+    let other_token = other["token"].as_str().unwrap();
+    file_api(
+        &app,
+        other_token,
+        "DELETE",
+        &format!("/files/v1/devices/{id}"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(
+        file_api(&app, token, "GET", "/files/v1/me", None, &[])
+            .await
+            .0,
+        StatusCode::OK
+    );
+    // Browser management requires a session and CSRF protection on deletion.
+    let (_, devices) = owner.request("GET", "/api/file-devices", None).await;
+    assert_eq!(devices["devices"][0]["id"], id);
+    assert_eq!(
+        file_api(
+            &app,
+            "",
+            "DELETE",
+            &format!("/api/file-devices/{id}"),
+            None,
+            &[("cookie", &owner.cookie)]
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        file_api(
+            &app,
+            "",
+            "DELETE",
+            &format!("/api/file-devices/{id}"),
+            None,
+            &[("cookie", &owner.cookie), ("x-csrf-token", &owner.csrf)]
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        file_api(&app, token, "GET", "/files/v1/me", None, &[])
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        file_api(&app, other_token, "DELETE", "/files/v1/device", None, &[])
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        file_api(&app, other_token, "GET", "/files/v1/me", None, &[])
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let device = download_device(&app, "owner").await;
+    owner
+        .action(
+            "password",
+            "",
+            json!({"current_password":"owner-password-123","password":"updated-password-123"}),
+        )
+        .await;
+    assert_eq!(
+        file_api(
+            &app,
+            device["token"].as_str().unwrap(),
+            "GET",
+            "/files/v1/me",
+            None,
+            &[]
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM devices")
+        .fetch_one(&state.0.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    state.0.db.close().await;
+}
+
+#[tokio::test]
+async fn download_login_requires_mfa_and_shares_password_guess_limits() {
+    let (_tmp, state, _owner) = installation().await;
+    let app = web::router(state.clone());
+    let secret = "JBSWY3DPEHPK3PXP";
+    sqlx::query("UPDATE users SET totp=? WHERE owner=1")
+        .bind(secret)
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    let login = json!({"username":"owner","password":"owner-password-123","name":"Downloader"});
+    let (status, _, bytes) = file_api(
+        &app,
+        "",
+        "POST",
+        "/files/v1/login",
+        Some(login.clone()),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap()["code"],
+        "invalid_credentials"
+    );
+    let mut input = login.clone();
+    input["code"] = json!(auth::totp(secret, auth::now() / 30).unwrap());
+    let (status, _, bytes) = file_api(&app, "", "POST", "/files/v1/login", Some(input), &[]).await;
+    assert_eq!(status, StatusCode::OK, "{bytes:?}");
+    // Browser login during setup and both file logins consumed the same limit.
+    for _ in 0..5 {
+        file_api(&app, "", "POST", "/sync/v1/login", Some(login.clone()), &[]).await;
+    }
+    assert_eq!(
+        file_api(&app, "", "POST", "/files/v1/login", Some(login), &[])
+            .await
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    state.0.db.close().await;
+}
+
 #[tokio::test]
 async fn owner_is_unique_and_csrf_is_required() {
     let tmp = tempfile::tempdir().unwrap();

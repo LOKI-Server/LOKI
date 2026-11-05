@@ -340,6 +340,37 @@ pub async fn verify(state: &State, password: String, hash: String) -> Result<boo
     .await?)
 }
 
+/// Password and MFA verification shared by native device APIs. Callers enforce
+/// their own resource permissions and use the common login rate limiter.
+pub(crate) async fn device_credentials(
+    state: &State,
+    username: &str,
+    password: String,
+    code: &str,
+) -> Result<User> {
+    let user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE username=? COLLATE NOCASE OR (email!='' AND email=? COLLATE NOCASE)")
+        .bind(username.trim())
+        .bind(username.trim())
+        .fetch_optional(&state.0.db)
+        .await?;
+    let stored = user.as_ref().map(|u| u.password.clone()).unwrap_or_else(|| {
+        "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()
+    });
+    let valid = verify(state, password, stored).await?;
+    let incorrect = || {
+        Error::coded(
+            StatusCode::UNAUTHORIZED,
+            "invalid_credentials",
+            "Incorrect credentials or authentication code.",
+        )
+    };
+    let user = user.filter(|_| valid).ok_or_else(incorrect)?;
+    if user.totp.is_some() && !second_factor(state, &user, code).await? {
+        return Err(incorrect());
+    }
+    Ok(user)
+}
+
 #[derive(Deserialize)]
 pub struct Setup {
     pub token: String,
@@ -665,6 +696,8 @@ pub async fn revoke_user(state: &State, user: &str) -> Result<()> {
         "codes",
         "gateway_sessions",
         "sync_devices",
+        "file_devices",
+        "devices",
     ] {
         sqlx::query(&format!("DELETE FROM {table} WHERE user_id=?"))
             .bind(user)

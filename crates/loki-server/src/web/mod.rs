@@ -86,6 +86,8 @@ pub fn router(state: State) -> Router {
         .route("/_loki/start", get(gateway_start))
         .route("/_loki/callback", get(gateway_callback))
         .merge(crate::sync::router())
+        .merge(files::api::router())
+        .merge(crate::devices::router())
         .fallback(get(shell))
         .layer(DefaultBodyLimit::max(131072))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
@@ -169,7 +171,9 @@ async fn guard(
             || path.starts_with("/oidc/")
             || path.starts_with("/gateway/")
             || path.starts_with("/_loki/")
-            || path.starts_with("/sync/v1"))
+            || path.starts_with("/sync/v1")
+            || path.starts_with("/files/v1")
+            || path.starts_with("/auth/v1"))
     {
         return Error::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -244,6 +248,8 @@ async fn guard(
         || path.starts_with("/gateway/")
         || path.starts_with("/_loki/")
         || path.starts_with("/sync/v1")
+        || path.starts_with("/files/v1")
+        || path.starts_with("/auth/v1")
     {
         headers.insert(
             header::CACHE_CONTROL,
@@ -339,6 +345,7 @@ async fn dashboard(
     }
     let sessions=sqlx::query("SELECT id,label,created,expires FROM sessions WHERE user_id=? AND expires>? ORDER BY created DESC").bind(&user.id).bind(auth::now()).fetch_all(&state.0.db).await?.into_iter().map(|r|json!({"id":r.get::<String,_>("id"),"label":r.get::<String,_>("label"),"created":r.get::<i64,_>("created"),"current":r.get::<String,_>("id")==ctx.session.id})).collect::<Vec<_>>();
     let mut output = json!({"resources":resources,"sessions":sessions,"mfa":user.totp.is_some(),"data_dir":state.0.data.to_string_lossy(),"target":apps::target(),"loki_version":env!("CARGO_PKG_VERSION"),"oldest_sdk":apps::OLDEST_SDK.to_string()});
+    output["devices"] = crate::devices::list(&state, user).await?;
     if let Some(sync) = crate::sync::summary(&state, user).await? {
         output["sync"] = sync;
     }
@@ -417,6 +424,8 @@ async fn reset(
         "codes",
         "gateway_sessions",
         "sync_devices",
+        "file_devices",
+        "devices",
     ] {
         sqlx::query(&format!("DELETE FROM {table} WHERE user_id=?"))
             .bind(&uid)

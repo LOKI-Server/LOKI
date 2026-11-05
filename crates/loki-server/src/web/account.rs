@@ -91,6 +91,8 @@ pub(super) async fn password(state: &State, user: &User, input: Password) -> Res
         "codes",
         "gateway_sessions",
         "sync_devices",
+        "file_devices",
+        "devices",
     ] {
         sqlx::query(&format!("DELETE FROM {table} WHERE user_id=?"))
             .bind(&user.id)

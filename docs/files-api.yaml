@@ -1,0 +1,734 @@
+openapi: 3.1.0
+info:
+  title: LOKI Files API
+  version: 1.0.0
+  description: Read-only share access using the shared LOKI account device identity.
+    Reuse the same credential for sync and files; each endpoint checks resource permissions.
+    See auth-api.md for pairing and login.
+servers:
+- url: /
+security:
+- downloadToken: []
+paths:
+  /files/v1:
+    get:
+      operationId: filesDiscovery
+      summary: Discover the read-only file protocol
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Discovery'
+        '503':
+          $ref: '#/components/responses/503'
+      security: []
+  /files/v1/login:
+    post:
+      operationId: filesLogin
+      summary: Compatibility alias for account sign-in; new clients use /auth/v1/login
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignedIn'
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '429':
+          $ref: '#/components/responses/429'
+        '503':
+          $ref: '#/components/responses/503'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Login'
+  /files/v1/me:
+    get:
+      operationId: filesMe
+      summary: Get this account and download device
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/401'
+        '503':
+          $ref: '#/components/responses/503'
+  /files/v1/device:
+    delete:
+      operationId: filesSignOut
+      summary: Revoke this download token
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/401'
+        '503':
+          $ref: '#/components/responses/503'
+  /files/v1/devices:
+    get:
+      operationId: filesDevices
+      summary: List this account's download devices
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Devices'
+        '401':
+          $ref: '#/components/responses/401'
+        '503':
+          $ref: '#/components/responses/503'
+  /files/v1/devices/{id}:
+    parameters:
+    - $ref: '#/components/parameters/DeviceId'
+    delete:
+      operationId: filesRevokeDevice
+      summary: Revoke one of this account's download devices (idempotent)
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/401'
+        '503':
+          $ref: '#/components/responses/503'
+  /files/v1/shares:
+    get:
+      operationId: filesShares
+      summary: List accessible file shares
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shares'
+        '401':
+          $ref: '#/components/responses/401'
+        '503':
+          $ref: '#/components/responses/503'
+  /files/v1/shares/{id}:
+    parameters:
+    - $ref: '#/components/parameters/ShareId'
+    get:
+      operationId: filesShare
+      summary: Get an accessible share
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Share'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '503':
+          $ref: '#/components/responses/503'
+  /files/v1/shares/{id}/entries:
+    parameters:
+    - $ref: '#/components/parameters/ShareId'
+    get:
+      operationId: filesEntries
+      summary: Browse a directory; exclusions apply before pagination
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Listing'
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - $ref: '#/components/parameters/Directory'
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 999
+          default: 0
+      - name: sort
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - name
+          - size
+          - modified
+          default: name
+      description: 100 entries per page, folders first. Name is ascending case-insensitive;
+        size and modified are descending. Listings are live, not snapshots.
+  /files/v1/shares/{id}/metadata:
+    parameters:
+    - $ref: '#/components/parameters/ShareId'
+    get:
+      operationId: filesMetadata
+      summary: Get regular-file metadata and an optional SHA-256 checksum
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Metadata'
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '409':
+          $ref: '#/components/responses/409'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - $ref: '#/components/parameters/Path'
+      - name: checksum
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+        description: Read the entire file to return sha256. Bounded memory; may be
+          expensive for large files.
+  /files/v1/shares/{id}/file:
+    parameters:
+    - $ref: '#/components/parameters/ShareId'
+    get:
+      operationId: filesDownload
+      summary: Stream a file as an attachment; supports single byte ranges
+      parameters:
+      - $ref: '#/components/parameters/Path'
+      - $ref: '#/components/parameters/Range'
+      - $ref: '#/components/parameters/IfRange'
+      responses:
+        '200':
+          description: Full file. A 200 after a resume request must replace the local
+            partial file.
+          headers:
+            Content-Length:
+              schema:
+                type: integer
+                minimum: 0
+              description: Body size in bytes (full size on HEAD).
+            Accept-Ranges:
+              schema:
+                type: string
+                const: bytes
+            Last-Modified:
+              schema:
+                type: string
+              description: HTTP date if available; one-second resolution.
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment with filename*=UTF-8 for the original file name.
+            Cache-Control:
+              schema:
+                type: string
+              description: no-store
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: Requested byte range.
+          headers:
+            Content-Length:
+              schema:
+                type: integer
+                minimum: 0
+              description: Body size in bytes (full size on HEAD).
+            Accept-Ranges:
+              schema:
+                type: string
+                const: bytes
+            Last-Modified:
+              schema:
+                type: string
+              description: HTTP date if available; one-second resolution.
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment with filename*=UTF-8 for the original file name.
+            Cache-Control:
+              schema:
+                type: string
+              description: no-store
+            Content-Range:
+              schema:
+                type: string
+              description: bytes START-END/SIZE
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '416':
+          description: Invalid, unsatisfiable, or multiple byte ranges.
+          headers:
+            Content-Range:
+              schema:
+                type: string
+              description: bytes */SIZE
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '503':
+          $ref: '#/components/responses/503'
+    head:
+      operationId: filesHead
+      summary: Get full file headers without reading the body; Range is ignored
+      parameters:
+      - $ref: '#/components/parameters/Path'
+      responses:
+        '200':
+          description: Full file headers, empty body.
+          headers:
+            Content-Length:
+              schema:
+                type: integer
+                minimum: 0
+              description: Body size in bytes (full size on HEAD).
+            Accept-Ranges:
+              schema:
+                type: string
+                const: bytes
+            Last-Modified:
+              schema:
+                type: string
+              description: HTTP date if available; one-second resolution.
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment with filename*=UTF-8 for the original file name.
+            Cache-Control:
+              schema:
+                type: string
+              description: no-store
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '503':
+          $ref: '#/components/responses/503'
+  /files/v1/pair:
+    $ref: auth-api.yaml#/paths/~1auth~1v1~1pair
+  /files/v1/pair/poll:
+    $ref: auth-api.yaml#/paths/~1auth~1v1~1pair~1poll
+components:
+  securitySchemes:
+    downloadToken:
+      type: http
+      scheme: bearer
+      description: Shared account device token from /auth/v1, including migrated sync/file
+        credentials.
+  parameters:
+    ShareId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Share ID.
+    DeviceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Download device belonging to this account.
+    Path:
+      name: path
+      in: query
+      required: true
+      schema:
+        type: string
+      description: Share-relative file path, URL-encoded, with forward slash separators.
+    Directory:
+      name: path
+      in: query
+      required: false
+      schema:
+        type: string
+        default: ''
+      description: Share-relative directory. Empty means the share root.
+    Range:
+      name: Range
+      in: header
+      required: false
+      schema:
+        type: string
+      description: One bytes range, for example bytes=1024-. Multiple ranges return
+        416.
+    IfRange:
+      name: If-Range
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Previous Last-Modified value exactly. A mismatch restarts with
+        a full 200 response.
+  responses:
+    '400':
+      description: Invalid path, page, sort, or device information. Parsing errors
+        may be plain text.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '401':
+      description: Missing, invalid, or revoked download token; invalid_credentials
+        at login.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '403':
+      description: Account not approved at login, or access to the share denied.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '404':
+      description: Share or file not found, excluded, or not a regular file.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '409':
+      description: 'file_changed: size or modification time changed while hashing.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '429':
+      description: Shared password-guess rate limit reached.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '503':
+      description: Server restarting or performing maintenance.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      required:
+      - error
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        display_name:
+          type: string
+      required:
+      - id
+      - username
+      - display_name
+    Device:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        platform:
+          type: string
+      required:
+      - id
+      - name
+      - platform
+    DeviceActivity:
+      allOf:
+      - $ref: '#/components/schemas/Device'
+      - type: object
+        properties:
+          created:
+            type: integer
+            minimum: 0
+          last_seen:
+            type: integer
+            minimum: 0
+        required:
+        - created
+        - last_seen
+    Share:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        visibility:
+          type: string
+          enum:
+          - public
+          - members
+          - restricted
+        kind:
+          type: string
+          const: share
+      required:
+      - id
+      - name
+      - visibility
+      - kind
+    Entry:
+      type: object
+      properties:
+        name:
+          type: string
+        directory:
+          type: boolean
+        size:
+          type: integer
+          minimum: 0
+        modified:
+          type: integer
+          minimum: 0
+      required:
+      - name
+      - directory
+      - size
+      - modified
+    Listing:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entry'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 0
+        path:
+          type: string
+      required:
+      - entries
+      - total
+      - page
+      - path
+    Metadata:
+      type: object
+      properties:
+        path:
+          type: string
+        name:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        modified:
+          type: integer
+          minimum: 0
+        last_modified:
+          type:
+          - string
+          - 'null'
+          description: HTTP date, or null if unavailable.
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          description: Present only when checksum=true.
+      required:
+      - path
+      - name
+      - size
+      - modified
+      - last_modified
+    Login:
+      type: object
+      properties:
+        username:
+          type: string
+          description: Username or email address.
+        password:
+          type: string
+          format: password
+        code:
+          type: string
+          description: TOTP or recovery code when MFA is enabled.
+          default: ''
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        platform:
+          type: string
+          maxLength: 40
+          default: ''
+      required:
+      - username
+      - password
+      - name
+    SignedIn:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+        device:
+          $ref: '#/components/schemas/Device'
+        access:
+          type: object
+          properties:
+            sync:
+              type: boolean
+      required:
+      - token
+      - user
+      - device
+    Me:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        device:
+          $ref: '#/components/schemas/Device'
+      required:
+      - user
+      - device
+    Devices:
+      type: object
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeviceActivity'
+      required:
+      - devices
+    Shares:
+      type: object
+      properties:
+        shares:
+          type: array
+          items:
+            $ref: '#/components/schemas/Share'
+      required:
+      - shares
+    Ok:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          const: true
+      required:
+      - ok
+    Discovery:
+      type: object
+      properties:
+        protocol:
+          type: integer
+          const: 1
+        server:
+          type: string
+        name:
+          type: string
+        read_only:
+          type: boolean
+          const: true
+        authentication:
+          type: string
+          const: bearer
+        checksum:
+          type: string
+          const: sha256
+        page_size:
+          type: integer
+          const: 100
+        max_page:
+          type: integer
+          const: 999
+        ranges:
+          type: boolean
+          const: true
+        pairing:
+          type: boolean
+          const: true
+        auth:
+          type: string
+          const: /auth/v1
+      required:
+      - protocol
+      - server
+      - name
+      - read_only
+      - authentication
+      - checksum
+      - page_size
+      - max_page
+      - ranges
+      - pairing

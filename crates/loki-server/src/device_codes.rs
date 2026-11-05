@@ -12,6 +12,8 @@ pub const INTERVAL: i64 = 5;
 const CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
 /// Codes for Save sync. Others are `oidc`, for an app's client.
 pub const SYNC: &str = "sync";
+/// Native LOKI clients share an account-wide device identity.
+pub const ACCOUNT: &str = "account";
 pub const OIDC: &str = "oidc";
 
 /// Accepts `abcd efgh`, `ABCD-EFGH`, and similar spellings of the same code.
@@ -175,6 +177,9 @@ pub async fn poll(
 
 /// The resource a code would grant: Save sync, or the app behind an OIDC client.
 async fn resource(state: &State, kind: &str, client: &str) -> Result<(String, String)> {
+    if kind == ACCOUNT {
+        return Ok((String::new(), "LOKI account".into()));
+    }
     if kind == SYNC {
         return Ok((crate::sync::RESOURCE.into(), "Save sync".into()));
     }
@@ -212,7 +217,10 @@ pub async fn lookup(state: &State, user: &User, code: &str) -> Result<Value> {
 pub async fn decide(state: &State, user: &User, code: &str, approve: bool) -> Result<Value> {
     let (code, (kind, client, ..)) = pending(state, user, code).await?;
     let (resource, service) = resource(state, &kind, &client).await?;
-    if approve && !auth::allowed(state, Some(user), &resource, "access").await? {
+    if approve
+        && !resource.is_empty()
+        && !auth::allowed(state, Some(user), &resource, "access").await?
+    {
         return Err(Error::new(
             StatusCode::FORBIDDEN,
             format!("Your account cannot use {service}. Ask the server owner for access."),

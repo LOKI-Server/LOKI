@@ -29,7 +29,7 @@ capabilities and permissions are enforced by LOKI even when the SDK is bypassed.
 
 The `manifest` feature exposes shared package and app registry types and validation
 for native tooling without pulling in guest bindings. All LOKI crates share one
-version, currently 0.5.0.
+version, currently 0.6.0.
 
 ## Persistent app storage
 
@@ -113,7 +113,7 @@ Cargo.toml to opt into the services you need:
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-loki-sdk = { version = "0.5.0", features = ["templates"] }
+loki-sdk = { version = "0.6.0", features = ["templates"] }
 serde = { version = "1", features = ["derive"] }
 
 [package.metadata.loki]

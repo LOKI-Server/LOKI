@@ -676,7 +676,7 @@ pub struct HistoryQuery {
 }
 async fn list_history(state: &State, user: &str, id: &str, query: &HistoryQuery) -> Result<Value> {
     folder(state, user, id).await?;
-    let rows = sqlx::query_as::<_, (i64, String, i64, Option<String>, i64, i64, String, String, i64, String, bool)>("SELECT h.id,h.path,h.version,h.hash,h.size,h.mtime,h.device,coalesce(d.name,CASE h.device WHEN 'web' THEN 'Dashboard' ELSE 'Removed device' END),h.created,h.reason,h.resolved FROM sync_history h LEFT JOIN sync_devices d ON d.id=h.device WHERE h.folder=?1 AND (?2 IS NULL OR h.path=?2) AND (?3=0 OR h.resolved=0) ORDER BY h.id DESC LIMIT 500")
+    let rows = sqlx::query_as::<_, (i64, String, i64, Option<String>, i64, i64, String, String, i64, String, bool)>("SELECT h.id,h.path,h.version,h.hash,h.size,h.mtime,h.device,coalesce(d.name,CASE h.device WHEN 'web' THEN 'Dashboard' ELSE 'Removed device' END),h.created,h.reason,h.resolved FROM sync_history h LEFT JOIN devices d ON d.id=h.device WHERE h.folder=?1 AND (?2 IS NULL OR h.path=?2) AND (?3=0 OR h.resolved=0) ORDER BY h.id DESC LIMIT 500")
         .bind(id)
         .bind(query.path.as_deref())
         .bind(query.conflicts)
@@ -830,7 +830,7 @@ pub async fn browse(
     } else {
         format!("{dir}/")
     };
-    let rows: Vec<(String, i64, i64, i64, String)> = sqlx::query_as("SELECT f.path,f.size,f.mtime,f.version,coalesce(d.name,CASE f.device WHEN 'web' THEN 'Dashboard' ELSE 'Removed device' END) FROM sync_files f LEFT JOIN sync_devices d ON d.id=f.device WHERE f.folder=?1 AND f.hash IS NOT NULL AND substr(f.path,1,length(?2))=?2")
+    let rows: Vec<(String, i64, i64, i64, String)> = sqlx::query_as("SELECT f.path,f.size,f.mtime,f.version,coalesce(d.name,CASE f.device WHEN 'web' THEN 'Dashboard' ELSE 'Removed device' END) FROM sync_files f LEFT JOIN devices d ON d.id=f.device WHERE f.folder=?1 AND f.hash IS NOT NULL AND substr(f.path,1,length(?2))=?2")
         .bind(&id)
         .bind(&prefix)
         .fetch_all(&state.0.db)

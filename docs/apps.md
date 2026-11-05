@@ -61,7 +61,7 @@ package` writes:
   },
   "fields": [],
   "files": {"my_app.wasm": "SHA256_HEX", "static/style.css": "SHA256_HEX"},
-  "built_with": {"sdk": "0.5.0", "cargo_loki": "0.5.0"}
+  "built_with": {"sdk": "0.6.0", "cargo_loki": "0.6.0"}
 }
 ```
 
@@ -440,7 +440,7 @@ optional `icon.png`:
   "url": "https://github.com/me/my-app/releases/download/v1.2.0/my-app-1.2.0.loki-app",
   "sha256": "…",
   "size": 287908,
-  "sdk": "0.5.0",
+  "sdk": "0.6.0",
   "capabilities": ["database", "forms"]
 }
 ```

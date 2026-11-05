@@ -77,6 +77,10 @@ Caddy using loopback HTTP URLs.
   ignore extensions such as `.tmp, .bak, .psd, .tar.gz`. Matching ignores case
   across all subfolders; excluded files cannot be listed, previewed, or downloaded
   through that share. Folders remain browsable and files on disk are untouched.
+  Native download clients can use the separate read-only [Files API](docs/files-api.md)
+  under `/files/v1`, with shared account device tokens, file metadata, optional SHA-256
+  checksums, and resumable downloads. Download access follows share permissions
+  independently of Save sync.
 - **Storage:** create/download backups; move data or restore a local backup into
   an empty directory and restart from the web UI. The original installation is
   retained. External shared folders keep their original absolute paths.
@@ -90,7 +94,8 @@ LOKI can keep per-user folders in sync between devices, such as emulator saves
 on an Android handheld and a desktop. The server is authoritative and keeps
 version history, so a conflict or a bad sync never loses a save. Grant the
 **Save sync** resource to the people who should use it, then pair each device
-from **Save sync** in the dashboard. Quotas are per user.
+from **Account → Devices** in the dashboard. The same device login also opens
+file shares in the clients, with no second sign-in. Quotas are per user.
 
 Clients use a versioned HTTP/JSON API under `/sync/v1` and can be written in any
 language. See the [client guide](docs/sync-api.md), its [OpenAPI description](docs/sync-api.yaml)
