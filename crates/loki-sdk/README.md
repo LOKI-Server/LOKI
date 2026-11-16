@@ -29,7 +29,7 @@ capabilities and permissions are enforced by LOKI even when the SDK is bypassed.
 
 The `manifest` feature exposes shared package and app registry types and validation
 for native tooling without pulling in guest bindings. All LOKI crates share one
-version, currently 0.6.0.
+version, currently 0.7.0.
 
 ## Persistent app storage
 
@@ -103,6 +103,32 @@ The complete [Branch Notes example](../../examples/storage-notes/README.md)
 demonstrates identity, per-user saved preferences, SQL notes, CSRF-protected forms,
 and downloadable generated exports.
 
+
+## Personal storage
+
+`Storage` belongs to the app. For files that belong to the signed-in person, add
+`"personal-storage"` to the capabilities and use `PersonalStorage`. The server
+owner must also allow it from the app's **Manage** dialog. Each account gets a
+private folder per app that it can download from **Account → Export my data**,
+even after the app is removed. Calls fail with 403 without a signed-in user,
+in scheduled jobs and health checks, or before the owner allows it.
+
+```rust,ignore
+use loki_sdk::PersonalStorage;
+
+request.context().require_user()?;
+PersonalStorage.write("notes/today.txt", b"Remember the milk")?;
+let bytes = PersonalStorage.read("notes/today.txt", 0, 1024)?;
+let page = PersonalStorage.list("notes/", None)?;
+return PersonalStorage.download("notes/today.txt");
+```
+
+Writes are limited to 1 MiB; save larger files from a multipart upload with
+`import_upload` (which also needs `uploads`). There is no per-account quota, so
+set your own limits; LOKI returns 507 when the server is low on disk space.
+Requires LOKI 0.7 or later. See
+[personal storage](../../docs/private-services.md#personal-storage-and-exports).
+
 ## Project metadata
 
 `cargo loki new` supplies the library target and a minimal handler. Extend its
@@ -113,7 +139,7 @@ Cargo.toml to opt into the services you need:
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-loki-sdk = { version = "0.6.0", features = ["templates"] }
+loki-sdk = { version = "0.7.0", features = ["templates"] }
 serde = { version = "1", features = ["derive"] }
 
 [package.metadata.loki]

@@ -28,10 +28,7 @@ use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_wasi_http::{
     WasiHttpCtx,
-    p2::{
-        WasiHttpCtxView, WasiHttpView,
-        bindings::ProxyPre,
-    },
+    p2::{WasiHttpCtxView, WasiHttpView, bindings::ProxyPre},
 };
 
 pub use loki_sdk::manifest::Limits;
@@ -93,6 +90,7 @@ pub(crate) struct Host {
     pending: Vec<PathBuf>,
     /// The file to answer with instead of the app's response body; see `serve-file`.
     file: http::ServedFile,
+    personal_state: Option<std::sync::Weak<crate::Inner>>,
     /// Set only in an app's realtime instances.
     instance: Option<Arc<realtime::Instance>>,
 }
@@ -411,7 +409,16 @@ async fn scheduled_run(state: &State, runtime: Arc<Runtime>, name: &str) -> Resu
         .header(header::HOST, url::Url::parse(&runtime.origin)?.authority())
         .body(Body::empty())?;
     let info = json!({"user":null,"csrf":"","issuer":state.0.settings.read().await.public_url});
-    let response = execute(state, runtime, request, info, Value::Null, Vec::new(), permit).await?;
+    let response = execute(
+        state,
+        runtime,
+        request,
+        info,
+        Value::Null,
+        Vec::new(),
+        permit,
+    )
+    .await?;
     let status = response.status();
     // Read the whole answer, so the job runs to its end before the next can start.
     let _ = axum::body::to_bytes(response.into_body(), 1024 * 1024).await;
@@ -492,6 +499,7 @@ pub(crate) fn new_store(
             form,
             pending,
             file: http::ServedFile::default(),
+            personal_state: None,
             instance,
         },
     );
@@ -622,7 +630,16 @@ pub(crate) async fn health(
 ) -> Result<Response> {
     let permit = enter(state, &runtime).await?;
     let info = json!({"user":null,"csrf":"","issuer":state.0.settings.read().await.public_url});
-    execute(state, runtime, request, info, Value::Null, Vec::new(), permit).await
+    execute(
+        state,
+        runtime,
+        request,
+        info,
+        Value::Null,
+        Vec::new(),
+        permit,
+    )
+    .await
 }
 
 #[cfg(test)]

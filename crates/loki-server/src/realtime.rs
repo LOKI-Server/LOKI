@@ -59,11 +59,15 @@ const MAIN: &str = "";
 const NOT_REALTIME: &str = "Only the app's realtime instance can use connections.";
 /// The host interfaces' names, newest first. Apps built with an older SDK export the
 /// older names; LOKI accepts every version it supports.
-const HANDLER: [&str; 2] = [
+const HANDLER: [&str; 3] = [
+    "loki:app/realtime-handler@0.3.2",
     "loki:app/realtime-handler@0.3.1",
     "loki:app/realtime-handler@0.3.0",
 ];
-const EVENTS: &str = "loki:app/realtime-events@0.3.1";
+const EVENTS: [&str; 2] = [
+    "loki:app/realtime-events@0.3.2",
+    "loki:app/realtime-events@0.3.1",
+];
 
 /// What `list-rooms` says about one room. Matches `room-info` in the WIT's `types`.
 #[derive(Clone, Debug, ComponentType, Lower)]
@@ -112,7 +116,10 @@ impl Handle {
         }
         let rooms: Vec<_> = self.rooms.lock().unwrap().drain().map(|(_, r)| r).collect();
         for room in &rooms {
-            let _ = room.events.send(Event::Stop(1001, "The app stopped.")).await;
+            let _ = room
+                .events
+                .send(Event::Stop(1001, "The app stopped."))
+                .await;
         }
         for room in rooms {
             if let Some(task) = room.task.lock().await.take() {
@@ -141,10 +148,7 @@ impl Handle {
         if let Some(room) = self.room(id) {
             return Ok(room);
         }
-        let limits = self
-            .room_limits
-            .clone()
-            .ok_or_else(Error::not_found)?;
+        let limits = self.room_limits.clone().ok_or_else(Error::not_found)?;
         if !apps::valid_id(id) {
             return Err(Error::bad(
                 "Room names are 1–64 lowercase letters, digits and hyphens.",
@@ -219,7 +223,10 @@ impl Handle {
             .unwrap()
             .remove(id)
             .ok_or_else(Error::not_found)?;
-        let _ = room.events.send(Event::Stop(1000, "The room closed.")).await;
+        let _ = room
+            .events
+            .send(Event::Stop(1000, "The room closed."))
+            .await;
         Ok(())
     }
     /// Asks a room's instance through its `on-call` export and returns its answer.
@@ -235,9 +242,7 @@ impl Handle {
             .map_err(|_| busy("The realtime instance did not answer in time."))?
             .ok()
             .flatten()
-            .ok_or_else(|| {
-                busy("The realtime instance could not answer; it may not take calls.")
-            })
+            .ok_or_else(|| busy("The realtime instance could not answer; it may not take calls."))
     }
     pub(crate) fn list(&self) -> Vec<RoomInfo> {
         let mut rooms: Vec<_> = self
@@ -328,7 +333,9 @@ impl Instance {
         self.room == room
     }
     fn app(&self) -> Result<Arc<Handle>> {
-        self.app.upgrade().ok_or_else(|| busy("The app is stopped."))
+        self.app
+            .upgrade()
+            .ok_or_else(|| busy("The app is stopped."))
     }
     fn queue(peer: &Peer, size: usize, item: Out) {
         let total = peer.queued.fetch_add(size, Ordering::SeqCst) + size;
@@ -536,7 +543,9 @@ impl Live {
             .realtime_slots
             .clone()
             .try_acquire_owned()
-            .map_err(|_| anyhow::anyhow!("LOKI is running as many realtime instances as it can."))?;
+            .map_err(|_| {
+                anyhow::anyhow!("LOKI is running as many realtime instances as it can.")
+            })?;
         let mut store = components::new_store(
             runtime,
             json!({"user":null,"csrf":"","issuer":issuer}),
@@ -555,7 +564,9 @@ impl Live {
             .iter()
             .find_map(|name| component.get_export_index(&mut store, None, name))
             .ok_or_else(|| anyhow::anyhow!("The component does not export realtime-handler."))?;
-        let events = component.get_export_index(&mut store, None, EVENTS);
+        let events = EVENTS
+            .iter()
+            .find_map(|name| component.get_export_index(&mut store, None, name));
         let mut index = |interface, name: &str| {
             component
                 .get_export_index(&mut store, Some(interface), name)
@@ -636,7 +647,8 @@ impl Live {
                 }
                 None => {
                     for (id, data) in batch {
-                        self.call(self.message, (id, data), fuel, EVENT_TIME).await?;
+                        self.call(self.message, (id, data), fuel, EVENT_TIME)
+                            .await?;
                     }
                     Ok(())
                 }
@@ -978,7 +990,10 @@ pub(crate) fn is_upgrade(headers: &HeaderMap) -> bool {
 }
 /// The room a request path reaches: `Some("")` for the realtime path itself and
 /// `Some(room)` for `{path}/{room}` when the app has rooms.
-pub(crate) fn room_of<'a>(settings: &loki_sdk::manifest::Realtime, path: &'a str) -> Option<&'a str> {
+pub(crate) fn room_of<'a>(
+    settings: &loki_sdk::manifest::Realtime,
+    path: &'a str,
+) -> Option<&'a str> {
     if path == settings.path {
         return Some(MAIN);
     }
@@ -1084,7 +1099,7 @@ pub(crate) fn link(linker: &mut Linker<Host>) -> Result<()> {
     fn instance(host: &Host) -> Result<&Arc<Instance>> {
         host.instance().ok_or_else(|| Error::bad(NOT_REALTIME))
     }
-    let mut realtime = linker.instance("loki:app/realtime@0.3.1")?;
+    let mut realtime = linker.instance("loki:app/realtime@0.3.2")?;
     realtime.func_wrap("send", |context, (id, data): (u64, Vec<u8>)| {
         let result =
             instance(context.data()).and_then(|i| i.send(id, data.into()).map_err(Error::bad));
@@ -1095,13 +1110,10 @@ pub(crate) fn link(linker: &mut Linker<Host>) -> Result<()> {
             instance(context.data()).and_then(|i| i.send_text(id, text).map_err(Error::bad));
         Ok((result.map_err(WitError::from),))
     })?;
-    realtime.func_wrap(
-        "broadcast",
-        |context, (ids, data): (Vec<u64>, Vec<u8>)| {
-            let sent = instance(context.data()).map_or(0, |i| i.broadcast(&ids, data.into()));
-            Ok((sent,))
-        },
-    )?;
+    realtime.func_wrap("broadcast", |context, (ids, data): (Vec<u64>, Vec<u8>)| {
+        let sent = instance(context.data()).map_or(0, |i| i.broadcast(&ids, data.into()));
+        Ok((sent,))
+    })?;
     realtime.func_wrap_async(
         "send-file",
         |mut context, (id, source, path): (u64, FileSource, String)| {
@@ -1165,18 +1177,15 @@ pub(crate) fn link(linker: &mut Linker<Host>) -> Result<()> {
             Ok((result.map_err(WitError::from),))
         })
     })?;
-    realtime.func_wrap(
-        "post",
-        |context, (room, data): (String, Vec<u8>)| {
-            let result = instance(context.data()).and_then(|i| {
-                if i.room == room {
-                    return Err(Error::bad("A room cannot post to itself."));
-                }
-                i.app()?.post_now(&i.room, &room, data)
-            });
-            Ok((result.map_err(WitError::from),))
-        },
-    )?;
+    realtime.func_wrap("post", |context, (room, data): (String, Vec<u8>)| {
+        let result = instance(context.data()).and_then(|i| {
+            if i.room == room {
+                return Err(Error::bad("A room cannot post to itself."));
+            }
+            i.app()?.post_now(&i.room, &room, data)
+        });
+        Ok((result.map_err(WitError::from),))
+    })?;
     realtime.func_wrap("list-rooms", |context, ()| {
         let rooms = instance(context.data())
             .and_then(|i| i.app())

@@ -204,6 +204,16 @@ pub(super) async fn resource_access(state: &State, id: &str, input: Access) -> R
             "Sync requires a LOKI account. Choose Members or Restricted.",
         ));
     }
+    if matches!(kind.as_deref(), Some("git-create" | "git-repo"))
+        && input.visibility != Visibility::Restricted
+    {
+        return Err(Error::bad("Grant Git access to selected users or groups."));
+    }
+    if kind.as_deref() == Some("git-repo") {
+        return Err(Error::bad(
+            "Manage repository access from the Repositories tab.",
+        ));
+    }
     if input.grants.len() > 1000 {
         return Err(Error::bad("Too many grants."));
     }
@@ -263,6 +273,11 @@ pub(super) async fn share_save(state: &State, id: &str, input: Share) -> Result<
         return Err(Error::bad("Choose a readable directory."));
     }
     let _ = std::fs::read_dir(&root)?;
+    if files::inside_data(&dunce::canonicalize(&state.0.data)?, &root) {
+        return Err(Error::bad(
+            "Choose a folder outside LOKI's data directory. LOKI never shares its own files.",
+        ));
+    }
     let name = &input.name;
     if name.is_empty() || name.len() > 100 {
         return Err(Error::bad("Enter a name of at most 100 characters."));

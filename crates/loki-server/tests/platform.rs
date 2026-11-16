@@ -71,9 +71,11 @@ impl Browser {
             .await
     }
 }
+/// A fresh installation whose data lives in `data` inside the returned folder,
+/// leaving the rest of it free for shared folders.
 async fn installation() -> (tempfile::TempDir, State, Browser) {
     let tmp = tempfile::tempdir().unwrap();
-    let state = State::open(tmp.path().into(), "127.0.0.1:7070".parse().unwrap())
+    let state = State::open(tmp.path().join("data"), "127.0.0.1:7070".parse().unwrap())
         .await
         .unwrap();
     let mut browser = Browser::new(web::router(state.clone()));
@@ -311,7 +313,7 @@ async fn upgrading_reuses_old_sync_and_file_tokens_without_signing_in_again() {
         .await
         .unwrap();
     state.0.db.close().await;
-    let upgraded = State::open(tmp.path().into(), "127.0.0.1:7070".parse().unwrap())
+    let upgraded = State::open(tmp.path().join("data"), "127.0.0.1:7070".parse().unwrap())
         .await
         .unwrap();
     let app = web::router(upgraded.clone());
@@ -1217,6 +1219,18 @@ async fn share_exclusions_filter_before_pagination_and_block_direct_file_request
     );
     let invalid = owner.request("POST", "/api/action", Some(json!({"action":"share-save","id":id,"data":{"name":"Invalid edit","root":folder,"excluded_extensions":"../txt"}}))).await;
     assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
+    // LOKI's own data directory, or a folder inside it, can never become a share.
+    for root in [state.0.data.clone(), state.0.data.join("sync")] {
+        std::fs::create_dir_all(&root).unwrap();
+        let refused = owner
+            .request(
+                "POST",
+                "/api/action",
+                Some(json!({"action":"share-save","id":"","data":{"name":"Data","root":root}})),
+            )
+            .await;
+        assert_eq!(refused.0, StatusCode::BAD_REQUEST, "{}", root.display());
+    }
     assert_eq!(
         guest
             .request("GET", &format!("{listing_url}/file?path=photo.JPG"), None)

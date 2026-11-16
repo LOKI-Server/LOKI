@@ -7,7 +7,7 @@ storage and file streaming, so the app needs no web server, account system or
 database library of its own.
 
 Apps export the standard `wasi:http/incoming-handler` and import LOKI's typed
-host interfaces, the `loki:app@0.3.1` package in
+host interfaces, the `loki:app@0.3.2` package in
 [`crates/loki-sdk/wit/platform.wit`](../crates/loki-sdk/wit/platform.wit). Rust
 apps use the [`loki-sdk`](../crates/loki-sdk/README.md) crate and the
 [`cargo-loki`](../crates/cargo-loki/README.md) tool, and never touch the WIT
@@ -61,14 +61,16 @@ package` writes:
   },
   "fields": [],
   "files": {"my_app.wasm": "SHA256_HEX", "static/style.css": "SHA256_HEX"},
-  "built_with": {"sdk": "0.6.0", "cargo_loki": "0.6.0"}
+  "built_with": {"sdk": "0.7.0", "cargo_loki": "0.7.0"}
 }
 ```
 
 - **IDs** are lowercase ASCII letters, digits and hyphens, at most 64 bytes;
   `loki-` is reserved. **Versions** use semver.
 - **Capabilities** are opt-in: `database`, `uploads`, `forms`, `storage`,
-  `realtime`, `outbound`. LOKI enforces them even if the SDK is bypassed.
+  `realtime`, `outbound`, `personal-storage`. LOKI enforces them even if the
+  SDK is bypassed. `personal-storage` also needs the owner's permission; see
+  [personal storage](private-services.md#personal-storage-and-exports).
 - **Fields** are the app's settings, shown to the owner: kinds `text`, `secret`,
   `number` and `bool`. Secrets are masked in the dashboard.
 - **Limits** accept `memory_mib` 16–256, `fuel` 100,000–10,000,000,000 per
@@ -102,7 +104,7 @@ LOKI 0.3.
 LOKI keeps that promise by:
 
 - only adding to the `loki:app@0.3` host interfaces, as 0.3.x versions (now
-  0.3.1), never changing or removing what an app imports;
+  0.3.2), never changing or removing what an app imports;
 - providing any breaking new interface version alongside the old one;
 - testing every change against apps frozen at each supported SDK.
 
@@ -180,6 +182,7 @@ reusing a spent one ends the sign-in.
 | `database` | `transaction`: 1–64 statements with typed parameters, returning columns, rows and affected counts | `database` |
 | `uploads` | `retain` a request's upload at a new path, `delete` a retained one | `uploads` |
 | `storage` | `set`, `get`, `delete` JSON values; `write-file`, `read-file`, `get-file-info`, `delete-file`, `list-files`, `get-usage`, `append-file`, `rename-file` | `storage` |
+| `personal-storage` | `write-file`, `read-file`, `list-files`, `delete-file`, `download-file`, `import-upload`, `get-usage` for the signed-in account's files in this app (0.3.2) | `personal-storage`, the owner's permission and a signed-in user; `import-upload` also `uploads` |
 | `responses` | `serve-file`: answer with an upload, storage file or package asset | that file's capability |
 | `files` | `size` and ranged `read` (at most 1 MiB) of the app's own files | that file's capability |
 | `realtime-control` | `restart` the realtime instances, `call` one, `list-rooms` | `realtime` |
@@ -440,7 +443,7 @@ optional `icon.png`:
   "url": "https://github.com/me/my-app/releases/download/v1.2.0/my-app-1.2.0.loki-app",
   "sha256": "…",
   "size": 287908,
-  "sdk": "0.6.0",
+  "sdk": "0.7.0",
   "capabilities": ["database", "forms"]
 }
 ```

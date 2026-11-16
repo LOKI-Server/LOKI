@@ -1,4 +1,4 @@
-use loki_sdk::{Context, Database, Storage, StoredFile, params};
+use loki_sdk::{Context, Database, PersonalStorage, Storage, StoredFile, params};
 use serde_json::{Value, json};
 use wasi::http::types::*;
 
@@ -70,6 +70,32 @@ impl wasi::exports::http::incoming_handler::Guest for Probe {
                 storage.write("active.html", "<h1>hi</h1>").unwrap();
                 storage.file("active.html").inline("active.html").unwrap();
                 String::new()
+            }
+            "/personal" => {
+                let personal = PersonalStorage;
+                match personal.write("notes/today.txt", "Personal branch.") {
+                    Err(error) => json!({"status":error.status()}).to_string(),
+                    Ok(_) => {
+                        let traversal = personal.write("../escape.txt", "x").unwrap_err();
+                        let read = personal.read("notes/today.txt", 9, 6).unwrap();
+                        let page = personal.list("notes/", None).unwrap();
+                        let usage = personal.usage().unwrap();
+                        json!({
+                            "read":String::from_utf8_lossy(&read),
+                            "files":page.files.iter().map(|f| &f.path).collect::<Vec<_>>(),
+                            "bytes":usage.bytes,
+                            "traversal":traversal.status(),
+                        })
+                        .to_string()
+                    }
+                }
+            }
+            "/personal-download" => {
+                PersonalStorage.download("notes/today.txt").unwrap();
+                String::new()
+            }
+            "/personal-delete" => {
+                json!({"deleted":PersonalStorage.delete("notes/today.txt").unwrap()}).to_string()
             }
             "/cookies" => json!({"cookies":request.headers().get("cookie").len(),"authorization":request.headers().get("authorization").len()}).to_string(),
             _ => serde_json::to_string(&Context::current().unwrap()).unwrap(),

@@ -8,7 +8,7 @@
 //   alongside this one, so older apps keep linking.
 // - LOKI's tests run apps frozen at each supported SDK
 //   (crates/loki-server/tests/fixtures/frozen).
-package loki:app@0.3.1;
+package loki:app@0.3.2;
 
 /// Types shared by the host interfaces.
 interface types {
@@ -179,6 +179,29 @@ interface storage {
     rename-file: func(%from: string, to: string, replace: bool) -> result<_, error>;
 }
 
+/// Files owned by the authenticated account, scoped to this app.
+interface personal-storage {
+    use types.{error};
+    use storage.{file-info, file-page};
+
+    /// The three limit fields use the maximum integer values when there are no storage caps.
+    record usage {
+        bytes: u64,
+        entries: u32,
+        limit-bytes: u64,
+        max-entries: u32,
+        max-file-bytes: u64,
+    }
+
+    get-usage: func() -> result<usage, error>;
+    list-files: func(prefix: string, after: option<string>) -> result<file-page, error>;
+    write-file: func(path: string, bytes: list<u8>) -> result<file-info, error>;
+    import-upload: func(path: string, token: string) -> result<file-info, error>;
+    read-file: func(path: string, offset: u64, length: u32) -> result<list<u8>, error>;
+    delete-file: func(path: string) -> result<bool, error>;
+    download-file: func(path: string) -> result<_, error>;
+}
+
 /// Answering with one of the app's files.
 interface responses {
     use types.{error, file-source};
@@ -297,6 +320,7 @@ world host-api {
     import database;
     import uploads;
     import storage;
+    import personal-storage;
     import responses;
     import files;
     import realtime-control;

@@ -6,6 +6,61 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// users; include a stable user ID in your keys for per-user preferences.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Storage;
+/// Files owned by the signed-in account in this app's private folder.
+/// Requires the `personal-storage` capability and the installation owner's grant.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PersonalStorage;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PersonalUsage {
+    pub bytes: u64,
+    pub entries: u32,
+    /// `u64::MAX` when the host has no account byte quota.
+    pub limit_bytes: u64,
+    /// `u32::MAX` when the host has no account file-count quota.
+    pub max_entries: u32,
+    /// `u64::MAX` when the host has no personal file size cap.
+    pub max_file_bytes: u64,
+}
+
+impl PersonalStorage {
+    /// Usage across all of the current account's personal app folders.
+    pub fn usage(&self) -> Result<PersonalUsage> {
+        host::personal_usage()
+    }
+
+    pub fn list(&self, prefix: &str, after: Option<&str>) -> Result<FilePage> {
+        host::personal_list(prefix, after)
+    }
+
+    /// Atomically replaces a file with up to 1 MiB of generated content.
+    pub fn write(&self, path: &str, bytes: impl AsRef<[u8]>) -> Result<FileInfo> {
+        let bytes = bytes.as_ref();
+        if bytes.len() > 1024 * 1024 {
+            return Err(Error::new(413, "Generated writes are limited to 1 MiB."));
+        }
+        host::personal_write(path, bytes)
+    }
+
+    /// Saves a multipart upload from this request. The app also needs `uploads`.
+    pub fn import_upload(&self, path: &str, upload: &crate::Upload) -> Result<FileInfo> {
+        host::personal_import(path, &upload.token)
+    }
+
+    /// Reads at most 1 MiB, starting at `offset`.
+    pub fn read(&self, path: &str, offset: u64, length: u32) -> Result<Vec<u8>> {
+        host::personal_read(path, offset, length)
+    }
+
+    pub fn delete(&self, path: &str) -> Result<bool> {
+        host::personal_delete(path)
+    }
+
+    pub fn download(&self, path: &str) -> Result<Response> {
+        host::personal_download(path)?;
+        Ok(Response::empty(200))
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FileInfo {
     pub path: String,

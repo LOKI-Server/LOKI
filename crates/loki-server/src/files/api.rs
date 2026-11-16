@@ -154,6 +154,7 @@ async fn share(state: &State, headers: &HeaderMap, id: &str) -> Result<Share> {
     Ok(Share {
         root,
         excluded_extensions: serde_json::from_str(&extensions)?,
+        data: state.0.data.clone(),
     })
 }
 

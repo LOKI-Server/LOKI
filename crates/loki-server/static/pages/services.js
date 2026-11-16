@@ -40,7 +40,7 @@ export function overview() {
     + `<div class="stats">${stat(apps.filter(a => a.ready).length, apps.length, "Applications running", "apps", "/apps")}${stat(shares.length, undefined, "File shares", "folder", "/shares")}${stat(routes.filter(r => r.enabled).length, owner ? routes.length : undefined, "Connected routes", "route", owner ? "/routes" : "/")}</div>`
     + (pending ? `<div class="pending-banner">${icon("people")}<span>${pending} account request${pending === 1 ? "" : "s"} waiting.</span><a href="/accounts">Review requests ${icon("chevron")}</a></div>` : "")
     + `<div class="section-heading"><h2>Your services</h2>${owner ? `<a href="/apps">Manage applications ${icon("chevron")}</a>` : ""}</div>`
-    + (state.resources.length ? cards(state.resources) : empty("Every universe starts somewhere.", owner ? "Import your first app, connect an existing service, or share a folder." : "Your server owner can give you access to apps and file shares.", owner ? linkButton("Add your first app", "/apps", "primary", "plus") : "", "ᛟ"));
+    + (state.resources.some(r => r.kind !== "git-create") ? cards(state.resources.filter(r => r.kind !== "git-create")) : empty("Every universe starts somewhere.", owner ? "Import your first app, connect an existing service, or share a folder." : "Your server owner can give you access to apps and file shares.", owner ? linkButton("Add your first app", "/apps", "primary", "plus") : "", "ᛟ"));
 }
 
 export function appsPage() {

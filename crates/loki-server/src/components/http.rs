@@ -36,7 +36,11 @@ impl Drop for UploadCleanup {
     }
 }
 /// A file `serve-file` chose to answer with: its path, where it lives, and how.
-pub(crate) type ServedFile = Arc<std::sync::Mutex<Option<(String, FileSource, ServeOptions)>>>;
+pub(crate) enum FileResponse {
+    App(String, FileSource, ServeOptions),
+    Personal(std::fs::File, String, String),
+}
+pub(crate) type ServedFile = Arc<std::sync::Mutex<Option<FileResponse>>>;
 /// An idle instance kept for an app's next request.
 pub(crate) struct Warm {
     store: Store<Host>,
@@ -52,7 +56,7 @@ const RESPONSE_BYTES: usize = 1024 * 1024 * 1024;
 /// Runs one request in an instance of the app. The response streams as the app writes
 /// it; the instance and `permit` stay held until the body ends or the time limit passes.
 pub(super) async fn execute(
-    _state: &State,
+    state: &State,
     runtime: Arc<Runtime>,
     mut request: Request<Body>,
     info: Value,
@@ -61,6 +65,8 @@ pub(super) async fn execute(
     permit: Permit,
 ) -> Result<Response> {
     let cleanup = UploadCleanup(pending.clone());
+    let personal_state = (info["panel_action"].is_null() && request.uri().path() != "/_loki/panel")
+        .then(|| Arc::downgrade(&state.0));
     if !runtime.active.load(Ordering::SeqCst) {
         return Err(Error::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -86,6 +92,8 @@ pub(super) async fn execute(
         }
         None => (new_store(&runtime, info, form, pending, None)?, None, 0),
     };
+    store.data_mut().personal_state = personal_state;
+    store.data_mut().file = ServedFile::default();
     store.set_fuel(limits.fuel)?;
     let served = store.data().file.clone();
     // Authentication credentials stay in the host; identity comes from context.
@@ -158,10 +166,23 @@ pub(super) async fn execute(
     let (parts, body) = response.into_parts();
     let mut response = Response::from_parts(parts, buffer(body).await.ok_or_else(failed)?);
     let file = served.lock().unwrap().take();
-    if let Some((path, asset, options)) = file
+    if let Some(file) = file
         && response.status().is_success()
     {
-        response = stream_file(&runtime, &path, asset, &options, &headers).await?;
+        response = match file {
+            FileResponse::App(path, asset, options) => {
+                stream_file(&runtime, &path, asset, &options, &headers).await?
+            }
+            FileResponse::Personal(file, name, id) => {
+                crate::sync::blobs::stream_file(
+                    tokio::fs::File::from_std(file),
+                    &headers,
+                    Some(&name),
+                    Some(&id),
+                )
+                .await?
+            }
+        };
     }
     response
         .headers_mut()
@@ -206,7 +227,9 @@ where
         http_body::Frame::data(prefix.freeze()),
     )));
     let rest = http_body_util::BodyStream::new(http_body_util::Limited::new(body, RESPONSE_BYTES));
-    Some(Body::new(http_body_util::StreamBody::new(first.chain(rest))))
+    Some(Body::new(http_body_util::StreamBody::new(
+        first.chain(rest),
+    )))
 }
 fn failed() -> Error {
     Error::new(
@@ -228,7 +251,8 @@ fn keep(runtime: &Arc<Runtime>, mut store: Store<Host>, proxy: Proxy, uses: u32)
     }
     // Uploads were retained or removed with the request.
     store.data_mut().pending.clear();
-    *store.data().file.lock().unwrap() = None;
+    store.data_mut().file = ServedFile::default();
+    store.data_mut().personal_state = None;
     warm.push(Warm {
         store,
         proxy,
@@ -461,7 +485,7 @@ pub async fn serve(state: &State, app: apps::App, mut request: Request<Body>) ->
         Some(user) => user_info(state, user, &app.id, &manifest).await?,
         None => Value::Null,
     };
-    let info = json!({"user":user_value,"csrf":csrf,"issuer":state.0.settings.read().await.public_url,"dashboard_url":dashboard_url(state,&origin).await});
+    let info = json!({"user":user_value,"auth_version":user.as_ref().map(|u|u.auth_version),"csrf":csrf,"issuer":state.0.settings.read().await.public_url,"dashboard_url":dashboard_url(state,&origin).await});
     let runtime = running(state, &app.id).await?;
     let permit = enter(state, &runtime).await?;
     let mut form = Value::Null;

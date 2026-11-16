@@ -155,9 +155,41 @@ pub(crate) fn confined(root: &str, path: &str) -> Result<(Dir, PathBuf)> {
     }
     Ok((dir, path))
 }
+/// Whether `path` is LOKI's data directory or inside it, comparing canonical
+/// paths (case-insensitively on Windows). Shares never serve LOKI's own state
+/// (databases, keys, Save Sync and personal files, Git, backups), even when an
+/// owner shares a folder that contains it.
+pub(crate) fn inside_data(data: &Path, path: &Path) -> bool {
+    #[cfg(windows)]
+    let (data, path) = (
+        PathBuf::from(data.to_string_lossy().to_lowercase()),
+        PathBuf::from(path.to_string_lossy().to_lowercase()),
+    );
+    path.starts_with(&data)
+}
 pub struct Share {
     pub root: String,
     pub excluded_extensions: Vec<String>,
+    pub(crate) data: PathBuf,
+}
+
+impl Share {
+    fn open(&self, path: &str) -> Result<(Dir, PathBuf)> {
+        let (dir, relative) = confined(&self.root, path)?;
+        let root = dunce::canonicalize(&self.root)?;
+        Self::check_path(
+            &dunce::canonicalize(&self.data)?,
+            &dunce::canonicalize(root.join(&relative))?,
+        )?;
+        Ok((dir, relative))
+    }
+
+    fn check_path(data: &Path, path: &Path) -> Result<()> {
+        if inside_data(data, path) {
+            return Err(Error::not_found());
+        }
+        Ok(())
+    }
 }
 pub async fn share(state: &State, headers: &HeaderMap, id: &str) -> Result<Share> {
     let ctx = auth::context(state, headers).await.ok();
@@ -178,6 +210,7 @@ pub async fn share(state: &State, headers: &HeaderMap, id: &str) -> Result<Share
     Ok(Share {
         root,
         excluded_extensions: serde_json::from_str(&extensions)?,
+        data: state.0.data.clone(),
     })
 }
 pub async fn info(
@@ -208,7 +241,9 @@ pub async fn list(
 pub(super) async fn list_share(share: Share, query: Browse) -> Result<Json<serde_json::Value>> {
     let path = query.path.clone();
     let (entries, total) = tokio::task::spawn_blocking(move || -> Result<(Vec<Entry>, usize)> {
-        let (dir, path) = confined(&share.root, &path)?;
+        let (dir, path) = share.open(&path)?;
+        let abs = dunce::canonicalize(dunce::canonicalize(&share.root)?.join(&path))?;
+        let data = dunce::canonicalize(&share.data)?;
         let current = if path.as_os_str().is_empty() {
             dir
         } else {
@@ -221,6 +256,9 @@ pub(super) async fn list_share(share: Share, query: Browse) -> Result<Json<serde
         for item in current.entries()? {
             let Ok(item) = item else { continue };
             let name = item.file_name().to_string_lossy().to_string();
+            if inside_data(&data, &abs.join(&name)) {
+                continue;
+            }
             let Ok(meta) = current.symlink_metadata(&name) else {
                 continue;
             };
@@ -342,7 +380,7 @@ pub async fn download(
 
 pub(super) async fn open_file(share: Share, path: String) -> Result<(std::fs::File, PathBuf)> {
     tokio::task::spawn_blocking(move || -> Result<_> {
-        let (dir, path) = confined(&share.root, &path)?;
+        let (dir, path) = share.open(&path)?;
         if excluded(&path, &share.excluded_extensions) {
             return Err(Error::not_found());
         }

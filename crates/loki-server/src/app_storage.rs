@@ -361,7 +361,10 @@ impl Storage {
         }
         let replaced = Self::existing(&self.files, &target)?;
         if replaced.is_some() && !replace {
-            return Err(Error::new(StatusCode::CONFLICT, "That file already exists."));
+            return Err(Error::new(
+                StatusCode::CONFLICT,
+                "That file already exists.",
+            ));
         }
         self.totals()?;
         match self.files.rename(&source, &self.files, &target).map_err(io) {

@@ -53,9 +53,18 @@ pub async fn stream(
     headers: &HeaderMap,
     filename: Option<&str>,
 ) -> Result<Response> {
-    let mut file = tokio::fs::File::open(blob_path(&state.0.data, hash))
+    let file = tokio::fs::File::open(blob_path(&state.0.data, hash))
         .await
         .map_err(|_| unknown_blob())?;
+    stream_file(file, headers, filename, Some(hash)).await
+}
+
+pub(crate) async fn stream_file(
+    mut file: tokio::fs::File,
+    headers: &HeaderMap,
+    filename: Option<&str>,
+    etag: Option<&str>,
+) -> Result<Response> {
     let length = file.metadata().await?.len();
     let mut status = StatusCode::OK;
     let (start, end) = match headers.get(header::RANGE) {
@@ -81,9 +90,12 @@ pub async fn stream(
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, count)
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::ETAG, format!("\"{hash}\""))
         .header(header::CACHE_CONTROL, "private, no-store")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header("Content-Security-Policy", "sandbox; default-src 'none'");
+    if let Some(etag) = etag {
+        response = response.header(header::ETAG, format!("\"{etag}\""));
+    }
     if let Some(name) = filename {
         let encoded = url::form_urlencoded::byte_serialize(name.as_bytes())
             .collect::<String>()

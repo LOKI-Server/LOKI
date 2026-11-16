@@ -11,7 +11,7 @@ pub(crate) mod bindings {
     wit_bindgen::generate!({path:"wit",world:"host-api"});
 }
 
-/// Calls to the typed host API (`loki:app@0.3.1`). In native tests a
+/// Calls to the typed host API (`loki:app@0.3.2`). In native tests a
 /// [`testing::with_host`] fake answers them instead, by operation name and JSON.
 // Arguments go unused on targets that are neither WASI nor a test.
 #[allow(unused_variables)]
@@ -358,6 +358,80 @@ pub(crate) mod host {
             { Ok(wit::storage::rename_file(from, to, replace)?) }
         )
     }
+    pub fn personal_usage() -> Result<crate::PersonalUsage> {
+        host!(
+            "personal-usage",
+            Value::Null,
+            |u: crate::PersonalUsage| Ok(u),
+            {
+                let u = wit::personal_storage::get_usage()?;
+                Ok(crate::PersonalUsage {
+                    bytes: u.bytes,
+                    entries: u.entries,
+                    limit_bytes: u.limit_bytes,
+                    max_entries: u.max_entries,
+                    max_file_bytes: u.max_file_bytes,
+                })
+            }
+        )
+    }
+    pub fn personal_list(prefix: &str, after: Option<&str>) -> Result<FilePage> {
+        host!(
+            "personal-list",
+            json!({"prefix":prefix,"after":after}),
+            |p: FilePage| Ok(p),
+            {
+                let page = wit::personal_storage::list_files(prefix, after)?;
+                Ok(FilePage {
+                    files: page.files.into_iter().map(Into::into).collect(),
+                    next: page.next,
+                })
+            }
+        )
+    }
+    pub fn personal_write(path: &str, bytes: &[u8]) -> Result<FileInfo> {
+        #[cfg(any(test, feature = "testing"))]
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        host!(
+            "personal-write",
+            json!({"path":path,"data":STANDARD.encode(bytes)}),
+            |f: FileInfo| Ok(f),
+            { Ok(wit::personal_storage::write_file(path, bytes)?.into()) }
+        )
+    }
+    pub fn personal_import(path: &str, token: &str) -> Result<FileInfo> {
+        host!(
+            "personal-import",
+            json!({"path":path,"token":token}),
+            |f: FileInfo| Ok(f),
+            { Ok(wit::personal_storage::import_upload(path, token)?.into()) }
+        )
+    }
+    pub fn personal_read(path: &str, offset: u64, length: u32) -> Result<Vec<u8>> {
+        #[cfg(any(test, feature = "testing"))]
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        host!(
+            "personal-read",
+            json!({"path":path,"offset":offset,"length":length}),
+            |data: String| STANDARD
+                .decode(data)
+                .map_err(|_| Error::internal("Invalid file bytes from host.")),
+            { Ok(wit::personal_storage::read_file(path, offset, length)?) }
+        )
+    }
+    pub fn personal_delete(path: &str) -> Result<bool> {
+        host!("personal-delete", json!({"path":path}), |r: bool| Ok(r), {
+            Ok(wit::personal_storage::delete_file(path)?)
+        })
+    }
+    pub fn personal_download(path: &str) -> Result<()> {
+        host!(
+            "personal-download",
+            json!({"path":path}),
+            |r: Value| Ok(()),
+            { Ok(wit::personal_storage::download_file(path)?) }
+        )
+    }
     #[cfg(feature = "realtime")]
     pub fn call_realtime(room: &str, data: &[u8]) -> Result<Vec<u8>> {
         #[cfg(any(test, feature = "testing"))]
@@ -611,7 +685,7 @@ pub struct Upload {
     pub name: String,
     pub content_type: String,
     pub size: u64,
-    token: String,
+    pub(crate) token: String,
 }
 impl Upload {
     pub fn retain(&self, path: impl Into<String>) -> Result<StoredFile> {

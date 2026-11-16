@@ -1,5 +1,5 @@
 // The signed-in person's account, and the owner's server settings.
-import { ago, enc, esc, modal, store } from "../lib/core.js";
+import { ago, api, enc, esc, modal, store } from "../lib/core.js";
 import { icon } from "../lib/icons.js";
 import { button, check, field, heading, linkButton, tag } from "../lib/ui.js";
 import { startupControl } from "./auth.js";
@@ -11,6 +11,17 @@ export function passwordProof() {
 
 const BIO_CHARS = 300;
 
+export async function exportPage() {
+  const { folders, saves } = await api("/api/personal");
+  const checkbox = (name, value, label) => `<label class="check"><input type="checkbox" name="${name}" value="${esc(value)}"><span>${esc(label)}</span></label>`;
+  return heading("Export my data", "Choose the data to include in your ZIP file.", "", "archive")
+    + `<form class="card narrow" action="/api/personal/export" method="get">
+      ${folders.length ? `<fieldset><legend>Personal app files</legend>${folders.map(id => checkbox("app", id, id)).join("")}</fieldset>` : ""}
+      ${saves.length ? `<fieldset><legend>Current Save Sync files</legend>${saves.map(([id, name]) => checkbox("save", id, name)).join("")}</fieldset>` : ""}
+      ${checkbox("profile", "1", "Account profile")}
+      <div class="actions"><button>Download ZIP</button></div></form>`;
+}
+
 function bioForm(bio) {
   const left = BIO_CHARS - [...bio].length;
   return `<form data-form="bio"><label for="bio">Bio</label><textarea id="bio" class="bio-input" name="bio" rows="4" maxlength="${BIO_CHARS}" data-count="bio-count" placeholder="A few words about yourself">${esc(bio)}</textarea><p class="help"><span id="bio-count">${left}</span> characters left. Shown on your profile to this server’s owner.</p><div class="actions"><button class="subtle">Save bio</button></div></form>`;
@@ -20,7 +31,7 @@ export function accountPage() {
   const u = store.session.user, state = store.state;
   const sessions = state.sessions.map(s => `<div class="session-row" data-key="${esc(s.id)}"><span class="session-icon" aria-hidden="true">${icon("globe")}</span><div><strong>${esc(s.label)}</strong>${s.current ? tag("This browser") : ""}<small>Signed in ${ago(s.created)}</small></div>${s.current ? "" : button("Revoke", "session-revoke", s.id, "", "ghost")}</div>`).join("");
   const devices = (state.devices || []).map(d => `<div class="session-row" data-key="${esc(d.id)}"><span class="session-icon" aria-hidden="true">${icon("server")}</span><div><strong>${esc(d.name)}</strong>${d.platform ? tag(d.platform, "dim") : ""}<small>Last seen ${ago(d.last_seen)} · signed in ${ago(d.created)}</small></div><div class="actions">${button("Rename", "device-rename", d.id, "", "ghost", "edit")}${button("Sign out", "device-revoke", d.id, "", "ghost", "logout")}</div></div>`).join("");
-  return heading("Your LOKI account", "One identity, across your services.", "", "account")
+  return heading("Your LOKI account", "One identity, across your services.", linkButton("Export my data", "/account/export"), "account")
     + `<div class="split"><div class="stack">`
     + `<section class="card"><div class="profile-head">${avatar(u)}<div><h2>${esc(u.display_name || u.username)}</h2><small>@${esc(u.username)}${u.owner ? " · Owner" : ""}</small></div></div>${u.bio ? `<p class="bio">${esc(u.bio)}</p>` : ""}<form data-form="profile">${field("username", "Username", u.username, "text", "required minlength=3 maxlength=32")}${field("display_name", "Display name", u.display_name)}${field("email", "Email (optional, unverified)", u.email, "email")}${passwordProof()}<div class="actions"><button>Save profile</button></div></form><hr class="divider">${bioForm(u.bio)}<hr class="divider"><form data-form="avatar"><label for="avatar-file">Profile picture</label><input id="avatar-file" name="file" type="file" accept="image/png,image/jpeg,image/webp" required><p class="help">Up to 4 MiB. Your image is resized and saved as a safe PNG.</p><div class="actions"><button class="subtle">${icon("upload")}Update picture</button></div></form></section>`
     + `<section class="card"><h2>Change password</h2><form data-form="password">${passwordProof()}${field("password", "New password", "", "password", "required minlength=10 maxlength=128 autocomplete=new-password")}<div class="actions"><button>Change password & sign out everywhere</button></div></form></section>`

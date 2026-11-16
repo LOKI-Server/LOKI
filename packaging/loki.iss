@@ -7,7 +7,7 @@
 ; The installation contains executables/assets only. LOKI selects its data
 ; directory and registers optional sign-in startup through its setup/web UI.
 
-#define AppVersion "0.6.0"
+#define AppVersion "0.7.0"
 #define BundleDir "..\target\bundle"
 
 [Setup]
@@ -48,6 +48,12 @@ Source: "{#BundleDir}\caddy.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BundleDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BundleDir}\CADDY-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BundleDir}\CADDY-SOURCE.txt"; DestDir: "{app}"; Flags: ignoreversion
+; MinGit (Git for Windows) for Git hosting; see git\LOKI-MINGIT-SOURCE.txt.
+Source: "{#BundleDir}\git\*"; DestDir: "{app}\git"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; Replace the bundled Git as a whole so files from an older MinGit never linger.
+Type: filesandordirs; Name: "{app}\git"
 
 [Icons]
 Name: "{group}\LOKI Server"; Filename: "{app}\loki-server.exe"; WorkingDir: "{app}"

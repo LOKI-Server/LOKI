@@ -8,7 +8,9 @@ pub mod db;
 pub mod device_codes;
 pub mod devices;
 pub mod files;
+pub mod git;
 pub mod identity;
+mod personal;
 pub mod platform;
 pub mod realtime;
 pub mod registry;
@@ -204,6 +206,12 @@ pub struct Inner {
     pub sockets: Arc<Semaphore>,
     /// Shared by blob uploads and commits; exclusive for garbage collection.
     pub sync_blobs: RwLock<()>,
+    pub(crate) personal_files: RwLock<()>,
+    pub(crate) exports: Arc<Semaphore>,
+    pub(crate) git_files: Arc<RwLock<()>>,
+    pub(crate) git_processes: Arc<Semaphore>,
+    pub(crate) git_uploads: Arc<Semaphore>,
+    pub(crate) git_binary: tokio::sync::OnceCell<PathBuf>,
     /// The last app registry index LOKI read; see [`registry`].
     pub registry: Mutex<Option<Arc<registry::Cache>>>,
 }
@@ -235,6 +243,8 @@ impl State {
         }
         platform::private_directory(&data)?;
         let db = db::open(&data.join("loki.db")).await?;
+        personal::recover(&data, &db).await?;
+        git::recover(&data, &db).await?;
         let previous: Vec<String> =
             sqlx::query_scalar("SELECT id FROM apps WHERE previous IS NOT NULL")
                 .fetch_all(&db)
@@ -299,6 +309,12 @@ impl State {
             sync_waiters: Semaphore::new(SYNC_WAITERS),
             sockets: Arc::new(Semaphore::new(SOCKETS)),
             sync_blobs: RwLock::new(()),
+            personal_files: RwLock::new(()),
+            exports: Arc::new(Semaphore::new(2)),
+            git_files: Arc::new(RwLock::new(())),
+            git_processes: Arc::new(Semaphore::new(8)),
+            git_uploads: Arc::new(Semaphore::new(2)),
+            git_binary: tokio::sync::OnceCell::new(),
             registry: Mutex::new(None),
         }));
         Ok(http)

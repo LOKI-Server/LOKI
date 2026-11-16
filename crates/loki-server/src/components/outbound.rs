@@ -104,18 +104,21 @@ impl WasiHttpHooks for Outbound {
             .authority()
             .cloned()
             .ok_or(ErrorCode::HttpRequestUriInvalid)?;
-        let host = authority.host().trim_start_matches('[').trim_end_matches(']').to_string();
+        let host = authority
+            .host()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
         let port = authority
             .port_u16()
             .unwrap_or(if config.use_tls { 443 } else { 80 });
         if !policy.allows(&host, port) {
             return Err(ErrorCode::HttpRequestDenied.into());
         }
-        let permit = policy
-            .in_flight
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| ErrorCode::InternalError(Some("Too many outgoing requests.".into())))?;
+        let permit =
+            policy.in_flight.clone().try_acquire_owned().map_err(|_| {
+                ErrorCode::InternalError(Some("Too many outgoing requests.".into()))
+            })?;
         let config = OutgoingRequestConfig {
             use_tls: config.use_tls,
             connect_timeout: config.connect_timeout.min(CONNECT_TIME),
@@ -155,8 +158,8 @@ impl WasiHttpHooks for Outbound {
                         .parse()
                         .map_err(|_| ErrorCode::HttpRequestUriInvalid)?,
                 );
-                *request.uri_mut() =
-                    axum::http::Uri::from_parts(parts).map_err(|_| ErrorCode::HttpRequestUriInvalid)?;
+                *request.uri_mut() = axum::http::Uri::from_parts(parts)
+                    .map_err(|_| ErrorCode::HttpRequestUriInvalid)?;
             }
             Ok(wasmtime_wasi_http::p2::default_send_request_handler(request, config).await)
         });

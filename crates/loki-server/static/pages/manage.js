@@ -12,7 +12,7 @@ export const roles = r => [...new Set(["access", ...(r.kind === "app" ? ["admin"
 
 export function accessPanel(r) {
   const grants = store.state.grants.filter(g => g.resource === r.id);
-  const audiences = { restricted: "Selected people and groups", members: "All approved members", ...(r.kind === "sync" ? {} : { public: "Public" }) };
+  const audiences = { restricted: "Selected people and groups", ...(r.kind === "git-create" ? {} : { members: "All approved members" }), ...(["sync", "git-create"].includes(r.kind) ? {} : { public: "Public" }) };
   return `<form data-form="access" data-id="${esc(r.id)}"><label for="access-visibility">Audience</label><select id="access-visibility" name="visibility">${Object.entries(audiences).map(([v, label]) => `<option ${r.visibility === v ? "selected" : ""} value="${v}">${label}</option>`).join("")}</select>${r.kind === "app" ? '<p class="help">Public visibility makes the service discoverable, but this app may still require a LOKI sign-in for its features.</p>' : ""}${r.kind === "route" && !r.gated ? '<p class="help">Without a browser sign-in gate, these permissions control the service card in LOKI. The upstream service controls sign-in.</p>' : ""}<label>Permissions</label><div id="grants">${grants.map(g => grantRow(subjects(), roles(r), `${g.subject_kind}:${g.subject}`, g.role)).join("")}</div>${button("Add permission", "grant-add", r.id, "", "ghost", "plus")}<div class="actions"><button>Save access</button></div></form>`;
 }
 
@@ -25,6 +25,10 @@ const section = (title, body) => `<section class="dialog-section"><h3>${esc(titl
 export function syncManage(id) {
   const r = resource(id);
   modal(r.name, `<p>Who may pair devices and keep files in sync. Each person only ever sees their own folders. Set storage limits in Server settings and per person in People &amp; groups.</p>` + section("Who can use sync", accessPanel(r)));
+}
+
+export function gitCreation() {
+  modal("Repository creation", accessPanel(resource("git-create")));
 }
 
 // Apps that keep files can be given more room, or less, than they ask for.
@@ -46,6 +50,7 @@ export function appManage(id) {
   const operation = (label, op, kind = "subtle", iconName = "") => button(label, "app-operation", id, `data-operation="${op}"`, kind, iconName);
   modal(r.name, `<p>${esc(r.manifest.description)}</p><div class="tags">${tag(`v${r.manifest.version}`)}${tag(r.manifest.runtime === "wasi" ? "WASI component" : "Native service")}${resourceStatus(r)}</div>${r.error ? `<p class="notice error">${esc(r.error)}</p>` : ""}<div class="actions">${operation(r.enabled ? "Disable" : "Enable", r.enabled ? "disable" : "enable", "primary", "power")}${r.enabled ? operation("Restart", "restart", "subtle", "refresh") : ""}${r.manifest.panel && r.ready ? button("Open panel", "app-panel", id, "", "subtle", "apps") : ""}${button("Logs", "logs", id, "", "subtle", "logs")}${r.previous ? operation("Roll back version & data", "rollback", "subtle", "left") : ""}${operation("Uninstall (keep data)", "uninstall", "danger", "trash")}</div>`
     + section("Settings", `<form data-form="app-config" data-id="${esc(id)}">${field("hostname", "Public hostname (optional)", r.hostname, "text", "placeholder=bigshot.example.com")}<p class="help">Leave blank for loopback access. Your domain needs DNS and a configured Caddy.</p>${realtimeSettings(r)}${storageSettings(r)}${r.manifest.fields.map(f => f.kind === "bool" ? check(f.key, f.label, r.config[f.key] ?? f.default) : field(f.key, f.label, r.config[f.key] ?? f.default ?? "", f.kind === "secret" ? "password" : f.kind === "number" ? "number" : "text", f.required ? "required" : "")).join("")}<div class="actions"><button>Save application settings</button></div></form>`)
+    + (r.manifest.capabilities?.includes("personal-storage") ? section("Personal storage", `<form data-form="personal-enable" data-id="${esc(id)}">${check("enabled", "Allow this app to save files for its signed-in users", r.personal_storage)}<button>Save permission</button></form>`) : "")
     + section("Who can use this app", accessPanel(r)));
 }
 

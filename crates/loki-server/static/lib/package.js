@@ -5,7 +5,7 @@ import { $, esc, fmt, resource, store } from "./core.js";
 import { tag } from "./ui.js";
 
 const MAX_PACKAGE = 536870912, MAX_MANIFEST = 131072, MAX_FILES = 2048;
-const CAPABILITIES = ["database", "uploads", "forms", "storage", "realtime", "outbound"];
+const CAPABILITIES = ["database", "uploads", "forms", "storage", "realtime", "outbound", "personal-storage"];
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 const notPackage = () => new Error("This file is not a LOKI app package.");

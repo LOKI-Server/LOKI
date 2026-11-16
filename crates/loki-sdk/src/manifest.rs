@@ -246,8 +246,14 @@ pub fn valid_id(value: &str) -> bool {
         && !value.starts_with('-')
 }
 /// The app services an app can ask LOKI for.
-pub const CAPABILITIES: [&str; 6] = [
-    "database", "uploads", "forms", "storage", "realtime", "outbound",
+pub const CAPABILITIES: [&str; 7] = [
+    "database",
+    "uploads",
+    "forms",
+    "storage",
+    "realtime",
+    "outbound",
+    "personal-storage",
 ];
 /// Whether `pattern` is a valid `outbound` entry: a hostname or IP, optionally
 /// with a `*.` prefix and a `:port`.
@@ -263,11 +269,15 @@ pub fn valid_outbound(pattern: &str) -> bool {
         && host.split('.').all(|label| {
             !label.is_empty()
                 && label.len() <= 63
-                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
                 && !label.starts_with('-')
                 && !label.ends_with('-')
         })
-        && host.bytes().any(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && host
+            .bytes()
+            .any(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
         && !host.bytes().any(|b| b.is_ascii_uppercase())
 }
 /// Checks a manifest. LOKI runs only WASI components (`wasm32-wasip2`).
@@ -362,7 +372,17 @@ mod tests {
         let ok = json!({"capabilities":["outbound"],"outbound":["api.example.com","*.discord.com","127.0.0.1:8080"]});
         assert!(manifest(ok).is_ok());
         assert!(manifest(json!({"outbound":["api.example.com"]})).is_err());
-        for bad in ["", "*", "https://x.com", "x.com/path", "x.com:0", "X.com", "a..b", "-a.com", "a.com:99999"] {
+        for bad in [
+            "",
+            "*",
+            "https://x.com",
+            "x.com/path",
+            "x.com:0",
+            "X.com",
+            "a..b",
+            "-a.com",
+            "a.com:99999",
+        ] {
             assert!(
                 manifest(json!({"capabilities":["outbound"],"outbound":[bad]})).is_err(),
                 "{bad}"
@@ -380,7 +400,8 @@ mod tests {
         ] {
             assert!(manifest(json!({"schedules":bad})).is_err(), "{bad}");
         }
-        let rooms = |rooms| json!({"capabilities":["realtime"],"limits":{"realtime":{"rooms":rooms}}});
+        let rooms =
+            |rooms| json!({"capabilities":["realtime"],"limits":{"realtime":{"rooms":rooms}}});
         assert!(manifest(rooms(json!({"max":4}))).is_ok());
         assert!(manifest(rooms(json!({"max":0}))).is_err());
         assert!(manifest(rooms(json!({"max":65}))).is_err());

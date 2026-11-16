@@ -131,7 +131,7 @@ pub(crate) async fn pair_for(
         name: &name,
         platform: &platform,
     };
-    Ok(Json(device_codes::create(&state, &ip, request).await?))
+    Ok(Json(device_codes::create(state, ip, request).await?))
 }
 
 #[derive(Deserialize)]
@@ -178,7 +178,7 @@ pub(crate) async fn poll_for(state: &State, kind: &str, code: &str) -> Result<Js
     {
         return Err(Error::forbidden());
     }
-    let issued = issue(&state, &user, &name, &platform).await?;
+    let issued = issue(state, &user, &name, &platform).await?;
     state
         .audit(&user.id, "device-paired", &format!("{name} ({platform})"))
         .await?;
@@ -208,10 +208,10 @@ pub(crate) async fn login_for(
     require_sync: bool,
 ) -> Result<Json<Value>> {
     // Shares the browser's limits, so devices add no extra guesses.
-    auth::login_rate(&state, &input.username, &ip).await?;
+    auth::login_rate(state, &input.username, ip).await?;
     let (name, platform) = device_info(&input.device)?;
     let user =
-        auth::device_credentials(&state, &input.username, input.password, &input.code).await?;
+        auth::device_credentials(state, &input.username, input.password, &input.code).await?;
     if user.status != "approved"
         || (require_sync && !auth::allowed(state, Some(&user), sync::RESOURCE, "access").await?)
     {
@@ -221,7 +221,7 @@ pub(crate) async fn login_for(
             "This account is not approved. Ask the server owner.",
         ));
     }
-    let issued = issue(&state, &user, &name, &platform).await?;
+    let issued = issue(state, &user, &name, &platform).await?;
     state
         .audit(&user.id, "device-login", &format!("{name} ({platform})"))
         .await?;

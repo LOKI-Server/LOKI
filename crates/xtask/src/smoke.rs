@@ -100,6 +100,14 @@ pub fn storage(binary: &Path, package: &Path) -> Result<()> {
     let app = server.install(&owner, package, "storage-notes")?;
     let token = csrf(&get(&owner, &format!("{app}/"))?)?;
     ensure!(
+        owner.get(&format!("{app}/export"))?.status == StatusCode::FORBIDDEN,
+        "Personal storage was available before the owner enabled it"
+    );
+    owner.post_api(
+        &format!("{}/api/personal/settings/apps/storage-notes", server.origin),
+        &json!({"enabled":true}),
+    )?;
+    ensure!(
         owner.get(&format!("{app}/export"))?.status == StatusCode::NOT_FOUND,
         "Missing export lost typed host error"
     );
@@ -178,10 +186,7 @@ pub fn storage(binary: &Path, package: &Path) -> Result<()> {
         .context("Missing backup name")?
         .to_string();
     let archive = zip::ZipArchive::new(fs::File::open(server.data.join("backups").join(&backup))?)?;
-    for prefix in [
-        "app-data/storage-notes/storage/values/",
-        "app-data/storage-notes/storage/files/",
-    ] {
+    for prefix in ["app-data/storage-notes/storage/values/", "personal-files/"] {
         ensure!(
             archive
                 .file_names()

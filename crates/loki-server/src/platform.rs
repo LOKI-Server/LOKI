@@ -61,7 +61,12 @@ pub struct Process {
 }
 impl Process {
     pub fn spawn(command: &mut Command) -> anyhow::Result<Self> {
-        command.kill_on_drop(true).stdin(Stdio::null());
+        command.stdin(Stdio::null());
+        Self::spawn_piped(command)
+    }
+
+    pub(crate) fn spawn_piped(command: &mut Command) -> anyhow::Result<Self> {
+        command.kill_on_drop(true);
         #[cfg(unix)]
         {
             command.process_group(0);

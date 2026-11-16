@@ -32,6 +32,69 @@ async fn request(
         serde_json::from_slice(&body).unwrap_or_else(|_| json!(String::from_utf8_lossy(&body))),
     )
 }
+fn package(path: &std::path::Path, manifest: &Value, bytes: &[u8]) {
+    let mut archive = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    archive
+        .start_file("manifest.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    archive.write_all(manifest.to_string().as_bytes()).unwrap();
+    archive
+        .start_file("probe.wasm", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    archive.write_all(bytes).unwrap();
+    archive.finish().unwrap();
+}
+/// Personal storage (SDK 0.7+): denied until the owner allows the app, then
+/// scoped to the signed-in account and kept outside the app's own storage.
+async fn personal(
+    state: &State,
+    directory: &tempfile::TempDir,
+    manifest: &mut Value,
+    bytes: &[u8],
+    uid: &str,
+    cookie: &str,
+) {
+    manifest["capabilities"] = json!(["database", "storage", "personal-storage"]);
+    let path = directory.path().join("personal.loki-app");
+    package(&path, manifest, bytes);
+    apps::import(state, path, uid, "upload").await.unwrap();
+    let router = web::router(state.clone());
+    let (status, _, denied) = request(&router, "/personal", cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        denied["status"], 403,
+        "personal storage needs the owner's grant"
+    );
+    sqlx::query("INSERT INTO personal_apps(app_id) VALUES('wasi-probe')")
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    let (status, _, stored) = request(&router, "/personal", cookie).await;
+    assert_eq!(status, StatusCode::OK, "{stored}");
+    assert_eq!(stored["read"], "branch");
+    assert_eq!(stored["files"], json!(["notes/today.txt"]));
+    assert_eq!(stored["bytes"], 16);
+    assert_eq!(stored["traversal"], 400);
+    let (status, headers, body) = request(&router, "/personal-download", cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "Personal branch.");
+    assert!(
+        headers[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment")
+    );
+    let owner: String =
+        sqlx::query_scalar("SELECT user_id FROM personal_files WHERE app_id='wasi-probe'")
+            .fetch_one(&state.0.db)
+            .await
+            .unwrap();
+    assert_eq!(owner, uid);
+    assert_eq!(
+        request(&router, "/personal-delete", cookie).await.2["deleted"],
+        true
+    );
+}
 /// Runs against each frozen SDK build, or a fresh one from LOKI_COMPONENT_FIXTURE.
 #[tokio::test]
 async fn wasi_guests_are_scoped_bounded_and_stop_without_stopping_loki() {
@@ -148,6 +211,9 @@ async fn sandbox(bytes: &[u8], sdk: &str) {
         request(&router, "/storage-read", &cookie).await.2["value"]["theme"],
         "forest"
     );
+    if semver::Version::parse(sdk).unwrap() >= semver::Version::new(0, 7, 0) {
+        personal(&state, &directory, &mut manifest, bytes, &uid, &cookie).await;
+    }
     apps::action(&state, "wasi-probe", "disable").await.unwrap();
     assert_eq!(
         request(&router, "/", &cookie).await.0,

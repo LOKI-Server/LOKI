@@ -118,13 +118,7 @@ pub fn sample(pid: u32) -> Result<(u64, f64)> {
 }
 /// Sends `total` GETs to `url` from `concurrency` threads; returns requests per
 /// second and the median and 99th-percentile latency in milliseconds.
-fn load(
-    url: &str,
-    host: &str,
-    port: u16,
-    total: u64,
-    concurrency: u64,
-) -> Result<(f64, f64, f64)> {
+fn load(url: &str, host: &str, port: u16, total: u64, concurrency: u64) -> Result<(f64, f64, f64)> {
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
         .resolve(host, std::net::SocketAddr::from(([127, 0, 0, 1], port)))
@@ -200,8 +194,17 @@ pub fn run(options: Options) -> Result<()> {
         )?;
         let host = format!("{id}.localhost");
         let url = format!("http://{host}:{}{}", server.port, options.path);
-        println!("Sending {total} requests to {url}, {} at a time...", options.concurrency);
-        load(&url, &host, server.port, options.concurrency.min(total), options.concurrency)?;
+        println!(
+            "Sending {total} requests to {url}, {} at a time...",
+            options.concurrency
+        );
+        load(
+            &url,
+            &host,
+            server.port,
+            options.concurrency.min(total),
+            options.concurrency,
+        )?;
         let (rate, median, p99) = load(&url, &host, server.port, total, options.concurrency)?;
         value["requests"] = json!({"path":options.path,"total":total,"concurrency":options.concurrency,"per_second":rate,"median_ms":median,"p99_ms":p99});
     }

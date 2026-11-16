@@ -86,6 +86,8 @@ pub fn router(state: State) -> Router {
         .route("/_loki/start", get(gateway_start))
         .route("/_loki/callback", get(gateway_callback))
         .merge(crate::sync::router())
+        .merge(crate::personal::router())
+        .merge(crate::git::router())
         .merge(files::api::router())
         .merge(crate::devices::router())
         .fallback(get(shell))
@@ -172,6 +174,7 @@ async fn guard(
             || path.starts_with("/gateway/")
             || path.starts_with("/_loki/")
             || path.starts_with("/sync/v1")
+            || path.starts_with("/git-http/")
             || path.starts_with("/files/v1")
             || path.starts_with("/auth/v1"))
     {
@@ -271,6 +274,9 @@ async fn dashboard(
     let mut resources = Vec::new();
     for row in rows {
         let id: String = row.get("id");
+        if row.get::<String, _>("kind") == "git-repo" {
+            continue;
+        }
         if !auth::allowed(&state, Some(user), &id, "access").await? {
             continue;
         }
@@ -300,6 +306,14 @@ async fn dashboard(
                 resource["source"] = json!(app.source);
                 resource["manifest"] = json!(manifest);
                 if user.owner {
+                    resource["personal_storage"] = json!(
+                        sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM personal_apps WHERE app_id=?)"
+                        )
+                        .bind(&id)
+                        .fetch_one(&state.0.db)
+                        .await?
+                    );
                     let mut config: Value = serde_json::from_str(&app.config)?;
                     for f in &manifest.fields {
                         if f.kind == "secret" && config.get(&f.key).is_some_and(|v| !v.is_null()) {
@@ -664,6 +678,8 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
         apps::stop_inner(state, id).await?;
     }
     let result = async {
+        let _personal = state.0.personal_files.read().await;
+        let _git = state.0.git_files.read().await;
         let stage = state.0.data.join("staging").join(auth::id());
         tokio::fs::create_dir_all(&stage).await?;
         sqlx::query("VACUUM INTO ?")
@@ -678,7 +694,15 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
                 .await?;
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             std::fs::copy(source.join("identity.pem"), output.join("identity.pem"))?;
-            for name in ["apps", "app-data", "avatars", "caddy", "sync/blobs"] {
+            for name in [
+                "apps",
+                "app-data",
+                "avatars",
+                "caddy",
+                "sync/blobs",
+                "personal-files",
+                "git-repos",
+            ] {
                 apps::copy_tree(&source.join(name), &output.join(name))?;
             }
             for (id, path) in previous {

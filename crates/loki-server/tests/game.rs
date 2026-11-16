@@ -207,21 +207,38 @@ async fn game(bytes: Vec<u8>, sdk: &str) {
     assert_eq!(text(&mut gamma).await, "room gamma");
 
     // Storage grows by appending, within the quota, and renames in one step.
-    assert_eq!(get(&router, port, "/usage").await.1, (1024 * 1024).to_string());
-    assert_eq!(get(&router, port, "/append?path=tmp&kib=400").await.1, "409600");
-    assert_eq!(get(&router, port, "/append?path=tmp&kib=400").await.1, "819200");
+    assert_eq!(
+        get(&router, port, "/usage").await.1,
+        (1024 * 1024).to_string()
+    );
+    assert_eq!(
+        get(&router, port, "/append?path=tmp&kib=400").await.1,
+        "409600"
+    );
+    assert_eq!(
+        get(&router, port, "/append?path=tmp&kib=400").await.1,
+        "819200"
+    );
     assert_eq!(
         get(&router, port, "/append?path=tmp&kib=400").await.0,
         StatusCode::PAYLOAD_TOO_LARGE
     );
-    assert_eq!(get(&router, port, "/rename?from=tmp&to=world").await.1, "819200");
-    assert_eq!(get(&router, port, "/append?path=other&kib=1").await.1, "1024");
+    assert_eq!(
+        get(&router, port, "/rename?from=tmp&to=world").await.1,
+        "819200"
+    );
+    assert_eq!(
+        get(&router, port, "/append?path=other&kib=1").await.1,
+        "1024"
+    );
     assert_eq!(
         get(&router, port, "/rename?from=other&to=world").await.0,
         StatusCode::CONFLICT
     );
     assert_eq!(
-        get(&router, port, "/rename?from=other&to=world&replace").await.1,
+        get(&router, port, "/rename?from=other&to=world&replace")
+            .await
+            .1,
         "1024"
     );
     // The owner can give the app more room than it asked for.
@@ -282,7 +299,11 @@ async fn game(bytes: Vec<u8>, sdk: &str) {
     components::run_schedule(&state, APP, "tick").await.unwrap();
     components::run_schedule(&state, APP, "tick").await.unwrap();
     assert_eq!(get(&router, port, "/runs").await.1, "2");
-    assert!(components::run_schedule(&state, APP, "other").await.is_err());
+    assert!(
+        components::run_schedule(&state, APP, "other")
+            .await
+            .is_err()
+    );
     let outside = Request::builder()
         .method("POST")
         .uri("/_loki/schedule/tick")

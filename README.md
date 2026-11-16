@@ -102,6 +102,18 @@ language. See the [client guide](docs/sync-api.md), its [OpenAPI description](do
 for generating Kotlin, C#, or TypeScript bindings, and the standard-library
 [Python reference client](examples/sync-reference-client/README.md).
 
+## Repositories and personal storage
+
+Open **Repositories** to create and browse private Git repositories, grant
+access to LOKI users and groups, and manage issues and pull requests. To clone
+and push, use the repository's HTTPS URL and create a token in **Git credentials**.
+The Windows installer includes Git (MinGit). Elsewhere, install Git 2.54 or
+later, or set `LOKI_GIT_EXECUTABLE` to its absolute path. See [Git hosting](docs/private-services.md#git-hosting).
+
+Approved apps can save files in private folders for signed-in users.
+**Account → Export my data** lets users choose their app folders, current Save
+Sync files, and profile. Installation backups include these app files.
+
 ## Install Bigshot Voter
 
 In **Applications**, choose **Browse apps** and install Bigshot Voter from the

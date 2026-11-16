@@ -43,11 +43,16 @@ fn validated_archive(backup: &Path) -> anyhow::Result<zip::ZipArchive<std::fs::F
                     "caddy/",
                     "rollback-data/",
                     "sync/blobs/",
+                    "personal-files/",
+                    "git-repos/",
                 ]
                 .iter()
                 .any(|p| name.starts_with(p)))
         {
             anyhow::bail!("Unsafe backup entry");
+        }
+        if let Some(path) = name.strip_prefix("git-repos/") {
+            crate::git::backup_entry(path)?;
         }
         total = total
             .checked_add(file.size())
@@ -94,6 +99,7 @@ pub fn restore(backup: &Path, data: &Path) -> anyhow::Result<()> {
             )?;
         }
     }
+    crate::git::restore_config(data)?;
     platform::private_directory(data)?;
     Ok(())
 }
@@ -249,6 +255,21 @@ pub async fn wait_for_pid(pid: u32) -> anyhow::Result<()> {
         if !done {
             anyhow::bail!("Previous LOKI did not stop");
         }
+    }
+    Ok(())
+}
+
+/// Free space that personal files and Git always leave on the data volume, so
+/// one account cannot fill the disk LOKI itself needs.
+const DISK_RESERVE: u64 = 2 * 1024 * 1024 * 1024;
+
+pub(crate) fn ensure_disk_space(data: &std::path::Path, size: u64) -> crate::Result<()> {
+    let free = fs2::available_space(data)?;
+    if free < size.saturating_add(DISK_RESERVE) {
+        return Err(crate::Error::new(
+            axum::http::StatusCode::INSUFFICIENT_STORAGE,
+            "The server is low on disk space. Ask the server owner to free some space.",
+        ));
     }
     Ok(())
 }

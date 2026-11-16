@@ -2,7 +2,7 @@
 //! blobs, then commit path changes against the version they last saw. Clients speak
 //! the bearer-only `/sync/v1` API; the dashboard uses cookie routes under `/api/sync`.
 mod api;
-mod blobs;
+pub(crate) mod blobs;
 mod devices;
 
 use crate::{Error, Result, State, apps, auth, auth::User, web::args};

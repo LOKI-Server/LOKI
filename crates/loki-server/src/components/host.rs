@@ -236,7 +236,7 @@ pub(crate) struct ServeOptions {
 
 /// Links every host interface an app can import, except `realtime`.
 pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
-    let mut request = linker.instance("loki:app/request@0.3.1")?;
+    let mut request = linker.instance("loki:app/request@0.3.2")?;
     request.func_wrap("get-context", |store, ()| {
         let context: Context = serde_json::from_value(store.data().info.clone())?;
         Ok((context,))
@@ -247,7 +247,7 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         Ok(())
     })?;
 
-    let mut database = linker.instance("loki:app/database@0.3.1")?;
+    let mut database = linker.instance("loki:app/database@0.3.2")?;
     database.func_wrap_async("transaction", |store, (statements,): (Vec<Statement>,)| {
         Box::new(async move {
             let host = store.data();
@@ -262,7 +262,7 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         })
     })?;
 
-    let mut uploads = linker.instance("loki:app/uploads@0.3.1")?;
+    let mut uploads = linker.instance("loki:app/uploads@0.3.2")?;
     uploads.func_wrap("retain", |mut store, (token, path): (String, String)| {
         Ok((store
             .data_mut()
@@ -273,7 +273,7 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         Ok((store.data().delete_upload(&path).map_err(WitError::from),))
     })?;
 
-    let mut storage = linker.instance("loki:app/storage@0.3.1")?;
+    let mut storage = linker.instance("loki:app/storage@0.3.2")?;
     macro_rules! storage {
         ($name:literal, |$s:ident, $args:tt: $types:ty| $work:expr) => {
             storage.func_wrap_async($name, |store, $args: $types| {
@@ -304,12 +304,100 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
     storage!("get-usage", |s, (): ()| s.usage());
     storage!("append-file", |s, (path, data): (String, Vec<u8>)| s
         .append_file(&path, &data));
-    storage!(
-        "rename-file",
-        |s, (from, to, replace): (String, String, bool)| s.rename_file(&from, &to, replace)
-    );
+    storage!("rename-file", |s,
+                             (from, to, replace): (
+        String,
+        String,
+        bool
+    )| s.rename_file(&from, &to, replace));
 
-    let mut responses = linker.instance("loki:app/responses@0.3.1")?;
+    let mut personal = linker.instance("loki:app/personal-storage@0.3.2")?;
+    macro_rules! personal {
+        ($name:literal, |$ctx:ident, $host:ident, $args:tt: $types:ty| $work:expr) => {
+            personal.func_wrap_async($name, |mut store, $args: $types| {
+                Box::new(async move {
+                    let $host = store.data_mut();
+                    let result = async {
+                        let $ctx = $host.personal().await?;
+                        $work
+                    }
+                    .await;
+                    Ok((result.map_err(WitError::from),))
+                })
+            })?;
+        };
+    }
+    personal!("get-usage", |ctx, host, (): ()| crate::personal::usage(
+        &ctx.0, &ctx.1
+    )
+    .await);
+    personal!(
+        "list-files",
+        |ctx, host, (prefix, after): (String, Option<String>)| crate::personal::list(
+            &ctx.0,
+            &ctx.1,
+            &host.runtime.manifest.id,
+            &prefix,
+            after.as_deref()
+        )
+        .await
+    );
+    personal!(
+        "write-file",
+        |ctx, host, (path, bytes): (String, Vec<u8>)| crate::personal::write(
+            &ctx.0,
+            &ctx.1,
+            &host.runtime.manifest.id,
+            ctx.2,
+            path,
+            bytes
+        )
+        .await
+    );
+    personal!(
+        "import-upload",
+        |ctx, host, (path, token): (String, String)| {
+            host.capability("uploads")?;
+            let upload = host
+                .pending
+                .iter()
+                .find(|file| file.file_name().and_then(|name| name.to_str()) == Some(&token))
+                .ok_or_else(Error::forbidden)?;
+            crate::personal::import(
+                &ctx.0,
+                &ctx.1,
+                &host.runtime.manifest.id,
+                ctx.2,
+                path,
+                std::fs::File::open(upload)?,
+            )
+            .await
+        }
+    );
+    personal!(
+        "read-file",
+        |ctx, host, (path, offset, length): (String, u64, u32)| crate::personal::read(
+            &ctx.0,
+            &ctx.1,
+            &host.runtime.manifest.id,
+            &path,
+            offset,
+            length
+        )
+        .await
+    );
+    personal!("delete-file", |ctx, host, (path,): (String,)| {
+        crate::personal::delete(&ctx.0, &ctx.1, &host.runtime.manifest.id, &path, ctx.2).await
+    });
+    personal!("download-file", |ctx, host, (path,): (String,)| {
+        let (file, id) =
+            crate::personal::get(&ctx.0, &ctx.1, &host.runtime.manifest.id, &path).await?;
+        let name = path.rsplit('/').next().unwrap_or("download").to_owned();
+        *host.file.lock().unwrap() = Some(super::http::FileResponse::Personal(file, name, id));
+        Ok::<_, Error>(())
+    });
+
+    let mut responses = linker.instance("loki:app/responses@0.3.2")?;
     responses.func_wrap_async(
         "serve-file",
         |mut store, (source, path, options): (FileSource, String, ServeOptions)| {
@@ -320,7 +408,7 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    let mut files = linker.instance("loki:app/files@0.3.1")?;
+    let mut files = linker.instance("loki:app/files@0.3.2")?;
     files.func_wrap_async("size", |mut store, (source, path): (FileSource, String)| {
         Box::new(async move {
             let result = match store.data_mut().open(source, &path).await {
@@ -348,7 +436,7 @@ pub(super) fn link(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    let mut control = linker.instance("loki:app/realtime-control@0.3.1")?;
+    let mut control = linker.instance("loki:app/realtime-control@0.3.2")?;
     control.func_wrap_async("restart", |mut store, ()| {
         Box::new(async move {
             let result = store.data_mut().restart_realtime().await;
@@ -430,6 +518,24 @@ impl Host {
         self.capability("storage")?;
         Ok(self.runtime.storage.clone().unwrap())
     }
+    async fn personal(&mut self) -> Result<(crate::State, String, i64)> {
+        self.capability("personal-storage")?;
+        let state = crate::State(
+            self.personal_state
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .ok_or_else(Error::forbidden)?,
+        );
+        let user = self.info["user"]["id"]
+            .as_str()
+            .ok_or_else(Error::forbidden)?
+            .to_owned();
+        let version = self.info["auth_version"]
+            .as_i64()
+            .ok_or_else(Error::forbidden)?;
+        crate::personal::allowed(&state, &self.runtime.manifest.id, &user, version).await?;
+        Ok((state, user, version))
+    }
     fn form(&self) -> HostResult<Form> {
         self.capability("forms")?;
         if self.form.is_null() {
@@ -499,7 +605,7 @@ impl Host {
                 self.storage()?.open_file(&path).await?;
             }
         }
-        *self.file.lock().unwrap() = Some((path, source, options));
+        *self.file.lock().unwrap() = Some(super::http::FileResponse::App(path, source, options));
         Ok(())
     }
     /// The app's realtime side, for an app with the `realtime` capability.

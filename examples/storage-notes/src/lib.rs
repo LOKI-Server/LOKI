@@ -1,4 +1,6 @@
-use loki_sdk::{Database, Error, Request, Response, Result, Router, Storage, params};
+use loki_sdk::{
+    Database, Error, PersonalStorage, Request, Response, Result, Router, Storage, params,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Serialize, Deserialize)]
@@ -31,9 +33,7 @@ fn notes(user_id: &str) -> Result<Vec<Note>> {
         params![user_id],
     )
 }
-fn export_path(user_id: &str) -> String {
-    format!("exports/{user_id}.txt")
-}
+const EXPORT_PATH: &str = "my-branch-notes.txt";
 fn health(_: Request) -> Result<Response> {
     Database.execute("CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,text TEXT NOT NULL)",params![])?;
     Ok(Response::text("ready"))
@@ -90,14 +90,12 @@ fn make_export(request: Request) -> Result<Response> {
         .map(|note| note.text)
         .collect::<Vec<_>>()
         .join("\n\n");
-    Storage.write(&export_path(&user.id), text.as_bytes())?;
+    PersonalStorage.write(EXPORT_PATH, text.as_bytes())?;
     Response::redirect("/export")
 }
 fn download_export(request: Request) -> Result<Response> {
-    let user = request.context().require_user()?;
-    Storage
-        .file(export_path(&user.id))
-        .download("my-branch-notes.txt")
+    request.context().require_user()?;
+    PersonalStorage.download(EXPORT_PATH)
 }
 fn state(request: Request) -> Result<Response> {
     let user = request.context().require_user()?;

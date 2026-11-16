@@ -65,7 +65,8 @@ impl Fetched {
             .map(|(_, v)| v.as_str())
     }
     pub fn text(&self) -> Result<String> {
-        String::from_utf8(self.body.clone()).map_err(|_| Error::bad("The response is not UTF-8 text."))
+        String::from_utf8(self.body.clone())
+            .map_err(|_| Error::bad("The response is not UTF-8 text."))
     }
     pub fn json<T: DeserializeOwned>(&self) -> Result<T> {
         Ok(serde_json::from_slice(&self.body)?)
@@ -151,14 +152,20 @@ fn wasi_send(request: Outgoing) -> Result<Fetched> {
     let fields = Fields::from_list(&headers).map_err(|_| Error::bad("Invalid request header."))?;
     let outgoing = OutgoingRequest::new(fields);
     let invalid = |_| Error::bad("Invalid request URL.");
-    outgoing.set_method(&method).map_err(|()| Error::bad("Invalid request method."))?;
+    outgoing
+        .set_method(&method)
+        .map_err(|()| Error::bad("Invalid request method."))?;
     outgoing.set_scheme(Some(&scheme)).map_err(invalid)?;
     outgoing.set_authority(Some(authority)).map_err(invalid)?;
     outgoing.set_path_with_query(Some(&path)).map_err(invalid)?;
-    let body = outgoing.body().map_err(|()| Error::internal("No request body."))?;
+    let body = outgoing
+        .body()
+        .map_err(|()| Error::internal("No request body."))?;
     let future = outgoing_handler::handle(outgoing, None).map_err(|e| failed(&e))?;
     {
-        let stream = body.write().map_err(|()| Error::internal("No request body."))?;
+        let stream = body
+            .write()
+            .map_err(|()| Error::internal("No request body."))?;
         for chunk in request.body.chunks(4096) {
             stream
                 .blocking_write_and_flush(chunk)

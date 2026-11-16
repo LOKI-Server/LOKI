@@ -12,6 +12,7 @@ use std::{collections::HashMap, io::Write, sync::OnceLock};
 const JS: &str = "text/javascript; charset=utf-8";
 const FILES: &[(&str, &str, &[u8])] = &[
     ("app.js", JS, include_bytes!("../static/app.js")),
+    ("pages/git.js", JS, include_bytes!("../static/pages/git.js")),
     ("lib/core.js", JS, include_bytes!("../static/lib/core.js")),
     ("lib/icons.js", JS, include_bytes!("../static/lib/icons.js")),
     ("lib/ui.js", JS, include_bytes!("../static/lib/ui.js")),

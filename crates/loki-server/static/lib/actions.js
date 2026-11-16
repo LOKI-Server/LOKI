@@ -3,7 +3,8 @@ import { $, act, api, close, confirmDialog, enc, esc, modal, resource, store, to
 import { field, jsonView } from "./ui.js";
 import { navigate, refresh, routable } from "./router.js";
 import { submitSetup, submitStartupAware } from "../pages/auth.js";
-import { appManage, folderPicker, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
+import { appManage, folderPicker, gitCreation, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
+import { gitAccess, gitTokens, newItem, newRepo } from "../pages/git.js";
 import { userManage } from "../pages/people.js";
 import { passwordProof, deviceRename, pairDialog } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
@@ -123,6 +124,30 @@ export async function onSubmit(event) {
     }
     else if (kind === "device-rename" || kind === "sync-device-rename") { await act(kind, id, data); close(); toast("Device renamed."); }
     else if (kind === "sync-quota") { await act(kind, id, { mb: data.mb === "" ? null : Number(data.mb) }); toast("Quota saved."); }
+    else if (kind === "personal-enable") { await api(`/api/personal/settings/apps/${enc(id)}`, { enabled: data.enabled }); close(); toast("Personal storage permission saved."); }
+    else if (kind === "git-create") {
+      const repo = await api("/api/git", { name: data.name, upstream: id || null });
+      close();
+      return await navigate(`/git/${enc(repo.id)}`);
+    }
+    else if (kind === "git-grant") {
+      const [subject_kind, subject] = data.subject.split(":");
+      await api(`/api/git/${enc(id)}/permissions`, { subject_kind, subject, role: data.role });
+      return await gitAccess(id);
+    }
+    else if (kind === "git-token") {
+      const result = await api(`/api/git/${enc(id)}/tokens`, { write: data.scope === "write" });
+      return secret("Git token", `Use ${result.username} as your username. Copy the token now.`, result.token);
+    }
+    else if (kind === "git-item") {
+      const item = await api(`/api/git/${enc(id)}/items`, data);
+      close();
+      return await navigate(`/git/${enc(id)}/items/${enc(item.id)}`);
+    }
+    else if (kind === "git-comment") {
+      await api(`/api/git/${enc(id)}/items/${enc(form.dataset.item)}`, { action: "comment", body: data.body });
+      form.reset();
+    }
     else if (kind === "device-code") { pairDialog(await act("device-lookup", "", data)); return; }
     else if (kind === "panel-upload") {
       const body = new FormData(form);
@@ -202,6 +227,28 @@ export async function onClick(event) {
   const id = b.dataset.id, action = b.dataset.action;
   try {
     if (dialogs[action]) return dialogs[action](id);
+    if (action === "git-creation") return gitCreation();
+    if (action === "git-new" || action === "git-fork") return newRepo(id);
+    if (action === "git-new-item") return await newItem(id, b.dataset.kind);
+    if (action === "git-access") return await gitAccess(id);
+    if (action === "git-delete") {
+      if (!(await ask(["Delete this repository?", `This removes ${b.dataset.name}, including its issues and pull requests.`, "Delete repository"]))) return;
+      await api(`/api/git/${enc(id)}`, {}, "DELETE");
+      return await navigate("/git");
+    }
+    if (action === "git-tokens") return await gitTokens(id, b.dataset.role);
+    if (action === "git-remove-access") {
+      await api(`/api/git/${enc(id)}/permissions`, { subject_kind: b.dataset.kind, subject: b.dataset.subject, role: "remove" });
+      return await gitAccess(id);
+    }
+    if (action === "git-revoke-token") {
+      await api(`/api/git/${enc(id)}/tokens/${enc(b.dataset.token)}`, {});
+      return await gitTokens(id, b.dataset.role);
+    }
+    if (action === "git-item-action") {
+      await api(`/api/git/${enc(id)}/items/${enc(b.dataset.item)}`, { action: b.dataset.change, head: b.dataset.head || null, base: b.dataset.base || null });
+      return await refresh();
+    }
     if (action === "app-panel") return await panelDialog(id);
     if (action === "registry-install") return await installDialog(id);
     if (action === "registry-refresh") {

@@ -7,7 +7,7 @@ older SDK fails the tests before it ships.
 
 | File | Built from |
 | --- | --- |
-| `wasi_probe.wasm` | [`../wasi-probe`](../wasi-probe) |
+| `wasi_probe.wasm` | [`../wasi-probe`](../wasi-probe); personal storage from SDK 0.7.0 (`loki:app@0.3.2`) |
 | `realtime_echo.wasm` | [`../realtime-echo`](../realtime-echo) |
 | `game_room.wasm` | [`../game-room`](../game-room), from SDK 0.5.0 (`loki:app@0.3.1`) |
 
