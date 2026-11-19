@@ -31,9 +31,13 @@ async fn discovery(ExtractState(state): ExtractState<State>) -> Json<Value> {
     )
 }
 /// An authenticated account, before checking any service's resource permissions.
+#[derive(Clone)]
+pub(crate) struct ApiDevice(pub String);
+
 pub(crate) struct Caller {
     pub user: User,
     pub device: String,
+    pub api_scope: Option<String>,
 }
 pub(crate) async fn caller(state: &State, headers: &HeaderMap) -> Result<Caller> {
     let unauthorized = || {
@@ -49,12 +53,13 @@ pub(crate) async fn caller(state: &State, headers: &HeaderMap) -> Result<Caller>
         .and_then(|h| h.strip_prefix("Bearer "))
         .filter(|h| !h.trim().is_empty())
         .ok_or_else(unauthorized)?;
-    let row: Option<(String, String, i64, i64)> =
-        sqlx::query_as("SELECT id,user_id,auth_version,last_seen FROM devices WHERE token=?")
+    let row: Option<(String, String, i64, i64, Option<String>)> =
+        sqlx::query_as("SELECT d.id,d.user_id,d.auth_version,d.last_seen,g.scope FROM devices d LEFT JOIN api_device_grants g ON g.device_id=d.id WHERE d.token=? AND (g.device_id IS NULL OR g.expires>?)")
             .bind(auth::digest(token.trim()))
+            .bind(auth::now())
             .fetch_optional(&state.0.db)
             .await?;
-    let (device, user_id, version, seen) = row.ok_or_else(unauthorized)?;
+    let (device, user_id, version, seen, api_scope) = row.ok_or_else(unauthorized)?;
     let user =
         sqlx::query_as("SELECT * FROM users WHERE id=? AND auth_version=? AND status='approved'")
             .bind(user_id)
@@ -69,13 +74,17 @@ pub(crate) async fn caller(state: &State, headers: &HeaderMap) -> Result<Caller>
             .execute(&state.0.db)
             .await?;
     }
-    Ok(Caller { user, device })
+    Ok(Caller {
+        user,
+        device,
+        api_scope,
+    })
 }
 pub(crate) async fn list(state: &State, user: &User) -> Result<Value> {
     use sqlx::Row;
-    let rows = sqlx::query("SELECT id,name,platform,created,last_seen FROM devices WHERE user_id=? ORDER BY created,id")
+    let rows = sqlx::query("SELECT d.id,d.name,d.platform,d.created,d.last_seen,g.scope,g.expires FROM devices d LEFT JOIN api_device_grants g ON g.device_id=d.id WHERE d.user_id=? ORDER BY d.created,d.id")
         .bind(&user.id).fetch_all(&state.0.db).await?;
-    Ok(json!(rows.into_iter().map(|r| json!({"id":r.get::<String,_>("id"),"name":r.get::<String,_>("name"),"platform":r.get::<String,_>("platform"),"created":r.get::<i64,_>("created"),"last_seen":r.get::<i64,_>("last_seen")})).collect::<Vec<_>>()))
+    Ok(json!(rows.into_iter().map(|r| json!({"id":r.get::<String,_>("id"),"name":r.get::<String,_>("name"),"platform":r.get::<String,_>("platform"),"created":r.get::<i64,_>("created"),"last_seen":r.get::<i64,_>("last_seen"),"scope":r.get::<Option<String>,_>("scope"),"expires":r.get::<Option<i64>,_>("expires")})).collect::<Vec<_>>()))
 }
 pub(crate) async fn revoke(state: &State, user: &User, id: &str) -> Result<()> {
     sqlx::query("DELETE FROM devices WHERE id=? AND user_id=?")
@@ -178,7 +187,16 @@ pub(crate) async fn poll_for(state: &State, kind: &str, code: &str) -> Result<Js
     {
         return Err(Error::forbidden());
     }
-    let issued = issue(state, &user, &name, &platform).await?;
+    let issued = match kind {
+        device_codes::API_OWNER if user.owner => {
+            issue_scoped(state, &user, &name, &platform, Some("owner")).await?
+        }
+        device_codes::API_OWNER => return Err(Error::forbidden()),
+        device_codes::API_REPOSITORIES => {
+            issue_scoped(state, &user, &name, &platform, Some("repositories")).await?
+        }
+        _ => issue(state, &user, &name, &platform).await?,
+    };
     state
         .audit(&user.id, "device-paired", &format!("{name} ({platform})"))
         .await?;
@@ -207,6 +225,16 @@ pub(crate) async fn login_for(
     input: Login,
     require_sync: bool,
 ) -> Result<Json<Value>> {
+    login_with_scope(state, ip, input, require_sync, None).await
+}
+
+pub(crate) async fn login_with_scope(
+    state: &State,
+    ip: &auth::ClientIp,
+    input: Login,
+    require_sync: bool,
+    scope: Option<&str>,
+) -> Result<Json<Value>> {
     // Shares the browser's limits, so devices add no extra guesses.
     auth::login_rate(state, &input.username, ip).await?;
     let (name, platform) = device_info(&input.device)?;
@@ -221,7 +249,10 @@ pub(crate) async fn login_for(
             "This account is not approved. Ask the server owner.",
         ));
     }
-    let issued = issue(state, &user, &name, &platform).await?;
+    if scope == Some("owner") && !user.owner {
+        return Err(Error::forbidden());
+    }
+    let issued = issue_scoped(state, &user, &name, &platform, scope).await?;
     state
         .audit(&user.id, "device-login", &format!("{name} ({platform})"))
         .await?;
@@ -229,7 +260,21 @@ pub(crate) async fn login_for(
 }
 
 pub(crate) async fn issue(state: &State, user: &User, name: &str, platform: &str) -> Result<Value> {
-    let token = auth::random();
+    issue_scoped(state, user, name, platform, None).await
+}
+
+async fn issue_scoped(
+    state: &State,
+    user: &User,
+    name: &str,
+    platform: &str,
+    scope: Option<&str>,
+) -> Result<Value> {
+    let token = match scope {
+        Some(_) => format!("loki_cli_{}", auth::random()),
+        None => auth::random(),
+    };
+    let mut tx = state.0.db.begin().await?;
     let device = auth::id();
     let inserted = sqlx::query("INSERT INTO devices(id,user_id,name,platform,token,auth_version,created,last_seen) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM users WHERE id=? AND auth_version=? AND status='approved')")
         .bind(&device)
@@ -242,12 +287,24 @@ pub(crate) async fn issue(state: &State, user: &User, name: &str, platform: &str
         .bind(auth::now())
         .bind(&user.id)
         .bind(user.auth_version)
-        .execute(&state.0.db)
+        .execute(&mut *tx)
         .await?;
     if inserted.rows_affected() != 1 {
         return Err(Error::unauthorized());
     }
+    let expires = scope.map(|_| auth::now() + 90 * 86400);
+    if let Some(scope) = scope {
+        sqlx::query("INSERT INTO api_device_grants(device_id,scope,expires) VALUES(?,?,?)")
+            .bind(&device)
+            .bind(scope)
+            .bind(expires)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
     Ok(json!({
+        "scope": scope,
+        "expires": expires,
         "token": token,
         "device": {"id": device, "name": name, "platform": platform},
         "user": {"id": user.id, "username": user.username, "display_name": user.display_name},
@@ -259,7 +316,7 @@ pub async fn me(
     ExtractState(state): ExtractState<State>,
     headers: HeaderMap,
 ) -> Result<Json<Value>> {
-    let Caller { user, device } = caller(&state, &headers).await?;
+    let Caller { user, device, .. } = caller(&state, &headers).await?;
     let (name, platform): (String, String) =
         sqlx::query_as("SELECT name,platform FROM devices WHERE id=?")
             .bind(&device)

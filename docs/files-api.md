@@ -68,6 +68,38 @@ request; revocation does not interrupt a response stream already opened.
 {"shares":[{"id":"…","name":"Archive","visibility":"restricted","kind":"share"}]}
 ```
 
+These are ordinary file servers. App repositories are listed separately at
+`GET /files/v1/app-repositories`, with the same response shape and
+`share_type: "apps"`.
+
+`GET /files/v1/app-repositories/{id}` returns the apps and their current builds
+for an accessible app repository. For example:
+
+```json
+{
+  "apps": [
+    {
+      "id": "Sample Game",
+      "name": "Sample Game",
+      "version": null,
+      "builds": {
+        "windows": {
+          "path": "Sample Game/windows/game.zip",
+          "name": "game.zip",
+          "size": 1048576,
+          "modified": 1795000000000
+        }
+      }
+    }
+  ]
+}
+```
+
+Build `modified` is Unix milliseconds. Use the file metadata endpoint with
+`checksum=true` to compare content with a previously downloaded build. Fetch
+the selected build using the ordinary file download endpoint and verify its
+size and SHA-256. Both endpoints apply the share's access rules.
+
 `GET /files/v1/shares/{id}` returns one share with the same fields. Absolute
 server paths and other administrative settings are never exposed. Existing
 public/member visibility and individual/group grants apply.

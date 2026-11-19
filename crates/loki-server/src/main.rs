@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
     if let Some(Action::Restore { backup }) = &cli.command {
-        loki_server::storage::restore(backup, &data)?;
+        loki_server::storage::restore(backup, &data).await?;
         println!("Restored into {}", data.display());
         return Ok(());
     }

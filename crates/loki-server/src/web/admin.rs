@@ -262,6 +262,23 @@ pub(super) struct Share {
     name: String,
     #[serde(default)]
     excluded_extensions: String,
+    share_type: Option<ShareType>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ShareType {
+    Files,
+    Apps,
+}
+
+impl ShareType {
+    fn value(&self) -> &'static str {
+        match self {
+            Self::Files => "files",
+            Self::Apps => "apps",
+        }
+    }
 }
 /// Creates a share when `id` is empty, otherwise changes it.
 pub(super) async fn share_save(state: &State, id: &str, input: Share) -> Result<Value> {
@@ -294,13 +311,28 @@ pub(super) async fn share_save(state: &State, id: &str, input: Share) -> Result<
             .bind(name)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO shares(id,root,excluded_extensions) VALUES(?,?,?)")
+        sqlx::query("INSERT INTO shares(id,root,excluded_extensions,share_type) VALUES(?,?,?,?)")
             .bind(&rid)
             .bind(root.to_string_lossy().as_ref())
             .bind(&excluded)
+            .bind(input.share_type.as_ref().map_or("files", ShareType::value))
             .execute(&mut *tx)
             .await?;
     } else {
+        let share_type: String = sqlx::query_scalar("SELECT share_type FROM shares WHERE id=?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(Error::not_found)?;
+        if input
+            .share_type
+            .as_ref()
+            .is_some_and(|kind| kind.value() != share_type)
+        {
+            return Err(Error::bad(
+                "Choose the file server type when creating the share.",
+            ));
+        }
         sqlx::query("UPDATE resources SET name=? WHERE id=? AND kind='share'")
             .bind(name)
             .bind(id)
@@ -579,6 +611,16 @@ pub(super) async fn settings(state: &State, input: SettingsChange) -> Result<Val
         || settings.name.len() > 80
         || !(1..=100_000_000).contains(&settings.sync_quota_mb)
         || !(1..=1_048_576).contains(&settings.sync_max_file_mb)
+        || [
+            settings.git_push_mib,
+            settings.git_repo_mib,
+            settings.git_total_mib,
+            settings.git_lfs_object_mib,
+            settings.git_lfs_repo_mib,
+            settings.git_lfs_total_mib,
+        ]
+        .iter()
+        .any(|limit| !(1..=1_048_576).contains(limit))
     {
         return Err(Error::bad("Invalid settings."));
     }

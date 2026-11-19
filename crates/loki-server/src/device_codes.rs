@@ -15,6 +15,8 @@ pub const SYNC: &str = "sync";
 /// Native LOKI clients share an account-wide device identity.
 pub const ACCOUNT: &str = "account";
 pub const OIDC: &str = "oidc";
+pub(crate) const API_REPOSITORIES: &str = "api-repositories";
+pub(crate) const API_OWNER: &str = "api-owner";
 
 /// Accepts `abcd efgh`, `ABCD-EFGH`, and similar spellings of the same code.
 fn normalize(code: &str) -> Option<String> {
@@ -177,6 +179,14 @@ pub async fn poll(
 
 /// The resource a code would grant: Save sync, or the app behind an OIDC client.
 async fn resource(state: &State, kind: &str, client: &str) -> Result<(String, String)> {
+    if kind == API_REPOSITORIES || kind == API_OWNER {
+        let service = if kind == API_OWNER {
+            "LOKI owner API"
+        } else {
+            "LOKI repository API"
+        };
+        return Ok((String::new(), service.into()));
+    }
     if kind == ACCOUNT {
         return Ok((String::new(), "LOKI account".into()));
     }
@@ -215,8 +225,21 @@ pub async fn lookup(state: &State, user: &User, code: &str) -> Result<Value> {
 }
 /// Approves or declines a code. Approval needs access to what the code grants.
 pub async fn decide(state: &State, user: &User, code: &str, approve: bool) -> Result<Value> {
+    decide_with_proof(state, user, code, approve, false).await
+}
+
+pub(crate) async fn decide_with_proof(
+    state: &State,
+    user: &User,
+    code: &str,
+    approve: bool,
+    proved: bool,
+) -> Result<Value> {
     let (code, (kind, client, ..)) = pending(state, user, code).await?;
     let (resource, service) = resource(state, &kind, &client).await?;
+    if approve && kind == API_OWNER && (!user.owner || !proved) {
+        return Err(Error::forbidden());
+    }
     if approve
         && !resource.is_empty()
         && !auth::allowed(state, Some(user), &resource, "access").await?

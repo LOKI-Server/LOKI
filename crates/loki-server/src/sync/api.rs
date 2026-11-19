@@ -521,7 +521,7 @@ pub async fn commit(
     headers: HeaderMap,
     Json(input): Json<Commit>,
 ) -> Result<Json<Value>> {
-    let Caller { user, device } = caller(&state, &headers).await?;
+    let Caller { user, device, .. } = caller(&state, &headers).await?;
     let on_conflict = input.on_conflict.as_deref().unwrap_or("reject");
     if !matches!(on_conflict, "reject" | "overwrite" | "stash") {
         return Err(Error::bad(
@@ -713,7 +713,7 @@ pub async fn restore(
     headers: HeaderMap,
     Json(input): Json<Restore>,
 ) -> Result<Json<Value>> {
-    let Caller { user, device } = caller(&state, &headers).await?;
+    let Caller { user, device, .. } = caller(&state, &headers).await?;
     Ok(Json(
         restore_version(&state, &user.id, &id, input.history_id, &device).await?,
     ))

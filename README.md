@@ -102,11 +102,56 @@ language. See the [client guide](docs/sync-api.md), its [OpenAPI description](do
 for generating Kotlin, C#, or TypeScript bindings, and the standard-library
 [Python reference client](examples/sync-reference-client/README.md).
 
+## App repositories
+
+In **File shares → Share a folder**, choose **App repository** when you create
+the share. The type is fixed after creation. Existing shares are ordinary
+file servers. App repositories use the same access grants as file servers.
+Desktop users browse them from **Apps** in LOKI Client.
+
+Put each app in its own directory. Use `windows`, `macos`, or `linux`
+subdirectories for builds, or put a single-platform build directly inside the
+app directory. For example:
+
+```text
+Game builds/
+  Level Editor/
+    windows/editor.zip
+    linux/editor.AppImage
+  Replay Viewer/
+    viewer.exe
+```
+
+A platform directory takes precedence over a root build for that platform.
+When a directory contains multiple recognized packages, LOKI picks the one
+with the latest modified time, using the filename to break ties. At the app
+root, `.zip` and `.7z` are treated as Windows builds. For exact selection or
+an optional display version, put an `app.json` in the app directory:
+
+```json
+{
+  "name": "Level Editor",
+  "version": "1.4",
+  "builds": {
+    "windows": "windows/editor.zip",
+    "linux": "linux/editor.AppImage"
+  }
+}
+```
+
+Publish a new build by replacing the selected file or changing the manifest
+to point to the new package. Desktop update checks compare the SHA-256 of
+the current build with the last download. LOKI delivers the package and
+verifies its bytes. The user controls installation and launch.
+
 ## Repositories and personal storage
 
 Open **Repositories** to create and browse private Git repositories, grant
 access to LOKI users and groups, and manage issues and pull requests. To clone
-and push, use the repository's HTTPS URL and create a token in **Git credentials**.
+and push, use the repository's HTTPS URL and a token from **My account → Git credentials**.
+One token works across your repositories and with standard Git LFS clients.
+The desktop CLI and other local tools can pair with the
+[management API](docs/management-api.md) to create repositories and administer the server.
 The Windows installer includes Git (MinGit). Elsewhere, install Git 2.54 or
 later, or set `LOKI_GIT_EXECUTABLE` to its absolute path. See [Git hosting](docs/private-services.md#git-hosting).
 

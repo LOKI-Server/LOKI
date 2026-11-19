@@ -1,5 +1,7 @@
 //! Private bare repositories and live LOKI authorization.
 mod collaboration;
+mod credentials;
+pub(crate) mod lfs;
 mod transport;
 mod web;
 
@@ -14,12 +16,9 @@ use std::{
 use tokio::{io::AsyncReadExt, process::Command};
 #[doc(hidden)]
 pub use transport::receive_hook;
-pub(crate) use web::router;
+pub(crate) use web::{api_router, router};
 
 const MIB: u64 = 1024 * 1024;
-const REPO_BYTES: u64 = 1024 * MIB;
-const TOTAL_BYTES: u64 = 20 * 1024 * MIB;
-const PUSH_BYTES: usize = 64 * MIB as usize;
 const DEFAULT_REF: &str = "refs/heads/main";
 const ZERO: &str = "0000000000000000000000000000000000000000";
 const MAX_REPOS: i64 = 500;
@@ -32,6 +31,14 @@ struct Repo {
     name: String,
     upstream: Option<String>,
     created: i64,
+    default_branch: String,
+    protect_default: bool,
+}
+
+impl Repo {
+    fn default_ref(&self) -> String {
+        format!("refs/heads/{}", self.default_branch)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -84,27 +91,62 @@ pub(crate) fn backup_entry(path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn restore_config(data: &Path) -> anyhow::Result<()> {
-    let root = data.join("git-repos");
-    if !root.is_dir() {
+pub(crate) async fn verify_restore(data: &Path, db: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    lfs::verify_backup(data, db).await?;
+    let repos: Vec<(String, String)> = sqlx::query_as("SELECT id,default_branch FROM git_repos")
+        .fetch_all(db)
+        .await?;
+    if repos.is_empty() {
         return Ok(());
     }
-    for repo in std::fs::read_dir(root)? {
-        let repository = repo?.path();
-        write_config(&repository, DEFAULT_REF)?;
+    let git = executable().map_err(|error| anyhow::anyhow!(error.message))?;
+    for (id, default_branch) in repos {
+        anyhow::ensure!(valid_id(&id), "Invalid Git repository record");
+        let repository = repo_dir(data, &id);
+        anyhow::ensure!(repository.is_dir(), "Missing repository {id} in backup");
+        let reference = branch(&default_branch).map_err(|error| anyhow::anyhow!(error.message))?;
+        write_config(&repository, &reference)?;
+        restore_fsck(&git, &repository).await?;
         let pulls = repository.join("loki-pulls");
         if pulls.is_dir() {
             for pull in std::fs::read_dir(pulls)? {
-                write_config(&pull?.path(), "refs/heads/base")?;
+                let path = pull?.path();
+                write_config(&path, "refs/heads/base")?;
+                restore_fsck(&git, &path).await?;
             }
         }
     }
     Ok(())
 }
 
+async fn restore_fsck(git: &Path, repository: &Path) -> anyhow::Result<()> {
+    let mut command = in_repo(git, repository);
+    command
+        .args(["fsck", "--full", "--no-dangling"])
+        .stdout(Stdio::null());
+    let mut child = crate::platform::Process::spawn_piped(&mut command)?;
+    anyhow::ensure!(
+        child.child.wait().await?.success(),
+        "Git integrity check failed for {}",
+        repository.display()
+    );
+    Ok(())
+}
+
 fn write_config(repository: &Path, head: &str) -> anyhow::Result<()> {
+    for dir in ["objects", "refs/heads", "refs/tags"] {
+        std::fs::create_dir_all(repository.join(dir))?;
+    }
     std::fs::write(repository.join("config"), CONFIG)?;
-    std::fs::write(repository.join("HEAD"), format!("ref: {head}\n"))?;
+    write_head(repository, head)
+}
+
+fn write_head(repository: &Path, reference: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    let mut temporary = tempfile::NamedTempFile::new_in(repository)?;
+    writeln!(temporary, "ref: {reference}")?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(repository.join("HEAD"))?;
     Ok(())
 }
 
@@ -115,11 +157,12 @@ pub(crate) async fn recover(data: &Path, db: &sqlx::SqlitePool) -> anyhow::Resul
     }
     std::fs::create_dir_all(&root)?;
     crate::platform::private_directory(&root)?;
-    let live: std::collections::HashSet<String> = sqlx::query_scalar("SELECT id FROM git_repos")
-        .fetch_all(db)
-        .await?
-        .into_iter()
-        .collect();
+    let live: std::collections::HashMap<String, String> =
+        sqlx::query_as::<_, (String, String)>("SELECT id, default_branch FROM git_repos")
+            .fetch_all(db)
+            .await?
+            .into_iter()
+            .collect();
     let snapshots: std::collections::HashSet<String> =
         sqlx::query_scalar("SELECT snapshot FROM git_pull_snapshots")
             .fetch_all(db)
@@ -137,9 +180,18 @@ pub(crate) async fn recover(data: &Path, db: &sqlx::SqlitePool) -> anyhow::Resul
             continue;
         };
         safe_entry(&entry.path().symlink_metadata()?)?;
-        if !live.contains(id) {
+        let Some(default_branch) = live.get(id) else {
             std::fs::remove_dir_all(entry.path())?;
             continue;
+        };
+        let reference = branch(default_branch).map_err(|error| anyhow::anyhow!(error.message))?;
+        let expected = format!("ref: {reference}\n");
+        if std::fs::read_to_string(entry.path().join("HEAD"))
+            .as_deref()
+            .ok()
+            != Some(expected.as_str())
+        {
+            write_head(&entry.path(), &reference)?;
         }
         let pulls = entry.path().join("loki-pulls");
         if let Ok(meta) = pulls.symlink_metadata() {
@@ -156,6 +208,17 @@ pub(crate) async fn recover(data: &Path, db: &sqlx::SqlitePool) -> anyhow::Resul
                 }
             }
         }
+    }
+    for entry in std::fs::read_dir(data.join("git-staging"))? {
+        let entry = entry?;
+        if entry.file_type()?.is_file()
+            && let Err(error) = std::fs::remove_file(entry.path())
+        {
+            tracing::warn!(%error, "could not remove an interrupted Git upload");
+        }
+    }
+    if let Err(error) = lfs::collect(data, db).await {
+        tracing::warn!(error = %error.message, "could not reclaim unreferenced Git LFS objects");
     }
     Ok(())
 }
@@ -196,7 +259,38 @@ fn size(path: &Path, max: u64) -> anyhow::Result<u64> {
     Ok(total)
 }
 
-fn reserves(data: &Path, repo: Option<&Path>, additional: u64) -> Result<()> {
+struct TransferReservation {
+    pending: std::sync::Arc<std::sync::Mutex<u64>>,
+    bytes: u64,
+}
+
+impl Drop for TransferReservation {
+    fn drop(&mut self) {
+        *self.pending.lock().expect("Git transfer reservations") -= self.bytes;
+    }
+}
+
+fn reserve_transfer(state: &State, bytes: u64) -> Result<TransferReservation> {
+    let pending = state.0.git_transfer_bytes.clone();
+    {
+        let mut current = pending.lock().expect("Git transfer reservations");
+        let required = current
+            .checked_add(bytes)
+            .ok_or_else(|| Error::bad("Git transfer reservation is too large."))?;
+        crate::storage::ensure_disk_space(&state.0.data, required)?;
+        *current = required;
+    }
+    Ok(TransferReservation { pending, bytes })
+}
+
+fn reserves(
+    data: &Path,
+    repo: Option<&Path>,
+    additional: u64,
+    settings: &crate::Settings,
+) -> Result<()> {
+    let repo_bytes = settings.git_repo_mib * MIB;
+    let total_bytes = settings.git_total_mib * MIB;
     let full = || {
         Error::new(
             StatusCode::INSUFFICIENT_STORAGE,
@@ -204,15 +298,15 @@ fn reserves(data: &Path, repo: Option<&Path>, additional: u64) -> Result<()> {
         )
     };
     crate::storage::ensure_disk_space(data, additional)?;
-    let global = size(&data.join("git-repos"), TOTAL_BYTES).map_err(|_| full())?;
-    if global.saturating_add(additional) > TOTAL_BYTES || additional > REPO_BYTES {
+    let global = size(&data.join("git-repos"), total_bytes).map_err(|_| full())?;
+    if global.saturating_add(additional) > total_bytes || additional > repo_bytes {
         return Err(full());
     }
     if let Some(repo) = repo
-        && size(repo, REPO_BYTES)
+        && size(repo, repo_bytes)
             .map_err(|_| full())?
             .saturating_add(additional)
-            > REPO_BYTES
+            > repo_bytes
     {
         return Err(full());
     }

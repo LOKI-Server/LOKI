@@ -1,6 +1,7 @@
-mod account;
+pub(crate) mod account;
 mod actions;
 mod admin;
+mod management;
 
 use crate::{Error, Result, State, apps, auth, caddy, files, identity, platform};
 pub(crate) use actions::args;
@@ -88,6 +89,7 @@ pub fn router(state: State) -> Router {
         .merge(crate::sync::router())
         .merge(crate::personal::router())
         .merge(crate::git::router())
+        .merge(management::router(state.clone()))
         .merge(files::api::router())
         .merge(crate::devices::router())
         .fallback(get(shell))
@@ -199,6 +201,7 @@ async fn guard(
     if request.method() != axum::http::Method::GET
         && request.method() != axum::http::Method::HEAD
         && path.starts_with("/api/")
+        && !path.starts_with("/api/v1/")
     {
         let valid = async {
             let ctx = auth::context(&state, &request_headers).await.map_err(|error| {
@@ -342,13 +345,15 @@ async fn dashboard(
                 }
             }
             "share" => {
+                let (root, excluded, share_type): (String, String, String) = sqlx::query_as(
+                    "SELECT root,excluded_extensions,share_type FROM shares WHERE id=?",
+                )
+                .bind(&id)
+                .fetch_one(&state.0.db)
+                .await?;
                 resource["url"] = json!(format!("/shares/{id}"));
+                resource["share_type"] = json!(share_type);
                 if user.owner {
-                    let (root, excluded): (String, String) =
-                        sqlx::query_as("SELECT root,excluded_extensions FROM shares WHERE id=?")
-                            .bind(&id)
-                            .fetch_one(&state.0.db)
-                            .await?;
                     resource["root"] = json!(root);
                     resource["excluded_extensions"] = serde_json::from_str(&excluded)?;
                 }
@@ -680,8 +685,8 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
     let result = async {
         let _personal = state.0.personal_files.read().await;
         let _git = state.0.git_files.read().await;
-        let stage = state.0.data.join("staging").join(auth::id());
-        tokio::fs::create_dir_all(&stage).await?;
+        let temporary = tempfile::tempdir_in(state.0.data.join("staging"))?;
+        let stage = temporary.path().to_owned();
         sqlx::query("VACUUM INTO ?")
             .bind(stage.join("loki.db").to_string_lossy().as_ref())
             .execute(&state.0.db)
@@ -702,6 +707,7 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
                 "sync/blobs",
                 "personal-files",
                 "git-repos",
+                "git-lfs",
             ] {
                 apps::copy_tree(&source.join(name), &output.join(name))?;
             }
@@ -716,9 +722,16 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
         .await??;
         let name = format!("loki-{}-{}.zip", auth::now(), auth::id());
         let dest = state.0.data.join("backups").join(&name);
-        let snapshot = stage.clone();
-        tokio::task::spawn_blocking(move || zip_tree(&snapshot, &dest)).await??;
-        tokio::fs::remove_dir_all(stage).await?;
+        drop(_git);
+        drop(_personal);
+        tokio::task::spawn_blocking(move || {
+            let output = tempfile::NamedTempFile::new_in(dest.parent().expect("backup directory"))?;
+            zip_tree(temporary.path(), output.reopen()?)?;
+            output.as_file().sync_all()?;
+            output.persist_noclobber(dest)?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
         Ok::<_, Error>(name)
     }
     .await;
@@ -730,24 +743,37 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
     let _ = caddy::apply(state).await;
     result
 }
-fn zip_tree(source: &std::path::Path, dest: &std::path::Path) -> anyhow::Result<()> {
+fn zip_tree(source: &std::path::Path, file: std::fs::File) -> anyhow::Result<()> {
     fn add(
         zip: &mut zip::ZipWriter<std::fs::File>,
         base: &std::path::Path,
         dir: &std::path::Path,
+        total: &mut u64,
     ) -> anyhow::Result<()> {
         for item in std::fs::read_dir(dir)? {
             let item = item?;
             let path = item.path();
             if path.is_dir() {
-                add(zip, base, &path)?;
+                add(zip, base, &path, total)?;
             } else {
                 let name = path
                     .strip_prefix(base)?
                     .to_string_lossy()
                     .replace('\\', "/");
+                let size = path.metadata()?.len();
+                *total = total.saturating_add(size);
+                anyhow::ensure!(
+                    *total <= crate::storage::BACKUP_MAX,
+                    "Backup exceeds 100 GiB"
+                );
+                let compression = if name.starts_with("git-lfs/") || name.ends_with(".pack") {
+                    zip::CompressionMethod::Stored
+                } else {
+                    zip::CompressionMethod::Deflated
+                };
                 let options = zip::write::SimpleFileOptions::default()
-                    .compression_method(zip::CompressionMethod::Deflated);
+                    .large_file(size >= u32::MAX as u64 - 65536)
+                    .compression_method(compression);
                 #[cfg(unix)]
                 let options = {
                     use std::os::unix::fs::PermissionsExt;
@@ -760,8 +786,8 @@ fn zip_tree(source: &std::path::Path, dest: &std::path::Path) -> anyhow::Result<
         }
         Ok(())
     }
-    let mut zip = zip::ZipWriter::new(std::fs::File::create(dest)?);
-    add(&mut zip, source, source)?;
+    let mut zip = zip::ZipWriter::new(file);
+    add(&mut zip, source, source, &mut 0)?;
     zip.finish()?;
     Ok(())
 }

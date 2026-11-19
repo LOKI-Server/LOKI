@@ -1,6 +1,6 @@
 use super::{
-    Access, DEFAULT_REF, REPO_BYTES, Repo, TOTAL_BYTES, branch, fetch, in_repo, initialize, oid,
-    output, repo_dir, require, reserves, resolve, run, size, valid_id, with_input,
+    Access, Repo, branch, fetch, in_repo, initialize, lfs, oid, output, repo_dir, require,
+    reserves, resolve, run, size, valid_id, with_input,
 };
 use crate::{Error, Result, State, auth};
 use axum::http::StatusCode;
@@ -28,6 +28,7 @@ pub(super) struct Item {
     source_branch: Option<String>,
     head: Option<String>,
     base: Option<String>,
+    base_ref: String,
     approved_head: Option<String>,
     approved_base: Option<String>,
     reviewer_id: Option<String>,
@@ -138,16 +139,23 @@ pub(super) async fn create(state: &State, repo: &Repo, user: &str, input: New) -
                 ));
             }
             let refname = branch(input.branch.as_deref().unwrap_or_default())?;
-            if source.id == repo.id && refname == DEFAULT_REF {
+            if source.id == repo.id && refname == repo.default_ref() {
                 return Err(Error::bad("Choose a contributor branch."));
             }
             let (snapshot, head, base) = capture(state, repo, &source, &refname).await?;
             let result = async {
                 let mut tx = state.0.db.begin().await?;
-                sqlx::query("INSERT INTO git_items(id,repo_id,author_id,kind,title,body,created,source_repo,source_branch,head,base) VALUES(?,?,?,'pull',?,?,?,?,?,?,?)")
-                    .bind(&id).bind(&repo.id).bind(user).bind(title).bind(body).bind(auth::now()).bind(&source.id).bind(&refname).bind(&head).bind(&base).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO git_items(id,repo_id,author_id,kind,title,body,created,source_repo,source_branch,head,base,base_ref) VALUES(?,?,?,'pull',?,?,?,?,?,?,?,?)")
+                    .bind(&id).bind(&repo.id).bind(user).bind(title).bind(body).bind(auth::now()).bind(&source.id).bind(&refname).bind(&head).bind(&base).bind(repo.default_ref()).execute(&mut *tx).await?;
                 sqlx::query("INSERT INTO git_pull_snapshots(item_id,snapshot) VALUES(?,?)").bind(&id).bind(&snapshot).execute(&mut *tx).await?;
-                tx.commit().await
+                if source.id != repo.id {
+                    let git = super::checked_binary(state).await?;
+                    let directory = snapshot_path(state, repo, &snapshot)?;
+                    let objects = lfs::pointers(&git, &directory, &[&head, &format!("^{base}")], false).await?;
+                    lfs::share(state, &mut tx, &source.id, &repo.id, &objects).await?;
+                }
+                tx.commit().await?;
+                Ok::<_, Error>(())
             }.await;
             if let Err(error) = result {
                 discard(&snapshot_path(state, repo, &snapshot)?);
@@ -194,26 +202,33 @@ async fn capture(
     let git = super::checked_binary(state).await?;
     let target_dir = repo_dir(&state.0.data, &target.id);
     let source_dir = repo_dir(&state.0.data, &source.id);
-    let base = resolve(&git, &target_dir, DEFAULT_REF).await?;
+    let target_ref = target.default_ref();
+    let base = resolve(&git, &target_dir, &target_ref).await?;
     let head = resolve(&git, &source_dir, reference).await?;
     if head == base {
         return Err(Error::bad("The selected branch has no changes to submit."));
     }
     let id = auth::id();
     let dir = snapshot_path(state, target, &id)?;
+    let limits = state.0.settings.read().await.clone();
+    let repo_bytes = limits.git_repo_mib * super::MIB;
     let result = async {
-        let source_size = size(&source_dir.join("objects"), REPO_BYTES)?;
-        let target_size = size(&target_dir.join("objects"), REPO_BYTES)?;
+        let source_size = size(&source_dir.join("objects"), repo_bytes)?;
+        let target_size = size(&target_dir.join("objects"), repo_bytes)?;
         reserves(
             &state.0.data,
             Some(&target_dir),
             source_size + target_size + super::MIB,
+            &limits,
         )?;
         initialize(&git, &dir).await?;
-        fetch(&git, &dir, &target_dir, DEFAULT_REF, "refs/heads/base").await?;
+        fetch(&git, &dir, &target_dir, &target_ref, "refs/heads/base").await?;
         fetch(&git, &dir, &source_dir, reference, "refs/heads/submission").await?;
-        size(&target_dir, REPO_BYTES)?;
-        size(&state.0.data.join("git-repos"), TOTAL_BYTES)?;
+        size(&target_dir, repo_bytes)?;
+        size(
+            &state.0.data.join("git-repos"),
+            limits.git_total_mib * super::MIB,
+        )?;
         // Require common history before sharing an unrelated repository in a pull request.
         run(&git, &dir, &["merge-base", &base, &head], 1024).await?;
         Ok::<_, Error>(())
@@ -302,11 +317,20 @@ pub(super) async fn change(
                 .bind(status).bind(id).execute(&state.0.db).await?;
         }
         "approve" if manager && item.kind == "pull" && item.status == "open" => {
-            if input.head.is_none() || item.head != input.head || item.base != input.base {
+            if input.head.is_none()
+                || item.head != input.head
+                || item.base != input.base
+                || item.base_ref != repo.default_ref()
+            {
                 return Err(stale());
             }
             let git = super::checked_binary(state).await?;
-            let current = resolve(&git, &repo_dir(&state.0.data, &repo.id), DEFAULT_REF).await?;
+            let current = resolve(
+                &git,
+                &repo_dir(&state.0.data, &repo.id),
+                &repo.default_ref(),
+            )
+            .await?;
             if item.base.as_deref() != Some(&current) {
                 return Err(stale());
             }
@@ -327,10 +351,17 @@ pub(super) async fn change(
             let (snapshot, head, base) = capture(state, repo, &source, reference).await?;
             let result = async {
                 let mut tx = state.0.db.begin().await?;
-                sqlx::query("UPDATE git_items SET head=?,base=?,approved_head=NULL,approved_base=NULL,reviewer_id=NULL,merged_oid=NULL WHERE id=?")
-                    .bind(head).bind(base).bind(id).execute(&mut *tx).await?;
+                sqlx::query("UPDATE git_items SET head=?,base=?,base_ref=?,approved_head=NULL,approved_base=NULL,reviewer_id=NULL,merged_oid=NULL WHERE id=?")
+                    .bind(&head).bind(&base).bind(repo.default_ref()).bind(id).execute(&mut *tx).await?;
                 sqlx::query("UPDATE git_pull_snapshots SET snapshot=? WHERE item_id=?").bind(&snapshot).bind(id).execute(&mut *tx).await?;
-                tx.commit().await
+                if source.id != repo.id {
+                    let git = super::checked_binary(state).await?;
+                    let directory = snapshot_path(state, repo, &snapshot)?;
+                    let objects = lfs::pointers(&git, &directory, &[&head, &format!("^{base}")], false).await?;
+                    lfs::share(state, &mut tx, &source.id, &repo.id, &objects).await?;
+                }
+                tx.commit().await?;
+                Ok::<_, Error>(())
             }.await;
             if let Err(error) = result {
                 discard(&snapshot_path(state, repo, &snapshot)?);
@@ -359,13 +390,15 @@ fn stale() -> Error {
 async fn merge(state: &State, repo: &Repo, item: Item) -> Result<()> {
     let path = repo_dir(&state.0.data, &repo.id);
     let git = super::checked_binary(state).await?;
-    let base = resolve(&git, &path, DEFAULT_REF).await?;
+    let default_ref = repo.default_ref();
+    let base = resolve(&git, &path, &default_ref).await?;
     let head = item
         .head
         .as_deref()
         .filter(|oid_str| oid(oid_str))
         .ok_or_else(stale)?;
-    if item.approved_head.as_deref() != Some(head)
+    if item.base_ref != default_ref
+        || item.approved_head.as_deref() != Some(head)
         || item.approved_base.as_deref() != Some(&base)
         || item.base.as_deref() != Some(&base)
     {
@@ -426,8 +459,11 @@ async fn merge(state: &State, repo: &Repo, item: Item) -> Result<()> {
         1024,
     )
     .await?;
-    let extra = size(&snapshot.join("objects"), REPO_BYTES)?;
-    reserves(&state.0.data, Some(&path), extra)?;
+    let objects = lfs::pointers(&git, &snapshot, &[&merged, &format!("^{base}")], false).await?;
+    lfs::verify(&state.0.db, &state.0.data, &repo.id, &objects).await?;
+    let limits = state.0.settings.read().await.clone();
+    let extra = size(&snapshot.join("objects"), limits.git_repo_mib * super::MIB)?;
+    reserves(&state.0.data, Some(&path), extra, &limits)?;
     let staging = format!("refs/loki/staging/{}", item.id);
     run(&git, &path, &["update-ref", "-d", &staging], 1024).await?;
     fetch(&git, &path, &snapshot, "refs/heads/merge", &staging).await?;
@@ -436,7 +472,7 @@ async fn merge(state: &State, repo: &Repo, item: Item) -> Result<()> {
         .bind(&item.id)
         .execute(&state.0.db)
         .await?;
-    with_input(&git,&path,&["update-ref","--stdin"],format!("start\nupdate {DEFAULT_REF} {merged} {base}\ncreate refs/loki/merged/{} {merged}\ndelete {staging} {merged}\nprepare\ncommit\n",item.id)).await?;
+    with_input(&git,&path,&["update-ref","--stdin"],format!("start\nupdate {default_ref} {merged} {base}\ncreate refs/loki/merged/{} {merged}\ndelete {staging} {merged}\nprepare\ncommit\n",item.id)).await?;
     sqlx::query("UPDATE git_items SET status='merged' WHERE id=?")
         .bind(&item.id)
         .execute(&state.0.db)

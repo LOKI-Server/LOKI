@@ -22,6 +22,8 @@ fn location_file() -> PathBuf {
         .config_dir()
         .join("data-location.json")
 }
+pub(crate) const BACKUP_MAX: u64 = 100 * 1024 * 1024 * 1024;
+
 fn validated_archive(backup: &Path) -> anyhow::Result<zip::ZipArchive<std::fs::File>> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(backup)?)?;
     let mut seen = std::collections::HashSet::new();
@@ -45,6 +47,7 @@ fn validated_archive(backup: &Path) -> anyhow::Result<zip::ZipArchive<std::fs::F
                     "sync/blobs/",
                     "personal-files/",
                     "git-repos/",
+                    "git-lfs/",
                 ]
                 .iter()
                 .any(|p| name.starts_with(p)))
@@ -54,10 +57,18 @@ fn validated_archive(backup: &Path) -> anyhow::Result<zip::ZipArchive<std::fs::F
         if let Some(path) = name.strip_prefix("git-repos/") {
             crate::git::backup_entry(path)?;
         }
+        if let Some(path) = name.strip_prefix("git-lfs/") {
+            anyhow::ensure!(
+                path.split_once('/').is_some_and(
+                    |(shard, oid)| crate::git::lfs::valid_oid(oid) && shard == &oid[..2]
+                ),
+                "Invalid Git LFS backup object"
+            );
+        }
         total = total
             .checked_add(file.size())
             .ok_or_else(|| anyhow::anyhow!("Backup too large"))?;
-        if total > 100 * 1024 * 1024 * 1024 {
+        if total > BACKUP_MAX {
             anyhow::bail!("Backup exceeds 100 GiB");
         }
     }
@@ -69,7 +80,7 @@ fn validated_archive(backup: &Path) -> anyhow::Result<zip::ZipArchive<std::fs::F
 pub fn validate_backup(path: &Path) -> anyhow::Result<()> {
     validated_archive(path).map(|_| ())
 }
-pub fn restore(backup: &Path, data: &Path) -> anyhow::Result<()> {
+pub async fn restore(backup: &Path, data: &Path) -> anyhow::Result<()> {
     if std::fs::read_dir(data)?
         .filter_map(std::result::Result::ok)
         .any(|e| e.file_name() != "server.lock")
@@ -78,7 +89,41 @@ pub fn restore(backup: &Path, data: &Path) -> anyhow::Result<()> {
             "Restore requires an empty directory; the existing installation is preserved."
         );
     }
+    let stage = tempfile::tempdir_in(data)?;
+    platform::private_directory(stage.path())?;
+    let backup = backup.to_owned();
+    let destination = stage.path().to_owned();
+    tokio::task::spawn_blocking(move || unpack(&backup, &destination)).await??;
+    let db = crate::db::open(&stage.path().join("loki.db")).await?;
+    let result = crate::git::verify_restore(stage.path(), &db).await;
+    db.close().await;
+    result?;
+    platform::private_directory(data)?;
+    let mut installed = Vec::new();
+    for entry in std::fs::read_dir(stage.path())?.collect::<std::io::Result<Vec<_>>>()? {
+        let target = data.join(entry.file_name());
+        if let Err(error) = std::fs::rename(entry.path(), &target) {
+            for (source, target) in installed {
+                if let Err(rollback) = std::fs::rename(&target, &source) {
+                    tracing::warn!(%rollback, "could not roll back a partially installed backup");
+                }
+            }
+            return Err(error.into());
+        }
+        installed.push((entry.path(), target));
+    }
+    Ok(())
+}
+
+fn unpack(backup: &Path, data: &Path) -> anyhow::Result<()> {
     let mut archive = validated_archive(backup)?;
+    let total = (0..archive.len()).try_fold(0u64, |total, index| {
+        archive.by_index(index).map(|file| total + file.size())
+    })?;
+    anyhow::ensure!(
+        fs2::available_space(data)? >= total,
+        "Insufficient space to restore backup"
+    );
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let target = data.join(file.name()?.as_ref());
@@ -99,8 +144,6 @@ pub fn restore(backup: &Path, data: &Path) -> anyhow::Result<()> {
             )?;
         }
     }
-    crate::git::restore_config(data)?;
-    platform::private_directory(data)?;
     Ok(())
 }
 pub async fn prepare_destination(state: &State, target: &str) -> Result<PathBuf> {
@@ -154,7 +197,7 @@ pub async fn switch_home(state: &State, target: &str, selected_backup: Option<&s
             .join("backups")
             .join(restore_name.unwrap_or(&safety));
         let destination = target.clone();
-        tokio::task::spawn_blocking(move || restore(&archive, &destination)).await??;
+        restore(&archive, &destination).await?;
         if let Some(mut caddy) = state.0.caddy.lock().await.take() {
             caddy.stop().await?;
         }
@@ -277,11 +320,14 @@ pub(crate) fn ensure_disk_space(data: &std::path::Path, size: u64) -> crate::Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn restore_rejects_nonempty_destination() {
+    #[tokio::test]
+    async fn restore_rejects_nonempty_destination() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("keep"), b"safe").unwrap();
-        assert!(restore(Path::new("missing.zip"), tmp.path()).is_err());
+        let error = restore(Path::new("missing.zip"), tmp.path())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("empty directory"));
         assert!(tmp.path().join("keep").exists());
     }
 }

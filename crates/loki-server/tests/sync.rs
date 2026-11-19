@@ -974,7 +974,9 @@ async fn backups_carry_synced_files_and_collection_spares_referenced_blobs() {
 
     let restored = tmp.path().join("restored");
     std::fs::create_dir(&restored).unwrap();
-    loki_server::storage::restore(&state.0.data.join("backups").join(file), &restored).unwrap();
+    loki_server::storage::restore(&state.0.data.join("backups").join(file), &restored)
+        .await
+        .unwrap();
     assert_eq!(std::fs::read(blob(&restored, &kept)).unwrap(), b"kept save");
     let copy = State::open(restored, "127.0.0.1:7071".parse().unwrap())
         .await

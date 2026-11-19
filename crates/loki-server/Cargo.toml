@@ -8,6 +8,7 @@ description = "Your services, held together. A self-hosted account and applicati
 license.workspace = true
 
 [dependencies]
+tempfile = "3"
 loki-sdk = { workspace = true, features = ["manifest"] }
 anyhow = "1"
 argon2 = "0.6"
@@ -71,6 +72,5 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 embed-resource = "3"
 
 [dev-dependencies]
-tempfile = "3"
 tokio-tungstenite = "0.29"
 http-body-util = "0.1"

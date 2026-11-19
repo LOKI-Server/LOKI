@@ -4,9 +4,9 @@ import { field, jsonView } from "./ui.js";
 import { navigate, refresh, routable } from "./router.js";
 import { submitSetup, submitStartupAware } from "../pages/auth.js";
 import { appManage, folderPicker, gitCreation, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
-import { gitAccess, gitTokens, newItem, newRepo } from "../pages/git.js";
+import { gitAccess, gitSettings, newItem, newRepo } from "../pages/git.js";
 import { userManage } from "../pages/people.js";
-import { passwordProof, deviceRename, pairDialog } from "../pages/account.js";
+import { passwordProof, deviceRename, pairDialog, gitTokenDialog, gitLimits } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
 import { conflictsDialog, folderForm, folderManage, historyDialog } from "../pages/sync.js";
 import { panelAction, panelDialog } from "../pages/panel.js";
@@ -76,7 +76,7 @@ export async function onSubmit(event) {
       return;
     }
     else if (kind === "settings") {
-      const numbers = { sync_quota_mb: Number(data.sync_quota_mb), sync_max_file_mb: Number(data.sync_max_file_mb) };
+      const numbers = Object.fromEntries(["sync_quota_mb", "sync_max_file_mb", ...Object.keys(gitLimits)].map(key => [key, Number(data[key])]));
       const result = await submitStartupAware(confirmation => act("settings", "", { ...data, ...numbers, startup_confirmation: confirmation }));
       if (!result) return;
       session = true;
@@ -126,7 +126,7 @@ export async function onSubmit(event) {
     else if (kind === "sync-quota") { await act(kind, id, { mb: data.mb === "" ? null : Number(data.mb) }); toast("Quota saved."); }
     else if (kind === "personal-enable") { await api(`/api/personal/settings/apps/${enc(id)}`, { enabled: data.enabled }); close(); toast("Personal storage permission saved."); }
     else if (kind === "git-create") {
-      const repo = await api("/api/git", { name: data.name, upstream: id || null });
+      const repo = await api("/api/git", { name: data.name, upstream: id || null, default_branch: data.default_branch || null });
       close();
       return await navigate(`/git/${enc(repo.id)}`);
     }
@@ -136,8 +136,15 @@ export async function onSubmit(event) {
       return await gitAccess(id);
     }
     else if (kind === "git-token") {
-      const result = await api(`/api/git/${enc(id)}/tokens`, { write: data.scope === "write" });
-      return secret("Git token", `Use ${result.username} as your username. Copy the token now.`, result.token);
+      const { scope, ...input } = data;
+      const result = await api("/api/account/git-tokens", { ...input, write: scope === "write" });
+      secret("Git token", `Use ${result.username} as your username. Copy the token now.`, result.token);
+      return await refresh();
+    }
+    else if (kind === "git-settings") {
+      await api(`/api/git/${enc(id)}/settings`, data);
+      close();
+      return await navigate(`/git/${enc(id)}`, { replace: true });
     }
     else if (kind === "git-item") {
       const item = await api(`/api/git/${enc(id)}/items`, data);
@@ -147,6 +154,12 @@ export async function onSubmit(event) {
     else if (kind === "git-comment") {
       await api(`/api/git/${enc(id)}/items/${enc(form.dataset.item)}`, { action: "comment", body: data.body });
       form.reset();
+    }
+    else if (kind === "device-owner-approve") {
+      await act("device-approve", "", { code: form.dataset.code, proof: data });
+      close();
+      toast("Owner API access approved.");
+      return await navigate("/account");
     }
     else if (kind === "device-code") { pairDialog(await act("device-lookup", "", data)); return; }
     else if (kind === "panel-upload") {
@@ -236,14 +249,20 @@ export async function onClick(event) {
       await api(`/api/git/${enc(id)}`, {}, "DELETE");
       return await navigate("/git");
     }
-    if (action === "git-tokens") return await gitTokens(id, b.dataset.role);
+    if (action === "git-new-token") return gitTokenDialog();
+    if (action === "git-settings") return await gitSettings(id);
+    if (action === "git-copy") {
+      await navigator.clipboard.writeText(b.dataset.copy);
+      return toast("Clone command copied.");
+    }
     if (action === "git-remove-access") {
       await api(`/api/git/${enc(id)}/permissions`, { subject_kind: b.dataset.kind, subject: b.dataset.subject, role: "remove" });
       return await gitAccess(id);
     }
     if (action === "git-revoke-token") {
-      await api(`/api/git/${enc(id)}/tokens/${enc(b.dataset.token)}`, {});
-      return await gitTokens(id, b.dataset.role);
+      if (!(await ask(["Revoke this Git token?", "Clients using this token will need a new one.", "Revoke token"]))) return;
+      await api(`/api/account/git-tokens/${enc(id)}`, {}, "DELETE");
+      return await refresh();
     }
     if (action === "git-item-action") {
       await api(`/api/git/${enc(id)}/items/${enc(b.dataset.item)}`, { action: b.dataset.change, head: b.dataset.head || null, base: b.dataset.base || null });
@@ -278,7 +297,7 @@ export async function onClick(event) {
     if (action === "grant-add") { $("#grants").insertAdjacentHTML("beforeend", grantRow(subjects(), roles(resource(id)))); return; }
     if (action === "folder-picker") {
       const form = b.closest("form");
-      folderReturn = { id: form.dataset.id || "", name: form.elements.name.value, excluded_extensions: form.elements.excluded_extensions.value };
+      folderReturn = { id: form.dataset.id || "", name: form.elements.name.value, excluded_extensions: form.elements.excluded_extensions.value, ...(form.elements.share_type ? { share_type: form.elements.share_type.value } : {}) };
       return await folderPicker(form.elements.root.value);
     }
     if (action === "folder-open") return await folderPicker(b.dataset.path);

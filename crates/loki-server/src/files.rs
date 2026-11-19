@@ -13,6 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 pub mod api;
+mod catalog;
 
 pub fn parse_excluded_extensions(input: &str) -> Result<Vec<String>> {
     if input.len() > 4096 {
@@ -219,13 +220,13 @@ pub async fn info(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>> {
     share(&state, &headers, &id).await?;
-    let (name, visibility): (String, String) =
-        sqlx::query_as("SELECT name,visibility FROM resources WHERE id=? AND kind='share'")
+    let (name, visibility, share_type): (String, String, String) =
+        sqlx::query_as("SELECT r.name,r.visibility,s.share_type FROM resources r JOIN shares s ON s.id=r.id WHERE r.id=? AND r.kind='share'")
             .bind(&id)
             .fetch_one(&state.0.db)
             .await?;
     Ok(Json(
-        serde_json::json!({"id":id,"name":name,"visibility":visibility,"kind":"share"}),
+        serde_json::json!({"id":id,"name":name,"visibility":visibility,"kind":"share","share_type":share_type}),
     ))
 }
 pub async fn list(

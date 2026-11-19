@@ -1,15 +1,15 @@
 use super::{
-    Access, DEFAULT_REF, REPO_BYTES, Repo, access, branch, checked_binary, collaboration, fetch,
-    initialize, repo_dir, require, reserves, resolve, run, size, transport,
+    Access, Repo, access, branch, checked_binary, collaboration, credentials, fetch, initialize,
+    lfs, repo_dir, require, reserves, resolve, run, size, transport,
 };
 use crate::{Error, Result, State, auth};
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::Body,
     extract::{Path, Query, State as ExtractState},
     http::{HeaderMap, StatusCode, header},
     response::Response,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -18,24 +18,62 @@ pub(crate) fn router() -> Router<State> {
     Router::new()
         .route(
             "/git-http/{id}/{*endpoint}",
-            get(transport::route).post(transport::route),
+            get(transport::route)
+                .post(transport::route)
+                .put(transport::route),
         )
         .route("/api/git", get(index).post(create))
         .route("/api/git/{id}", get(detail).delete(delete_repo))
         .route("/api/git/{id}/file", get(file))
         .route("/api/git/{id}/permissions", get(permissions).post(grant))
-        .route("/api/git/{id}/tokens", get(tokens).post(issue_token))
-        .route("/api/git/{id}/tokens/{token}", post(revoke_token))
+        .route(
+            "/api/account/git-tokens",
+            get(credentials::list).post(credentials::issue),
+        )
+        .route("/api/account/git-tokens/{id}", delete(credentials::revoke))
+        .route("/api/git/{id}/settings", post(repository_settings))
         .route("/api/git/{id}/items", get(items).post(create_item))
         .route("/api/git/{id}/items/{item}", get(item).post(change_item))
+}
+
+pub(crate) fn api_router() -> Router<State> {
+    Router::new()
+        .route("/api/v1/repos", get(index).post(create))
+        .route("/api/v1/repos/{id}", get(detail).delete(delete_repo))
+        .route("/api/v1/repos/{id}/file", get(file))
+        .route(
+            "/api/v1/repos/{id}/credential",
+            post(credentials::issue_transfer),
+        )
+        .route(
+            "/api/v1/repos/{id}/permissions",
+            get(permissions).post(grant),
+        )
+        .route("/api/v1/repos/{id}/settings", post(repository_settings))
+        .route("/api/v1/repos/{id}/items", get(items).post(create_item))
+        .route(
+            "/api/v1/repos/{id}/items/{item}",
+            get(item).post(change_item),
+        )
+}
+
+async fn actor(
+    state: &State,
+    headers: &HeaderMap,
+    native: Option<Extension<auth::User>>,
+) -> Result<auth::User> {
+    if let Some(Extension(user)) = native {
+        return Ok(user);
+    }
+    Ok(auth::context(state, headers).await?.approved()?.clone())
 }
 
 async fn index(
     ExtractState(state): ExtractState<State>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    let user = ctx.approved()?;
+    let user = actor(&state, &headers, native).await?;
     let repositories: Vec<Repo> = sqlx::query_as("SELECT * FROM git_repos ORDER BY name,created")
         .fetch_all(&state.0.db)
         .await?;
@@ -50,7 +88,7 @@ async fn index(
         }
     }
     Ok(Json(
-        json!({"repositories":visible,"create":auth::allowed(&state,Some(user),"git-create","access").await?}),
+        json!({"repositories":visible,"create":auth::allowed(&state,Some(&user),"git-create","access").await?}),
     ))
 }
 
@@ -58,15 +96,16 @@ async fn index(
 struct NewRepo {
     name: String,
     upstream: Option<String>,
+    default_branch: Option<String>,
 }
 
 async fn delete_repo(
     ExtractState(state): ExtractState<State>,
     Path(id): Path<String>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    let user = ctx.approved()?;
+    let user = actor(&state, &headers, native).await?;
     let _guard = state.0.git_files.write().await;
     let (repo, _) = require(&state, &id, &user.id, Access::Manage).await?;
     if !user.owner && repo.owner_id != user.id {
@@ -90,6 +129,9 @@ async fn delete_repo(
     {
         tracing::warn!(%error,repo=%id,"repository removed but its files need startup cleanup");
     }
+    if let Err(error) = lfs::collect(&state.0.data, &state.0.db).await {
+        tracing::warn!(error = %error.message, "could not reclaim deleted repository's Git LFS objects");
+    }
     state.audit(&user.id, "git-delete", &id).await?;
     Ok(Json(json!({"ok":true})))
 }
@@ -97,11 +139,11 @@ async fn delete_repo(
 async fn create(
     ExtractState(state): ExtractState<State>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
     Json(input): Json<NewRepo>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    let user = ctx.approved()?;
-    if !auth::allowed(&state, Some(user), "git-create", "access").await? {
+    let user = actor(&state, &headers, native).await?;
+    if !auth::allowed(&state, Some(&user), "git-create", "access").await? {
         return Err(Error::forbidden());
     }
     let name = input.name.trim();
@@ -112,7 +154,7 @@ async fn create(
     }
     let git = checked_binary(&state).await?;
     let _guard = state.0.git_files.write().await;
-    if !auth::allowed(&state, Some(user), "git-create", "access").await? {
+    if !auth::allowed(&state, Some(&user), "git-create", "access").await? {
         return Err(Error::forbidden());
     }
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM git_repos")
@@ -141,26 +183,35 @@ async fn create(
     } else {
         None
     };
+    let default_branch = input
+        .default_branch
+        .as_deref()
+        .or_else(|| upstream.as_ref().map(|repo| repo.default_branch.as_str()))
+        .unwrap_or("main");
+    let default_ref = branch(default_branch)?;
     let id = auth::id();
     let directory = repo_dir(&state.0.data, &id);
+    let limits = state.0.settings.read().await.clone();
+    let repo_bytes = limits.git_repo_mib * super::MIB;
     let result = async {
         let upstream_path = upstream
             .as_ref()
             .map(|repo| repo_dir(&state.0.data, &repo.id));
         let budget = upstream_path
             .as_ref()
-            .map(|dir| size(&dir.join("objects"), REPO_BYTES))
+            .map(|dir| size(&dir.join("objects"), repo_bytes))
             .transpose()?
             .unwrap_or_default();
-        reserves(&state.0.data, None, budget + super::MIB)?;
+        reserves(&state.0.data, None, budget + super::MIB, &limits)?;
         initialize(&git, &directory).await?;
+        super::write_head(&directory, &default_ref)?;
         if let Some(source) = upstream_path {
-            resolve(&git, &source, DEFAULT_REF).await?;
+            resolve(&git, &source, &default_ref).await?;
             fetch(&git, &directory, &source, "refs/heads/*", "refs/heads/*").await?;
             fetch(&git, &directory, &source, "refs/tags/*", "refs/tags/*").await?;
         }
-        size(&directory, REPO_BYTES)?;
-        size(&state.0.data.join("git-repos"), super::TOTAL_BYTES)?;
+        size(&directory, repo_bytes)?;
+        size(&state.0.data.join("git-repos"), limits.git_total_mib * super::MIB)?;
         let mut tx = state.0.db.begin().await?;
         sqlx::query(
             "INSERT INTO resources(id,kind,name,visibility) VALUES(?,'git-repo',?,'restricted')",
@@ -169,14 +220,19 @@ async fn create(
         .bind(name)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("INSERT INTO git_repos(id,owner_id,name,upstream,created) VALUES(?,?,?,?,?)")
+        sqlx::query("INSERT INTO git_repos(id,owner_id,name,upstream,created,default_branch,protect_default) VALUES(?,?,?,?,?,?,0)")
             .bind(&id)
             .bind(&user.id)
             .bind(name)
             .bind(upstream.as_ref().map(|repo| &repo.id))
             .bind(auth::now())
+            .bind(default_branch)
             .execute(&mut *tx)
             .await?;
+        if let Some(source) = &upstream {
+            let objects = lfs::repository_pointers(&git, &directory).await?;
+            lfs::share(&state, &mut tx, &source.id, &id, &objects).await?;
+        }
         tx.commit().await?;
         Ok::<_, Error>(())
     }
@@ -190,7 +246,10 @@ async fn create(
         return Err(error);
     }
     state.audit(&user.id, "git-create", &id).await?;
-    Ok(Json(json!({"id":id})))
+    let public = state.0.settings.read().await.public_url.clone();
+    Ok(Json(
+        json!({"id":id,"name":name,"default_branch":default_branch,"clone_url":format!("{public}/git-http/{id}.git")}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -205,11 +264,11 @@ async fn detail(
     Path(id): Path<String>,
     Query(query): Query<Browse>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    let user = ctx.approved()?;
-    let (repo, role) = require(&state, &id, &user.id, Access::Read).await?;
+    let user = actor(&state, &headers, native).await?;
     let _guard = state.0.git_files.read().await;
+    let (repo, role) = require(&state, &id, &user.id, Access::Read).await?;
     let _process = slot(&state)?;
     let git = checked_binary(&state).await?;
     let dir = repo_dir(&state.0.data, &id);
@@ -229,19 +288,16 @@ async fn detail(
         .lines()
         .map(str::to_owned)
         .collect();
-    let default = branches
-        .iter()
-        .find(|name| name.as_str() == "main")
-        .or_else(|| branches.first())
-        .map_or("main", String::as_str);
-    let selected = query.branch.as_deref().unwrap_or(default);
+    let selected = query.branch.as_deref().unwrap_or(&repo.default_branch);
     let prefix = query.path.as_deref().unwrap_or("");
     if !prefix.is_empty() {
         safe_tree_path(prefix)?;
     }
     let mut tree = Vec::new();
     let mut commits = Vec::new();
-    if !branches.is_empty() {
+    if !branches.is_empty()
+        && (query.branch.is_some() || branches.iter().any(|name| name == selected))
+    {
         let reference = branch(selected)?;
         let commit = resolve(&git, &dir, &reference).await?;
         let object = if prefix.is_empty() {
@@ -290,7 +346,7 @@ async fn detail(
     };
     let public = state.0.settings.read().await.public_url.clone();
     Ok(Json(
-        json!({"id":repo.id,"name":repo.name,"role":role,"upstream":upstream,"clone_url":format!("{public}/git-http/{id}.git"),"branches":branches,"branch":selected,"tree":tree,"commits":commits,"can_delete":user.owner || repo.owner_id==user.id,"can_fork":auth::allowed(&state,Some(user),"git-create","access").await?}),
+        json!({"id":repo.id,"name":repo.name,"role":role,"upstream":upstream,"clone_url":format!("{public}/git-http/{id}.git"),"branches":branches,"branch":selected,"default_branch":repo.default_branch,"protect_default":repo.protect_default,"tree":tree,"commits":commits,"can_delete":user.owner || repo.owner_id==user.id,"can_fork":auth::allowed(&state,Some(&user),"git-create","access").await?}),
     ))
 }
 
@@ -323,19 +379,20 @@ async fn file(
     Path(id): Path<String>,
     Query(query): Query<Browse>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
 ) -> Result<Response> {
-    let ctx = auth::context(&state, &headers).await?;
-    require(&state, &id, &ctx.approved()?.id, Access::Read).await?;
+    let user = actor(&state, &headers, native).await?;
     let path = query.path.as_deref().ok_or_else(Error::not_found)?;
     safe_tree_path(path)?;
     let _guard = state.0.git_files.read().await;
+    let (repo, _) = require(&state, &id, &user.id, Access::Read).await?;
     let _process = slot(&state)?;
     let git = checked_binary(&state).await?;
     let dir = repo_dir(&state.0.data, &id);
     let commit = resolve(
         &git,
         &dir,
-        &branch(query.branch.as_deref().unwrap_or("main"))?,
+        &branch(query.branch.as_deref().unwrap_or(&repo.default_branch))?,
     )
     .await?;
     let raw = query.raw.unwrap_or_default();
@@ -372,9 +429,10 @@ async fn permissions(
     ExtractState(state): ExtractState<State>,
     Path(id): Path<String>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    require(&state, &id, &ctx.approved()?.id, Access::Manage).await?;
+    let user = actor(&state, &headers, native).await?;
+    require(&state, &id, &user.id, Access::Manage).await?;
     let users: Vec<(String, String)> = sqlx::query_as(
         "SELECT id,username FROM users WHERE status='approved' ORDER BY username LIMIT 2000",
     )
@@ -399,10 +457,10 @@ async fn grant(
     ExtractState(state): ExtractState<State>,
     Path(id): Path<String>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
     Json(input): Json<Grant>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    let user = ctx.approved()?;
+    let user = actor(&state, &headers, native).await?;
     require(&state, &id, &user.id, Access::Manage).await?;
     let query = match input.subject_kind.as_str() {
         "user" => "SELECT EXISTS(SELECT 1 FROM users WHERE id=? AND status='approved')",
@@ -441,85 +499,48 @@ async fn grant(
     Ok(Json(json!({"ok":true})))
 }
 
-async fn tokens(
-    ExtractState(state): ExtractState<State>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    let user = ctx.approved()?;
-    require(&state, &id, &user.id, Access::Read).await?;
-    let records: Vec<(String,bool,i64,i64)> = sqlx::query_as("SELECT id,write,created,expires FROM git_tokens WHERE user_id=? AND repo_id=? AND expires>? AND auth_version=? ORDER BY created DESC")
-        .bind(&user.id).bind(&id).bind(auth::now()).bind(user.auth_version).fetch_all(&state.0.db).await?;
-    Ok(Json(json!(records.into_iter().map(|(id,write,created,expires)|json!({"id":id,"write":write,"created":created,"expires":expires})).collect::<Vec<_>>())))
-}
-
 #[derive(Deserialize)]
-struct NewToken {
-    write: bool,
+struct RepositorySettings {
+    default_branch: String,
+    protect_default: bool,
 }
 
-async fn issue_token(
+async fn repository_settings(
     ExtractState(state): ExtractState<State>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    Json(input): Json<NewToken>,
+    native: Option<Extension<auth::User>>,
+    Json(input): Json<RepositorySettings>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    let user = ctx.approved()?;
-    require(
-        &state,
-        &id,
-        &user.id,
-        if input.write {
-            Access::Write
-        } else {
-            Access::Read
-        },
-    )
-    .await?;
-    auth::rate(&state, format!("git-token:{}", user.id), 20, 3600).await?;
-    let mut tx = state.0.db.begin().await?;
-    let now = auth::now();
-    sqlx::query("DELETE FROM git_tokens WHERE user_id=? AND (expires<=? OR auth_version!=?)")
-        .bind(&user.id)
-        .bind(now)
-        .bind(user.auth_version)
-        .execute(&mut *tx)
-        .await?;
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM git_tokens WHERE user_id=?")
-        .bind(&user.id)
-        .fetch_one(&mut *tx)
-        .await?;
-    if count >= 50 {
-        return Err(Error::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "Revoke an existing Git token first.",
-        ));
+    let user = actor(&state, &headers, native).await?;
+    let reference = branch(&input.default_branch)?;
+    let _guard = state.0.git_files.write().await;
+    let (repo, _) = require(&state, &id, &user.id, Access::Manage).await?;
+    let git = checked_binary(&state).await?;
+    let directory = repo_dir(&state.0.data, &id);
+    let changing_branch = input.default_branch != repo.default_branch;
+    if changing_branch {
+        resolve(&git, &directory, &reference).await?;
+        super::write_head(&directory, &reference)?;
     }
-    let secret = format!("loki_git_{}", auth::random());
-    let expires = now + 30 * 86400;
-    sqlx::query("INSERT INTO git_tokens(id,digest,user_id,repo_id,write,created,expires,auth_version) VALUES(?,?,?,?,?,?,?,?)")
-        .bind(auth::id()).bind(auth::digest(&secret)).bind(&user.id).bind(&id).bind(input.write).bind(now).bind(expires).bind(user.auth_version).execute(&mut *tx).await?;
-    tx.commit().await?;
-    state.audit(&user.id, "git-token-issued", &id).await?;
-    Ok(Json(
-        json!({"token":secret,"username":user.username,"expires":expires}),
-    ))
-}
-
-async fn revoke_token(
-    ExtractState(state): ExtractState<State>,
-    Path((id, token)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    sqlx::query("DELETE FROM git_tokens WHERE user_id=? AND repo_id=? AND id=?")
-        .bind(&ctx.approved()?.id)
-        .bind(id)
-        .bind(token)
-        .execute(&state.0.db)
-        .await?;
+    let result = async {
+        let mut tx = state.0.db.begin().await?;
+        sqlx::query("UPDATE git_repos SET default_branch=?,protect_default=? WHERE id=?")
+            .bind(&input.default_branch).bind(input.protect_default).bind(&id)
+            .execute(&mut *tx).await?;
+        if changing_branch {
+            sqlx::query("UPDATE git_items SET approved_head=NULL,approved_base=NULL,reviewer_id=NULL WHERE repo_id=? AND kind='pull' AND status!='merged'")
+                .bind(&id).execute(&mut *tx).await?;
+        }
+        tx.commit().await
+    }.await;
+    if let Err(error) = result {
+        if changing_branch {
+            super::write_head(&directory, &repo.default_ref())?;
+        }
+        return Err(error.into());
+    }
+    state.audit(&user.id, "git-settings", &id).await?;
     Ok(Json(json!({"ok":true})))
 }
 
@@ -533,9 +554,10 @@ async fn items(
     Path(id): Path<String>,
     Query(query): Query<ItemsPage>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    let (repo, _) = require(&state, &id, &ctx.approved()?.id, Access::Read).await?;
+    let user = actor(&state, &headers, native).await?;
+    let (repo, _) = require(&state, &id, &user.id, Access::Read).await?;
     Ok(Json(
         collaboration::list(&state, &repo, query.before.unwrap_or(i64::MAX)).await?,
     ))
@@ -545,10 +567,10 @@ async fn create_item(
     ExtractState(state): ExtractState<State>,
     Path(id): Path<String>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
     Json(input): Json<collaboration::New>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    let user = ctx.approved()?;
+    let user = actor(&state, &headers, native).await?;
     let _guard = state.0.git_files.write().await;
     let (repo, _) = require(&state, &id, &user.id, Access::Read).await?;
     Ok(Json(
@@ -560,11 +582,12 @@ async fn item(
     ExtractState(state): ExtractState<State>,
     Path((id, item)): Path<(String, String)>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
+    let user = actor(&state, &headers, native).await?;
     let _guard = state.0.git_files.read().await;
     let _process = slot(&state)?;
-    let (repo, role) = require(&state, &id, &ctx.approved()?.id, Access::Read).await?;
+    let (repo, role) = require(&state, &id, &user.id, Access::Read).await?;
     let mut detail = collaboration::detail(&state, &repo, &item).await?;
     detail["role"] = json!(role);
     Ok(Json(detail))
@@ -574,10 +597,10 @@ async fn change_item(
     ExtractState(state): ExtractState<State>,
     Path((id, item)): Path<(String, String)>,
     headers: HeaderMap,
+    native: Option<Extension<auth::User>>,
     Json(input): Json<collaboration::Change>,
 ) -> Result<Json<Value>> {
-    let ctx = auth::context(&state, &headers).await?;
-    let user = ctx.approved()?;
+    let user = actor(&state, &headers, native).await?;
     let _guard = state.0.git_files.write().await;
     let (repo, role) = require(&state, &id, &user.id, Access::Read).await?;
     let audit = format!("git-{}", input.action);

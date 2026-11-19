@@ -6,14 +6,14 @@ use serde_json::{Value, json};
 
 /// Proof that the person at the keyboard owns the account, for sensitive changes.
 #[derive(Deserialize)]
-pub(super) struct Proof {
+pub(crate) struct Proof {
     current_password: String,
     /// An authentication or recovery code, when the account uses MFA.
     #[serde(default)]
     code: String,
 }
 impl Proof {
-    pub(super) async fn check(&self, state: &State, user: &User) -> Result<()> {
+    pub(crate) async fn check(&self, state: &State, user: &User) -> Result<()> {
         if !auth::verify(state, self.current_password.clone(), user.password.clone()).await? {
             return Err(Error::bad("Incorrect current password."));
         }

@@ -79,6 +79,22 @@ const MIGRATIONS: &[Migration] = &[
     Sql("INSERT OR IGNORE INTO devices SELECT * FROM file_devices"),
     Sql("DELETE FROM sync_devices"),
     Sql("DELETE FROM file_devices"),
+    Column(
+        "git_repos",
+        "default_branch",
+        "TEXT NOT NULL DEFAULT 'main'",
+    ),
+    Column("git_repos", "protect_default", "INTEGER NOT NULL DEFAULT 1"),
+    Column(
+        "git_items",
+        "base_ref",
+        "TEXT NOT NULL DEFAULT 'refs/heads/main'",
+    ),
+    Column(
+        "shares",
+        "share_type",
+        "TEXT NOT NULL DEFAULT 'files' CHECK(share_type IN ('files','apps'))",
+    ),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
@@ -144,7 +160,7 @@ mod tests {
             sqlx::query(&format!("INSERT INTO {table}(id,user_id,name,token,auth_version,created,last_seen) VALUES(?,'u',?,?,0,1,1)"))
                 .bind(id).bind(id).bind(crate::auth::digest(id)).execute(&pool).await.unwrap();
         }
-        sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 4))
+        sqlx::query("PRAGMA user_version=20")
             .execute(&pool)
             .await
             .unwrap();
@@ -215,6 +231,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
+        let share_type: String = sqlx::query_scalar("SELECT share_type FROM shares WHERE id='old'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(share_type, "files");
         sqlx::query("UPDATE shares SET excluded_extensions='[\"tmp\"]' WHERE id='old'")
             .execute(&pool)
             .await
@@ -258,6 +279,43 @@ mod tests {
             assert_eq!(source, "upload", "from {done} steps");
             pool.close().await;
         }
+    }
+
+    #[tokio::test]
+    async fn existing_git_repositories_keep_protection_and_tokens() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("loki.db");
+        let pool = open(&path).await.unwrap();
+        sqlx::raw_sql(
+            "ALTER TABLE git_repos DROP COLUMN default_branch;
+             ALTER TABLE git_repos DROP COLUMN protect_default;
+             ALTER TABLE git_items DROP COLUMN base_ref;
+             INSERT INTO users(id,username,display_name,email,password,owner,status,created)
+             VALUES('user','user','User','user@example.test','unused',0,'approved',1);
+             INSERT INTO git_repos(id,owner_id,name,created) VALUES('repo','user','repo',1);
+             INSERT INTO git_tokens(id,digest,user_id,repo_id,write,created,expires,auth_version)
+             VALUES('token','digest','user','repo',1,1,2,0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version=24")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let migrated = open(&path).await.unwrap();
+        let repo: (String, bool) =
+            sqlx::query_as("SELECT default_branch,protect_default FROM git_repos WHERE id='repo'")
+                .fetch_one(&migrated)
+                .await
+                .unwrap();
+        assert_eq!(repo, ("main".to_owned(), true));
+        let repo_id: String = sqlx::query_scalar("SELECT repo_id FROM git_tokens WHERE id='token'")
+            .fetch_one(&migrated)
+            .await
+            .unwrap();
+        assert_eq!(repo_id, "repo");
     }
 
     #[tokio::test]

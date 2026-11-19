@@ -14,7 +14,7 @@ export function resourceStatus(r) {
 export function cards(items) {
   const owner = store.session.user.owner;
   return `<div class="grid">${items.map(r => {
-    const description = r.kind === "app" ? r.manifest.description : r.kind === "share" ? "Browse, preview, and download shared files." : r.kind === "sync" ? "Keep game saves and files the same on every device." : r.hostname || r.url;
+    const description = r.kind === "app" ? r.manifest.description : r.kind === "share" ? (r.share_type === "apps" ? "Download and update desktop builds in LOKI Client." : "Browse, preview, and download shared files.") : r.kind === "sync" ? "Keep game saves and files the same on every device." : r.hostname || r.url;
     const open = r.kind === "share" ? linkButton("Browse files", `/shares/${enc(r.id)}`, "subtle", "folder")
       : r.kind === "sync" ? linkButton("Open sync", "/sync", "subtle", "sync")
       : r.kind === "route" || (r.ready && r.manifest?.site !== false) ? linkButton("Open service", r.url, "subtle", "external", 'target="_blank" rel="noopener"') : "";
@@ -23,7 +23,7 @@ export function cards(items) {
     const manage = owner ? button("Manage", `${r.kind}-manage`, r.id, "", "ghost", "settings") : "";
     // Set for apps installed from the app registry when it lists a newer release.
     const update = r.update ? button(`Update to v${r.update}`, "registry-install", r.id, "", "subtle", "refresh") : "";
-    return `<article class="card resource ${r.kind}" data-key="${esc(r.id)}"><div class="card-header"><span class="card-symbol" aria-hidden="true">${icon(kinds[r.kind])}</span><div class="tags">${r.update ? tag("Update available") : ""}${resourceStatus(r)}</div></div><h2>${esc(r.name)}</h2><p>${esc(description)}</p>${r.error ? `<p class="help error-text">${icon("alert")}${esc(r.error)}</p>` : ""}<div class="actions">${update}${panel}${open}${manage}</div></article>`;
+    return `<article class="card resource ${r.kind}" data-key="${esc(r.id)}"><div class="card-header"><span class="card-symbol" aria-hidden="true">${icon(kinds[r.kind])}</span><div class="tags">${r.update ? tag("Update available") : ""}${r.kind === "share" ? tag(r.share_type === "apps" ? "App repository" : "File server", "dim") : ""}${resourceStatus(r)}</div></div><h2>${esc(r.name)}</h2><p>${esc(description)}</p>${r.error ? `<p class="help error-text">${icon("alert")}${esc(r.error)}</p>` : ""}<div class="actions">${update}${panel}${open}${manage}</div></article>`;
   }).join("")}</div>`;
 }
 

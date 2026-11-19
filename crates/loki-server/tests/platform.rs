@@ -304,11 +304,8 @@ async fn upgrading_reuses_old_sync_and_file_tokens_without_signing_in_again() {
         sqlx::query(&format!("INSERT INTO {table}(id,user_id,name,token,auth_version,created,last_seen) SELECT ?,id,?,?,auth_version,1,1 FROM users WHERE owner=1"))
             .bind(id).bind(id).bind(auth::digest(id)).execute(&state.0.db).await.unwrap();
     }
-    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-        .fetch_one(&state.0.db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("PRAGMA user_version={}", version - 4))
+    // Migration 21 introduced unified device credentials.
+    sqlx::query("PRAGMA user_version=20")
         .execute(&state.0.db)
         .await
         .unwrap();

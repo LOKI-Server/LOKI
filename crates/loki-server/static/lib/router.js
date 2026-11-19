@@ -6,13 +6,13 @@ import { button, heading, skeleton, tag } from "./ui.js";
 import { authPage, signOutPage } from "../pages/auth.js";
 import { appsPage, overview, routesPage, sharesPage } from "../pages/services.js";
 import { accountsPage, activityPage, avatar } from "../pages/people.js";
-import { accountPage, exportPage, settingsPage, pairPage } from "../pages/account.js";
+import { accountPage, exportPage, settingsPage, pairPage, gitCredentialsPage } from "../pages/account.js";
 import { browse } from "../pages/files.js";
 import { marketplacePage } from "../pages/marketplace.js";
 import { folderPage, syncPage } from "../pages/sync.js";
 import { gitPage, gitRepo, gitItem } from "../pages/git.js";
 
-const memberPages = { "/": overview, "/apps": appsPage, "/shares": sharesPage, "/sync": syncPage, "/pair": pairPage, "/account": accountPage, "/account/export": exportPage, "/git": gitPage };
+const memberPages = { "/": overview, "/apps": appsPage, "/shares": sharesPage, "/sync": syncPage, "/pair": pairPage, "/account": accountPage, "/account/export": exportPage, "/account/git-credentials": gitCredentialsPage, "/git": gitPage };
 const ownerPages = { "/apps/browse": marketplacePage, "/routes": routesPage, "/accounts": accountsPage, "/activity": activityPage, "/settings": settingsPage };
 const STALE_MS = 15000;
 

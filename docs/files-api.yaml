@@ -129,6 +129,50 @@ paths:
           $ref: '#/components/responses/401'
         '503':
           $ref: '#/components/responses/503'
+  /files/v1/app-repositories:
+    get:
+      operationId: filesAppRepositories
+      summary: List app repositories visible to this account
+      responses:
+        '200':
+          description: App repositories
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shares'
+        '401':
+          $ref: '#/components/responses/401'
+  /files/v1/app-repositories/{id}:
+    parameters:
+    - $ref: '#/components/parameters/ShareId'
+    get:
+      operationId: filesAppCatalog
+      summary: List apps and selected builds for each OS
+      responses:
+        '200':
+          description: App catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [apps]
+                properties:
+                  apps:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CatalogApp'
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '413':
+          description: Repository exceeds the catalog directory scan limit.
+        '503':
+          $ref: '#/components/responses/503'
   /files/v1/shares/{id}:
     parameters:
     - $ref: '#/components/parameters/ShareId'
@@ -521,9 +565,33 @@ components:
         required:
         - created
         - last_seen
+    CatalogApp:
+      type: object
+      required: [id, name, version, builds]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        version: { type: [string, 'null'] }
+        builds:
+          type: object
+          description: One current build per available OS.
+          additionalProperties:
+            type: object
+            required: [path, name, size, modified]
+            properties:
+              path: { type: string }
+              name: { type: string }
+              size: { type: integer, minimum: 0 }
+              modified:
+                type: integer
+                description: Unix milliseconds.
     Share:
       type: object
       properties:
+        share_type:
+          type: string
+          enum: [files, apps]
+          default: files
         id:
           type: string
         name:

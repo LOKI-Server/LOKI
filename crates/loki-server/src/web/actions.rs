@@ -62,53 +62,39 @@ pub(super) async fn action(
             crate::device_codes::lookup(state, ctx.approved()?, &input.code).await?
         }
         "device-approve" | "device-deny" => {
-            let input: account::Code = args(data)?;
+            #[derive(Deserialize)]
+            struct Decision {
+                code: String,
+                proof: Option<account::Proof>,
+            }
+            let input: Decision = args(data)?;
+            let approved_user = ctx.approved()?;
             let approve = action == "device-approve";
-            crate::device_codes::decide(state, ctx.approved()?, &input.code, approve).await?
+            if approve && let Some(proof) = &input.proof {
+                auth::rate(
+                    state,
+                    format!("owner-api-proof:{}", approved_user.id),
+                    20,
+                    900,
+                )
+                .await?;
+                proof.check(state, approved_user).await?;
+            }
+            crate::device_codes::decide_with_proof(
+                state,
+                approved_user,
+                &input.code,
+                approve,
+                input.proof.is_some(),
+            )
+            .await?
         }
         name if name.starts_with("sync-") => {
             crate::sync::action(state, ctx.approved()?, name, &id, data).await?
         }
         name => {
             let user = ctx.owner()?;
-            match name {
-                "user-create" => admin::user_create(state, args(data)?).await?,
-                "user-status" => admin::user_status(state, &id, args(data)?).await?,
-                "reset-issue" => admin::issue_reset(state, &id, false).await?,
-                "group-create" => admin::group_create(state, args(data)?).await?,
-                "group-delete" => admin::group_delete(state, &id).await?,
-                "membership" => admin::membership(state, &id, args(data)?).await?,
-                "resource-access" => admin::resource_access(state, &id, args(data)?).await?,
-                "share-save" => admin::share_save(state, &id, args(data)?).await?,
-                "resource-delete" => admin::resource_delete(state, &id).await?,
-                "route-save" => admin::route_save(state, &id, args(data)?).await?,
-                "route-action" => admin::route_action(state, &id, args(data)?).await?,
-                "service" => admin::service(state, &id, args(data)?).await?,
-                "app-action" => {
-                    let input: admin::Operation<String> = args(data)?;
-                    crate::apps::action(state, &id, &input.operation).await?;
-                    ok()
-                }
-                "app-config" => admin::app_config(state, &id, args(data)?).await?,
-                "settings" => admin::settings(state, args(data)?).await?,
-                "caddy-preview" => {
-                    let _guard = state.0.operations.lock().await;
-                    crate::caddy::preview(state, &args(data)?).await?
-                }
-                "caddy-adopt" => {
-                    let _guard = state.0.operations.lock().await;
-                    json!({"base":crate::caddy::adopt(state).await?})
-                }
-                "caddy-apply" => {
-                    let _guard = state.0.operations.lock().await;
-                    crate::caddy::apply(state).await?;
-                    ok()
-                }
-                "diagnostics" => super::diagnostics(state).await?,
-                "backup" => json!({"file":super::backup(state).await?}),
-                "storage" => admin::storage(state, user, args(data)?).await?,
-                _ => return Err(Error::bad("Unknown action.")),
-            }
+            owner_action(state, user, name, &id, data).await?
         }
     };
     // Nothing has changed yet when the person is first asked to confirm.
@@ -116,4 +102,51 @@ pub(super) async fn action(
         state.audit(&user.id, &action, &id).await?;
     }
     Ok(Json(output))
+}
+
+pub(super) async fn owner_action(
+    state: &State,
+    user: &auth::User,
+    name: &str,
+    id: &str,
+    data: Value,
+) -> Result<Value> {
+    Ok(match name {
+        "user-create" => admin::user_create(state, args(data)?).await?,
+        "user-status" => admin::user_status(state, id, args(data)?).await?,
+        "reset-issue" => admin::issue_reset(state, id, false).await?,
+        "group-create" => admin::group_create(state, args(data)?).await?,
+        "group-delete" => admin::group_delete(state, id).await?,
+        "membership" => admin::membership(state, id, args(data)?).await?,
+        "resource-access" => admin::resource_access(state, id, args(data)?).await?,
+        "share-save" => admin::share_save(state, id, args(data)?).await?,
+        "resource-delete" => admin::resource_delete(state, id).await?,
+        "route-save" => admin::route_save(state, id, args(data)?).await?,
+        "route-action" => admin::route_action(state, id, args(data)?).await?,
+        "service" => admin::service(state, id, args(data)?).await?,
+        "app-action" => {
+            let input: admin::Operation<String> = args(data)?;
+            crate::apps::action(state, id, &input.operation).await?;
+            ok()
+        }
+        "app-config" => admin::app_config(state, id, args(data)?).await?,
+        "settings" => admin::settings(state, args(data)?).await?,
+        "caddy-preview" => {
+            let _guard = state.0.operations.lock().await;
+            crate::caddy::preview(state, &args(data)?).await?
+        }
+        "caddy-adopt" => {
+            let _guard = state.0.operations.lock().await;
+            json!({"base":crate::caddy::adopt(state).await?})
+        }
+        "caddy-apply" => {
+            let _guard = state.0.operations.lock().await;
+            crate::caddy::apply(state).await?;
+            ok()
+        }
+        "diagnostics" => super::diagnostics(state).await?,
+        "backup" => json!({"file":super::backup(state).await?}),
+        "storage" => admin::storage(state, user, args(data)?).await?,
+        _ => return Err(Error::bad("Unknown action.")),
+    })
 }

@@ -1,5 +1,5 @@
 import { api, date, enc, esc, modal, store } from "../lib/core.js";
-import { button, empty, field, heading, linkButton, table, tag } from "../lib/ui.js";
+import { button, check, empty, field, heading, linkButton, table, tag } from "../lib/ui.js";
 
 const repoUrl = id => `/git/${enc(id)}`;
 const repoApi = id => `/api/git/${enc(id)}`;
@@ -17,7 +17,7 @@ export async function gitPage() {
 export function newRepo(upstream) {
   modal(upstream ? "Fork repository" : "New repository", `<form data-form="git-create" data-id="${esc(upstream)}">
     ${field("name", "Repository name", "", "text", "required maxlength=64 pattern=[a-z0-9-]+")}
-    ${upstream ? '<p class="help">Your private copy has its own permissions and retains the copied history.</p>' : ""}
+    ${upstream ? '<p class="help">Your private copy has its own permissions and retains the copied history.</p>' : field("default_branch", "Default branch", "main", "text", "required maxlength=200")}
     ${actions(`<button>${upstream ? "Create fork" : "Create repository"}</button>`)}</form>`);
 }
 
@@ -31,12 +31,13 @@ export async function gitRepo(id) {
   const [repo, discussions] = await Promise.all([api(`${repoApi(id)}?${query}`), api(`${repoApi(id)}/items${before ? `?before=${enc(before)}` : ""}`)]);
   const branch = repo.branch;
   const page = (key, value) => `${repoUrl(id)}?branch=${enc(branch)}&amp;${key}=${enc(value)}`;
-  const controls = [linkButton("Repositories", "/git"), button("Git credentials", "git-tokens", id, `data-role="${esc(repo.role)}"`)];
-  if (repo.can_fork && repo.branches.includes("main")) controls.push(button("Fork", "git-fork", id));
-  if (repo.role === "manage") controls.push(button("Manage access", "git-access", id));
+  const controls = [linkButton("Repositories", "/git"), linkButton("Git credentials", "/account/git-credentials")];
+  if (repo.can_fork && repo.branches.includes(repo.default_branch)) controls.push(button("Fork", "git-fork", id));
+  if (repo.role === "manage") controls.push(button("Settings", "git-settings", id), button("Manage access", "git-access", id));
   if (repo.can_delete) controls.push(button("Delete repository", "git-delete", id, `data-name="${esc(repo.name)}"`, "danger"));
   const header = heading(repo.name, repo.upstream ? `Fork of ${repo.upstream.name}` : "Private repository", controls.join(""), "folder");
-  const clone = `<section class="card"><h2>Clone</h2><pre class="mono">${esc(repo.clone_url)}</pre>${repo.branches.includes("main") ? "" : '<p>Push the first commit to <code>main</code> with a write token issued to a repository manager.</p>'}</section>`;
+  const command = `git clone ${repo.clone_url}`;
+  const clone = `<section class="card"><h2>Clone</h2><pre class="mono">${esc(command)}</pre>${button("Copy clone command", "git-copy", "", `data-copy="${esc(command)}"`)}${repo.branches.includes(repo.default_branch) ? "" : `<p>Push the first commit to <code>${esc(repo.default_branch)}</code>.</p>`}</section>`;
   const branches = repo.branches.map(ref => `<a class="button subtle" href="${repoUrl(id)}?branch=${enc(ref)}"${ref === branch ? ' aria-current="page"' : ""}>${esc(ref)}</a>`).join("");
   const tree = repo.tree.map(entry => {
     const full = path ? `${path}/${entry.name}` : entry.name;
@@ -67,10 +68,13 @@ export async function gitAccess(id) {
   modal("Repository access", `${rows.length ? table(["Account or group", "Role", ""], rows) : ""}<form data-form="git-grant" data-id="${esc(id)}"><label for="git-subject">Account or group</label><select id="git-subject" name="subject">${options.map(([key, name]) => `<option value="${esc(key)}">${esc(name)}</option>`).join("")}</select><label for="git-role">Role</label><select id="git-role" name="role"><option value="read">Read</option><option value="write">Write</option><option value="manage">Manage</option></select>${actions("<button>Save access</button>")}</form>`);
 }
 
-export async function gitTokens(id, role) {
-  const tokens = await api(`${repoApi(id)}/tokens`);
-  const rows = tokens.map(token => ({ cells: [token.write ? "Read and write" : "Read", esc(date(token.expires)), button("Revoke", "git-revoke-token", id, `data-token="${esc(token.id)}" data-role="${esc(role)}"`, "danger")] }));
-  modal("Git credentials", `<p>Use the issued token as your password in your Git client. Tokens expire after 30 days.</p>${rows.length ? table(["Scope", "Expires", ""], rows) : ""}<form data-form="git-token" data-id="${esc(id)}"><label for="git-scope">Token scope</label><select id="git-scope" name="scope"><option value="read">Read</option>${role === "read" ? "" : '<option value="write">Read and write</option>'}</select>${actions("<button>Create token</button>")}</form>`);
+export async function gitSettings(id) {
+  const repo = await api(repoApi(id));
+  const branches = [...new Set([repo.default_branch, ...repo.branches])];
+  modal("Repository settings", `<form data-form="git-settings" data-id="${esc(id)}">
+    <label for="default-branch">Default branch</label><select id="default-branch" name="default_branch">${branches.map(branch => `<option ${branch === repo.default_branch ? "selected" : ""}>${esc(branch)}</option>`).join("")}</select>
+    ${check("protect_default", "Require pull request review for the default branch", repo.protect_default)}
+    ${actions("<button>Save settings</button>")}</form>`);
 }
 
 export async function newItem(id, kind) {

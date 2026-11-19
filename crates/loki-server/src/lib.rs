@@ -123,6 +123,12 @@ pub struct Settings {
     pub startup: bool,
     pub sync_quota_mb: u64,
     pub sync_max_file_mb: u64,
+    pub git_push_mib: u64,
+    pub git_repo_mib: u64,
+    pub git_total_mib: u64,
+    pub git_lfs_object_mib: u64,
+    pub git_lfs_repo_mib: u64,
+    pub git_lfs_total_mib: u64,
     /// Where the app registry's `index.json` lives. Empty turns the registry off.
     pub registry_url: String,
 }
@@ -148,6 +154,12 @@ impl Default for Settings {
             startup: false,
             sync_quota_mb: 10240,
             sync_max_file_mb: 2048,
+            git_push_mib: 64,
+            git_repo_mib: 1024,
+            git_total_mib: 20 * 1024,
+            git_lfs_object_mib: 4096,
+            git_lfs_repo_mib: 20 * 1024,
+            git_lfs_total_mib: 50 * 1024,
             registry_url: registry::DEFAULT_URL.into(),
         }
     }
@@ -211,6 +223,8 @@ pub struct Inner {
     pub(crate) git_files: Arc<RwLock<()>>,
     pub(crate) git_processes: Arc<Semaphore>,
     pub(crate) git_uploads: Arc<Semaphore>,
+    pub(crate) git_lfs_uploads: Arc<Semaphore>,
+    pub(crate) git_transfer_bytes: Arc<std::sync::Mutex<u64>>,
     pub(crate) git_binary: tokio::sync::OnceCell<PathBuf>,
     /// The last app registry index LOKI read; see [`registry`].
     pub registry: Mutex<Option<Arc<registry::Cache>>>,
@@ -228,6 +242,8 @@ impl State {
             "apps",
             "app-data",
             "backups",
+            "git-lfs",
+            "git-staging",
             "staging",
             "avatars",
             "logs",
@@ -314,6 +330,8 @@ impl State {
             git_files: Arc::new(RwLock::new(())),
             git_processes: Arc::new(Semaphore::new(8)),
             git_uploads: Arc::new(Semaphore::new(2)),
+            git_lfs_uploads: Arc::new(Semaphore::new(8)),
+            git_transfer_bytes: Arc::new(std::sync::Mutex::new(0)),
             git_binary: tokio::sync::OnceCell::new(),
             registry: Mutex::new(None),
         }));

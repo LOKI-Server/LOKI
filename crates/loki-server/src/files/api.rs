@@ -25,6 +25,8 @@ pub fn router() -> Router<State> {
         .route("/files/v1/devices", get(devices))
         .route("/files/v1/devices/{id}", delete(revoke))
         .route("/files/v1/shares", get(shares))
+        .route("/files/v1/app-repositories", get(app_repositories))
+        .route("/files/v1/app-repositories/{id}", get(app_catalog))
         .route("/files/v1/shares/{id}", get(info))
         .route("/files/v1/shares/{id}/entries", get(entries))
         .route("/files/v1/shares/{id}/metadata", get(metadata))
@@ -38,7 +40,7 @@ async fn discovery(ExtractState(state): ExtractState<State>) -> Json<Value> {
     Json(json!({"protocol":1,"server":env!("CARGO_PKG_VERSION"),
         "name":state.0.settings.read().await.name,"read_only":true,
         "authentication":"bearer","checksum":"sha256","page_size":100,
-        "max_page":999,"ranges":true,"pairing":true,"auth":"/auth/v1"}))
+        "max_page":999,"ranges":true,"pairing":true,"auth":"/auth/v1","app_repositories":true}))
 }
 
 // Original Files API login stays available as an alias for account sign-in.
@@ -126,17 +128,52 @@ async fn shares(
     ExtractState(state): ExtractState<State>,
     headers: HeaderMap,
 ) -> Result<Json<Value>> {
-    let (user, _) = caller(&state, &headers).await?;
-    let rows = sqlx::query("SELECT r.id,r.name,r.visibility FROM resources r JOIN shares s ON s.id=r.id WHERE r.kind='share' ORDER BY r.name COLLATE NOCASE,r.id")
-        .fetch_all(&state.0.db).await?;
+    share_list(&state, &headers, "files").await
+}
+
+async fn app_repositories(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    share_list(&state, &headers, "apps").await
+}
+
+async fn share_list(state: &State, headers: &HeaderMap, kind: &str) -> Result<Json<Value>> {
+    let (user, _) = caller(state, headers).await?;
+    let rows = sqlx::query("SELECT r.id,r.name,r.visibility FROM resources r JOIN shares s ON s.id=r.id WHERE r.kind='share' AND s.share_type=? ORDER BY r.name COLLATE NOCASE,r.id")
+        .bind(kind).fetch_all(&state.0.db).await?;
     let mut shares = Vec::new();
     for row in rows {
         let id: String = row.get("id");
-        if auth::allowed(&state, Some(&user), &id, "access").await? {
-            shares.push(json!({"id":id,"name":row.get::<String,_>("name"),"visibility":row.get::<String,_>("visibility"),"kind":"share"}));
+        if auth::allowed(state, Some(&user), &id, "access").await? {
+            shares.push(json!({"id":id,"name":row.get::<String,_>("name"),"visibility":row.get::<String,_>("visibility"),"kind":"share","share_type":kind}));
         }
     }
     Ok(Json(json!({"shares":shares})))
+}
+
+async fn app_catalog(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Value>> {
+    let share = share(&state, &headers, &id).await?;
+    let kind: String = sqlx::query_scalar("SELECT share_type FROM shares WHERE id=?")
+        .bind(&id)
+        .fetch_optional(&state.0.db)
+        .await?
+        .ok_or_else(Error::not_found)?;
+    if kind != "apps" {
+        return Err(Error::not_found());
+    }
+    let _scan = super::catalog::SCANS.try_acquire().map_err(|_| {
+        Error::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "File server is busy. Try again shortly.",
+        )
+    })?;
+    let apps = tokio::task::spawn_blocking(move || super::catalog::scan(&share)).await??;
+    Ok(Json(json!({"apps":apps})))
 }
 
 async fn share(state: &State, headers: &HeaderMap, id: &str) -> Result<Share> {
@@ -164,13 +201,13 @@ async fn info(
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
     share(&state, &headers, &id).await?;
-    let (name, visibility): (String, String) =
-        sqlx::query_as("SELECT name,visibility FROM resources WHERE id=?")
+    let (name, visibility, share_type): (String, String, String) =
+        sqlx::query_as("SELECT r.name,r.visibility,s.share_type FROM resources r JOIN shares s ON s.id=r.id WHERE r.id=?")
             .bind(&id)
             .fetch_one(&state.0.db)
             .await?;
     Ok(Json(
-        json!({"id":id,"name":name,"visibility":visibility,"kind":"share"}),
+        json!({"id":id,"name":name,"visibility":visibility,"kind":"share","share_type":share_type}),
     ))
 }
 
