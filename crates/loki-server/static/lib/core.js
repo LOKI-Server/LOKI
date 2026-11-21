@@ -1,11 +1,12 @@
 // Shared state, server access, dialogs, and DOM patching.
-// All server-supplied text is escaped before it reaches innerHTML.
+// Markup reaches the page only as Html from html.js, which escapes server data.
+import { escape, html } from "./html.js";
 import { icon } from "./icons.js";
 
 export const store = { session: null, state: null, loadedAt: 0, avatarVersion: 0 };
 
 export const $ = (selector, root = document) => root.querySelector(selector);
-export const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+export const esc = escape;
 export const enc = encodeURIComponent;
 export const fmt = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(1)} GB`;
 export const date = seconds => new Date(seconds * 1000).toLocaleString();
@@ -23,7 +24,7 @@ export function ago(seconds) {
       break;
     }
   }
-  return `<time datetime="${new Date(seconds * 1000).toISOString()}" title="${esc(date(seconds))}">${esc(text)}</time>`;
+  return html`<time datetime="${new Date(seconds * 1000).toISOString()}" title="${date(seconds)}">${text}</time>`;
 }
 
 export async function api(path, body, method = "POST") {
@@ -46,15 +47,16 @@ export const act = (action, id = "", data = {}) => api("/api/action", { action, 
 
 export function toast(message, error = false) {
   const box = $("#toast");
-  box.innerHTML = `${icon(error ? "alert" : "check")}<span>${esc(message)}</span>`;
+  box.innerHTML = String(html`${icon(error ? "alert" : "check")}<span>${message}</span>`);
   box.className = error ? "error" : "";
   box.hidden = false;
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => box.hidden = true, error ? 12000 : 5000);
 }
 
-export function modal(title, html) {
-  $("#dialog-body").innerHTML = `<h2 id="dialog-title">${esc(title)}</h2>${html}`;
+/** Opens the dialog with a title and Html body, or replaces what it shows. */
+export function modal(title, body) {
+  $("#dialog-body").innerHTML = String(html`<h2 id="dialog-title">${title}</h2>${body}`);
   const dialog = $("#dialog");
   if (!dialog.open) dialog.showModal();
 }
@@ -67,10 +69,10 @@ export function confirmDialog({ title, message, confirm = "Confirm", danger = tr
   $("#confirm-message").textContent = message;
   const yes = $("#confirm-yes");
   yes.textContent = confirm;
-  yes.className = danger ? "danger-solid" : "";
+  yes.className = danger ? "btn btn-danger-solid" : "btn btn-primary";
   dialog.returnValue = "";
   dialog.showModal();
-  $("button.subtle", dialog).focus();
+  $("#confirm-no", dialog).focus();
   return new Promise(resolve => dialog.addEventListener("close", () => resolve(dialog.returnValue === "yes"), { once: true }));
 }
 
@@ -79,9 +81,9 @@ export function confirmDialog({ title, message, confirm = "Confirm", danger = tr
  * nodes keep focus, scroll position, playing media, and anything typed into them:
  * attribute updates never overwrite a form control the user has edited.
  */
-export function morph(target, html) {
+export function morph(target, markup) {
   const next = document.createElement(target.tagName);
-  next.innerHTML = html;
+  next.innerHTML = String(markup);
   patchChildren(target, next);
 }
 function patchChildren(from, to) {

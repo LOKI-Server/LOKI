@@ -1,8 +1,9 @@
 // Client-side navigation. Pages render from the state already in memory, so moving
 // between them needs no request; stale state is refreshed afterwards and patched in.
-import { $, api, enc, esc, morph, reducedMotion, store } from "./core.js";
+import { $, api, enc, morph, reducedMotion, store } from "./core.js";
+import { html } from "./html.js";
 import { icon } from "./icons.js";
-import { button, heading, skeleton, tag } from "./ui.js";
+import { Badge, Button, Card, IconButton, LinkButton, PageHeader, Skeleton } from "./ui.js";
 import { authPage, signOutPage } from "../pages/auth.js";
 import { appsPage, overview, routesPage, sharesPage } from "../pages/services.js";
 import { accountsPage, activityPage, avatar } from "../pages/people.js";
@@ -45,7 +46,7 @@ async function resolve() {
     return authPage(page === "/register" ? "register" : "login");
   }
   if (!store.state) await refreshState();
-  if (session.user.status !== "approved") return heading("Your account is waiting", "The server owner will review your account request.", "", "waiting") + `<div class="card narrow"><p>Status: ${tag(session.user.status, "warn")}</p>${button("Sign out", "logout", "", "", "subtle", "logout")}</div>`;
+  if (session.user.status !== "approved") return html`${PageHeader({ title: "Your account is waiting", description: "The server owner will review your account request.", realm: "waiting" })}${Card({ className: "narrow", body: html`<p>Status: ${Badge(session.user.status, "warn")}</p>${Button({ label: "Sign out", action: "logout", icon: "logout" })}` })}`;
   if (page.startsWith("/shares/")) return browse(decodeURIComponent(page.split("/")[2]), browseParams());
   if (page.startsWith("/sync/")) return folderPage(decodeURIComponent(page.split("/")[2]), browseParams());
   const repo = /^\/repositories\/([^/]+)(?:\/items\/([^/]+))?$/.exec(page);
@@ -59,24 +60,24 @@ export function nav() {
   const here = location.pathname;
   const link = (path, label, iconName, badge = 0) => {
     const active = path === "/" ? here === "/" : here === path || here.startsWith(`${path}/`);
-    return `<a href="${path}"${active ? ' class="active" aria-current="page"' : ""}>${icon(iconName)}<span>${label}</span>${badge ? `<span class="badge" aria-label="${badge} waiting">${badge}</span>` : ""}</a>`;
+    return html`<a href="${path}"${active ? html` class="active" aria-current="page"` : ""}>${icon(iconName)}<span>${label}</span>${badge ? html`<span class="nav-badge" aria-label="${badge} waiting">${badge}</span>` : ""}</a>`;
   };
+  const section = (label, links) => html`<div class="nav-section"><span class="section-label">${label}</span>${links}</div>`;
   let links = "";
   if (user && user.status === "approved") {
-    links = `<div class="nav-section"><span class="section-label">Your universe</span>${link("/", "Overview", "home")}${link("/apps", "Applications", "apps")}${link("/shares", "File shares", "folder")}${link("/repositories", "Repositories", "folder")}${state?.sync ? link("/sync", "Save sync", "sync", state.sync.folders.reduce((n, f) => n + f.conflicts, 0)) : ""}</div>`;
-    if (user.owner) {
-      const pending = state?.users?.filter(u => u.status === "pending").length || 0;
-      links += `<div class="nav-section"><span class="section-label">Server</span>${link("/routes", "Routes & services", "route")}${link("/accounts", "People & groups", "people", pending)}${link("/activity", "Activity", "activity")}${link("/settings", "Server settings", "settings")}</div>`;
-    }
-    links += `<div class="nav-section"><span class="section-label">You</span>${link("/account", "My account", "user")}</div>`;
+    const conflicts = state?.sync ? state.sync.folders.reduce((n, f) => n + f.conflicts, 0) : 0;
+    const pending = state?.users?.filter(u => u.status === "pending").length || 0;
+    links = html`${section("Your universe", [link("/", "Overview", "home"), link("/apps", "Applications", "apps"), link("/shares", "File shares", "folder"), link("/repositories", "Repositories", "repo"), state?.sync ? link("/sync", "Save sync", "sync", conflicts) : ""])}${user.owner ? section("Server", [link("/routes", "Routes & services", "route"), link("/accounts", "People & groups", "people", pending), link("/activity", "Activity", "activity"), link("/settings", "Server settings", "settings")]) : ""}${section("You", link("/account", "My account", "user"))}`;
   }
   morph($("#navigation"), links);
-  $("#server-name").innerHTML = `<span class="status-dot"></span>${esc(session.name || "LOKI Server")}`;
-  morph($("#identity"), user ? `<a class="account" href="/account">${avatar(user)}<span class="username">${esc(user.display_name || user.username)}</span>${user.owner ? tag("Owner") : ""}</a>${button("Sign out", "logout", "", 'aria-label="Sign out" title="Sign out"', "icon-button", "logout")}` : '<a class="button subtle" href="/login">Sign in</a>');
+  $("#server-name").innerHTML = String(html`<span class="status-dot"></span>${session.name || "LOKI Server"}`);
+  // The tab is named after the server, and follows a rename without a reload.
+  document.title = session.name?.trim() || "LOKI";
+  morph($("#identity"), user ? html`<a class="account" href="/account">${avatar(user)}<span class="username">${user.display_name || user.username}</span>${user.owner ? Badge("Owner") : ""}</a>${IconButton({ icon: "logout", label: "Sign out", action: "logout" })}` : LinkButton({ label: "Sign in", href: "/login", size: "sm" }));
 }
 
 export function showError(error) {
-  $("#main").innerHTML = heading("The branch is out of reach.", error.message, button("Try again", "reload", "", "", "primary", "refresh"), "lost");
+  $("#main").innerHTML = String(PageHeader({ title: "The branch is out of reach.", description: error.message, actions: Button({ label: "Try again", action: "reload", kind: "primary", icon: "refresh" }), realm: "lost" }));
   $("#main").removeAttribute("aria-busy");
 }
 
@@ -91,14 +92,14 @@ export async function render({ transition = false, keep = false } = {}) {
   const placeholder = keep ? 0 : setTimeout(() => {
     if (token !== renderToken) return;
     main.setAttribute("aria-busy", "true");
-    main.innerHTML = skeleton();
+    main.innerHTML = String(Skeleton());
   }, 120);
-  let html;
-  try { html = await resolve(); } finally { clearTimeout(placeholder); }
+  let page;
+  try { page = await resolve(); } finally { clearTimeout(placeholder); }
   if (token !== renderToken) return;
   const apply = () => {
-    if (keep) morph(main, html);
-    else main.innerHTML = html;
+    if (keep) morph(main, page);
+    else main.innerHTML = String(page);
     main.removeAttribute("aria-busy");
     nav();
   };
@@ -114,7 +115,9 @@ export async function render({ transition = false, keep = false } = {}) {
   }
   once();
   if (!keep) {
-    scrollTo({ top: 0 });
+    const target = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if (target) target.scrollIntoView();
+    else scrollTo({ top: 0 });
     main.focus({ preventScroll: true });
   }
   schedulePoll(keep);
@@ -139,6 +142,8 @@ export function routable(link, event) {
   if ((link.target && link.target !== "_self") || link.hasAttribute("download")) return false;
   const url = new URL(link.href, location.href);
   if (url.origin !== location.origin) return false;
+  // Jumps within the page are left to the browser.
+  if (url.hash && url.pathname === location.pathname && url.search === location.search) return false;
   return !/^\/(api|oidc|avatars|assets|gateway|_loki|\.well-known|sync\/v1)(\/|$)/.test(url.pathname);
 }
 

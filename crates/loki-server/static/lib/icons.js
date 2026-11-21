@@ -1,4 +1,6 @@
 // Stroke icons on a 24px grid. Only geometry lives here; style.css sets stroke and size.
+import { raw } from "./html.js";
+
 const paths = {
   home: "M3 10.5 12 3l9 7.5M5 9v11h5v-6h4v6h5V9",
   apps: "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z",
@@ -36,8 +38,23 @@ const paths = {
   globe: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9z",
   lock: "M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4",
   sync: "M4 10a8 8 0 0 1 14.5-4.5L20 7M20 3v4h-4M20 14a8 8 0 0 1-14.5 4.5L4 17M4 21v-4h4M9 12l2 2 4-4",
+  code: "M8 7l-5 5 5 5M16 7l5 5-5 5",
+  branch: "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9",
+  tag: "M3 3h8l10 10-8 8L3 11zM7.5 7.5h.01",
+  commit: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 12h6M15 12h6",
+  history: "M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 3",
+  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
+  issue: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
+  pull: "M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9v12M18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 15V8a2 2 0 0 0-2-2h-5M13 3l-3 3 3 3",
+  merge: "M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9v12M18 18a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9a9 9 0 0 0 9 6",
+  repo: "M5 4a2 2 0 0 1 2-2h12v16H7a2 2 0 0 0-2 2zM5 20a2 2 0 0 0 2 2h12v-4M9 6h6",
+  down: "M6 9l6 6 6-6",
+  dots: "M5 12h.01M12 12h.01M19 12h.01",
+  database: "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3",
 };
 
+/** An icon by name; unknown names fall back to a file. `extra` adds fixed class names. */
 export function icon(name, extra = "") {
-  return `<svg class="icon${extra ? ` ${extra}` : ""}" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name] || paths.file}"/></svg>`;
+  const classes = /^[a-z0-9 -]*$/i.test(extra) ? extra : "";
+  return raw(`<svg class="icon${classes ? ` ${classes}` : ""}" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name] || paths.file}"/></svg>`);
 }

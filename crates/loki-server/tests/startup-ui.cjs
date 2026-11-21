@@ -102,7 +102,7 @@ test('closing the confirmation dialog cancels and paths are escaped', async () =
 test('a restored enabled flag does not show another executable as this copy startup', async () => {
   const app = await browser([]);
   app.store.state = {startup: {needs_confirmation: true, registered_executable: 'F:\\Portable\\loki-server.exe'}};
-  const html = app.auth.startupControl({startup: true});
+  const html = String(app.auth.startupControl({startup: true}));
   assert.ok(!html.includes(' checked'));
   assert.ok(html.includes('another LOKI copy'));
 });

@@ -24,6 +24,8 @@ use tokio::io::AsyncWriteExt;
 #[derive(Template)]
 #[template(path = "shell.html")]
 struct Shell {
+    /// The server's own name, shown as the browser tab's title.
+    name: String,
     version: &'static str,
     assets: &'static str,
     modules: Vec<&'static str>,
@@ -107,7 +109,9 @@ async fn shell(ExtractState(state): ExtractState<State>, headers: HeaderMap) -> 
     } else {
         boot(&state, &headers).await
     };
+    let name = state.0.settings.read().await.name.clone();
     let page = Shell {
+        name: if name.trim().is_empty() { "LOKI".into() } else { name },
         version: env!("CARGO_PKG_VERSION"),
         assets: crate::assets::base(),
         modules: crate::assets::modules(),

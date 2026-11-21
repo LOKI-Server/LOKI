@@ -11,25 +11,25 @@ test('device pairing and management belong to Account even without sync access',
   globalThis.location = {search: '?code=BCDF-GHJK'};
   store.session = {user: {id:'u',username:'reader',display_name:'Reader',bio:'',email:''},public_url:'https://loki.test'};
   store.state = {sessions:[],mfa:false,devices:[{id:'d',name:'Reader device',platform:'test',created:1,last_seen:1}]};
-  const account = accountPage();
+  const account = String(accountPage());
   assert.match(account,/id="devices"/);
   assert.match(account,/data-action="device-pair"/);
   assert.match(account,/data-action="device-rename"/);
   assert.match(account,/data-action="device-revoke"/);
   assert.match(account,/Reader device/);
-  const pairing = pairPage();
+  const pairing = String(pairPage());
   assert.match(pairing,/Back to your account/);
   assert.match(pairing,/BCDF-GHJK/);
   assert.doesNotMatch(pairing,/Back to Save sync/);
-  assert.match(syncPage(),/Sync is not enabled/);
+  assert.match(String(syncPage()),/Sync is not enabled/);
 });
 
 test('sync links to account device management instead of owning the pairing controls', async () => {
   const {store} = await modules('lib/core.js');
   const {syncPage} = await modules('pages/sync.js');
   store.state = {sync:{folders:[],quota:1024,usage:0,max_file_bytes:1024}};
-  const page = syncPage();
-  assert.match(page,/href="\/account"/);
+  const page = String(syncPage());
+  assert.match(page,/href="\/account(#devices)?"/);
   assert.doesNotMatch(page,/data-action="sync-pair"|data-action="sync-device-/);
 });
 

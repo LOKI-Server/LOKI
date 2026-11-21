@@ -1,7 +1,8 @@
-// Owner dialogs for managing applications, shares, routes, and who can reach them.
-import { api, esc, modal, resource, store } from "../lib/core.js";
+// Owner dialogs for managing applications, shares, routes, built-in features, and who can reach them.
+import { api, modal, resource, store } from "../lib/core.js";
+import { html } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
-import { button, check, field, tag } from "../lib/ui.js";
+import { Badge, Button, ButtonGroup, Checkbox, DialogSection, Field, FieldRow, Form, FormFooter, Help, IconButton, Notice, Select, Submit } from "../lib/ui.js";
 import { resourceStatus } from "./services.js";
 
 export const subjects = () => [
@@ -10,73 +11,87 @@ export const subjects = () => [
 ];
 export const roles = r => [...new Set(["access", ...(r.kind === "app" ? ["admin", ...r.manifest.roles] : [])])];
 
+/** Who can reach a resource: an audience, and permissions for people and groups. */
 export function accessPanel(r) {
   const grants = store.state.grants.filter(g => g.resource === r.id);
   const audiences = { restricted: "Selected people and groups", ...(r.kind === "vcs-create" ? {} : { members: "All approved members" }), ...(["sync", "vcs-create"].includes(r.kind) ? {} : { public: "Public" }) };
-  return `<form data-form="access" data-id="${esc(r.id)}"><label for="access-visibility">Audience</label><select id="access-visibility" name="visibility">${Object.entries(audiences).map(([v, label]) => `<option ${r.visibility === v ? "selected" : ""} value="${v}">${label}</option>`).join("")}</select>${r.kind === "app" ? '<p class="help">Public visibility makes the service discoverable, but this app may still require a LOKI sign-in for its features.</p>' : ""}${r.kind === "route" && !r.gated ? '<p class="help">Without a browser sign-in gate, these permissions control the service card in LOKI. The upstream service controls sign-in.</p>' : ""}<label>Permissions</label><div id="grants">${grants.map(g => grantRow(subjects(), roles(r), `${g.subject_kind}:${g.subject}`, g.role)).join("")}</div>${button("Add permission", "grant-add", r.id, "", "ghost", "plus")}<div class="actions"><button>Save access</button></div></form>`;
+  const note = r.kind === "app" ? "Public makes the service discoverable, but the app may still ask for a LOKI sign-in."
+    : r.kind === "route" && !r.gated ? "Without the sign-in gate, these permissions control who sees the service in LOKI. The service itself controls sign-in." : "";
+  return Form({ name: "access", id: r.id, body: html`${Select({ name: "visibility", label: "Audience", options: Object.entries(audiences), value: r.visibility, help: note })}<div class="field"><span class="field-label">Permissions</span><div id="grants" class="grant-list">${grants.map(g => grantRow(subjects(), roles(r), `${g.subject_kind}:${g.subject}`, g.role))}</div>${Button({ label: "Add permission", action: "grant-add", id: r.id, icon: "plus", size: "sm", kind: "ghost" })}</div>${FormFooter(Submit({ label: "Save access" }))}` });
 }
 
 export function grantRow(subjects, roles, selected = "", role = "access") {
-  return `<div class="grant-row"><select class="grant-subject" aria-label="Person or group">${subjects.map(s => `<option value="${esc(s.key)}" ${s.key === selected ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select><select class="grant-role" aria-label="Role">${roles.map(r => `<option ${r === role ? "selected" : ""}>${esc(r)}</option>`).join("")}</select>${button("Remove", "grant-remove", "", 'aria-label="Remove permission"', "icon-button", "trash")}</div>`;
+  return html`<div class="grant-row"><select class="grant-subject" aria-label="Person or group">${subjects.map(s => html`<option value="${s.key}"${s.key === selected ? html` selected` : ""}>${s.label}</option>`)}</select><select class="grant-role" aria-label="Role">${roles.map(r => html`<option${r === role ? html` selected` : ""}>${r}</option>`)}</select>${IconButton({ icon: "trash", label: "Remove permission", action: "grant-remove" })}</div>`;
 }
-
-const section = (title, body) => `<section class="dialog-section"><h3>${esc(title)}</h3>${body}</section>`;
 
 export function syncManage(id) {
-  const r = resource(id);
-  modal(r.name, `<p>Who may pair devices and keep files in sync. Each person only ever sees their own folders. Set storage limits in Server settings and per person in People &amp; groups.</p>` + section("Who can use sync", accessPanel(r)));
+  const r = resource(id), s = store.state.settings;
+  modal("Save sync", [html`<p class="lead">Each person only ever sees their own folders. Storage counts every file's version history.</p>`,
+    DialogSection("Storage", Form({ name: "settings", body: html`${FieldRow(Field({ name: "sync_quota_mb", label: "Storage per person (MiB)", value: s.sync_quota_mb, type: "number", required: true, min: 1 }), Field({ name: "sync_max_file_mb", label: "Largest file (MiB)", value: s.sync_max_file_mb, type: "number", required: true, min: 1, max: 1048576 }))}<p class="help">Give someone more or less room from their page in <a href="/accounts">People &amp; groups</a>.</p>${FormFooter(Submit({ label: "Save storage" }))}` })),
+    DialogSection("Who can use sync", accessPanel(r))]);
 }
 
-export function vcsCreation() {
-  modal("Repository creation", accessPanel(resource("vcs-create")));
+export const vcsLimits = { vcs_repo_mib: "Storage per repository (MiB)", vcs_total_mib: "Total repository storage (MiB)" };
+
+export function vcsManage() {
+  const s = store.state.settings;
+  modal("Repositories", html`<p class="lead">Repositories are hosted by Skald. Each one keeps its own access list; these settings apply to all of them.</p>${DialogSection("Storage", Form({ name: "settings", body: html`${FieldRow(...Object.entries(vcsLimits).map(([key, label]) => Field({ name: key, label, value: s[key], type: "number", required: true, min: 1, max: 1048576 })))}${FormFooter(Submit({ label: "Save storage" }))}` }))}${DialogSection("Who can create repositories", accessPanel(resource("vcs-create")))}`);
 }
 
 // Apps that keep files can be given more room, or less, than they ask for.
 function storageSettings(r) {
   if (!r.manifest.capabilities?.includes("storage")) return "";
   const asked = r.manifest.limits?.storage_mib ?? 64;
-  return `${field("storage_mib", "Storage quota in MiB", r.storage_mib ?? "", "number", `min=1 max=1048576 placeholder=${asked}`)}<p class="help">Leave blank for the ${asked} MiB the app asks for.</p>`;
+  return Field({ name: "storage_mib", label: "Storage quota (MiB)", value: r.storage_mib ?? "", type: "number", min: 1, max: 1048576, placeholder: asked, help: `Leave blank for the ${asked} MiB the app asks for.` });
 }
 
 // Apps with live connections, such as game servers, can also listen on the LAN.
 function realtimeSettings(r) {
   if (!r.manifest.capabilities?.includes("realtime")) return "";
   const path = r.manifest.limits?.realtime?.path || "/multiplayer";
-  return `<div class="notice">Anyone who can reach this app can connect to its live endpoint (<span class="mono">${esc(path)}</span>) without a LOKI account. The app decides who may join.</div>${field("lan_bind", "LAN address (optional)", r.lan_bind || "", "text", "placeholder=0.0.0.0:4767")}<p class="help">Also accept connections on this address, so devices on your network can connect by IP. Only the live endpoint and health check answer there. Allow the port in your firewall.</p>`;
+  return html`${Notice({ tone: "info", body: html`Anyone who can reach this app can connect to its live endpoint (<span class="mono">${path}</span>) without a LOKI account. The app decides who may join.` })}${Field({ name: "lan_bind", label: "LAN address (optional)", value: r.lan_bind || "", placeholder: "0.0.0.0:4767", help: "Also accept connections on this address, so devices on your network can connect by IP. Only the live endpoint and health check answer there. Allow the port in your firewall." })}`;
+}
+
+function appField(r, f) {
+  const value = r.config[f.key] ?? f.default;
+  if (f.kind === "bool") return Checkbox({ name: f.key, label: f.label, checked: value });
+  return Field({ name: f.key, label: f.label, value: value ?? "", type: f.kind === "secret" ? "password" : f.kind === "number" ? "number" : "text", required: f.required });
 }
 
 export function appManage(id) {
   const r = resource(id);
-  const operation = (label, op, kind = "subtle", iconName = "") => button(label, "app-operation", id, `data-operation="${op}"`, kind, iconName);
-  modal(r.name, `<p>${esc(r.manifest.description)}</p><div class="tags">${tag(`v${r.manifest.version}`)}${tag(r.manifest.runtime === "wasi" ? "WASI component" : "Native service")}${resourceStatus(r)}</div>${r.error ? `<p class="notice error">${esc(r.error)}</p>` : ""}<div class="actions">${operation(r.enabled ? "Disable" : "Enable", r.enabled ? "disable" : "enable", "primary", "power")}${r.enabled ? operation("Restart", "restart", "subtle", "refresh") : ""}${r.manifest.panel && r.ready ? button("Open panel", "app-panel", id, "", "subtle", "apps") : ""}${button("Logs", "logs", id, "", "subtle", "logs")}${r.previous ? operation("Roll back version & data", "rollback", "subtle", "left") : ""}${operation("Uninstall (keep data)", "uninstall", "danger", "trash")}</div>`
-    + section("Settings", `<form data-form="app-config" data-id="${esc(id)}">${field("hostname", "Public hostname (optional)", r.hostname, "text", "placeholder=bigshot.example.com")}<p class="help">Leave blank for loopback access. Your domain needs DNS and a configured Caddy.</p>${realtimeSettings(r)}${storageSettings(r)}${r.manifest.fields.map(f => f.kind === "bool" ? check(f.key, f.label, r.config[f.key] ?? f.default) : field(f.key, f.label, r.config[f.key] ?? f.default ?? "", f.kind === "secret" ? "password" : f.kind === "number" ? "number" : "text", f.required ? "required" : "")).join("")}<div class="actions"><button>Save application settings</button></div></form>`)
-    + (r.manifest.capabilities?.includes("personal-storage") ? section("Personal storage", `<form data-form="personal-enable" data-id="${esc(id)}">${check("enabled", "Allow this app to save files for its signed-in users", r.personal_storage)}<button>Save permission</button></form>`) : "")
-    + section("Who can use this app", accessPanel(r)));
+  const operation = (label, op, kind = "secondary", iconName = "") => Button({ label, action: "app-operation", id, data: { operation: op }, kind, icon: iconName, size: "sm" });
+  modal(r.name, [html`<p class="lead">${r.manifest.description}</p><div class="badge-row">${Badge(`v${r.manifest.version}`, "neutral")}${Badge(r.manifest.runtime === "wasi" ? "WASI component" : "Native service", "neutral")}${resourceStatus(r)}</div>${r.error ? Notice({ tone: "danger", body: r.error }) : ""}${ButtonGroup(operation(r.enabled ? "Disable" : "Enable", r.enabled ? "disable" : "enable", "primary", "power"), r.enabled ? operation("Restart", "restart", "secondary", "refresh") : "", r.manifest.panel && r.ready ? Button({ label: "Open panel", action: "app-panel", id, icon: "apps", size: "sm" }) : "", Button({ label: "Logs", action: "logs", id, icon: "logs", size: "sm" }), r.previous ? operation("Roll back version & data", "rollback", "secondary", "left") : "")}`,
+    DialogSection("Settings", Form({ name: "app-config", id, body: html`${Field({ name: "hostname", label: "Public hostname (optional)", value: r.hostname, placeholder: "bigshot.example.com", help: "Leave blank for loopback access. Your domain needs DNS and a configured Caddy." })}${realtimeSettings(r)}${storageSettings(r)}${r.manifest.fields.map(f => appField(r, f))}${FormFooter(Submit({ label: "Save settings" }))}` })),
+    r.manifest.capabilities?.includes("personal-storage") ? DialogSection("Personal storage", Form({ name: "personal-enable", id, body: html`${Checkbox({ name: "enabled", label: "Allow this app to save files for its signed-in users", checked: r.personal_storage })}${FormFooter(Submit({ label: "Save permission" }))}` })) : "",
+    DialogSection("Who can use this app", accessPanel(r)),
+    DialogSection("Uninstall", html`<div class="danger-row"><p>Removes the app. Its data and shared files are kept.</p>${operation("Uninstall", "uninstall", "danger", "trash")}</div>`)]);
 }
 
 export function shareForm(r = {}) {
   const excluded = Array.isArray(r.excluded_extensions) ? r.excluded_extensions.map(e => "." + e).join(", ") : (r.excluded_extensions || "");
-  const kind = r.id
-    ? `<p>Type <strong>${r.share_type === "apps" ? "App repository" : "File server"}</strong></p>`
-    : `<label for="share_type">File server type</label><select id="share_type" name="share_type"><option value="files">File server</option><option value="apps" ${r.share_type === "apps" ? "selected" : ""}>App repository</option></select><p class="help">For an app repository, put each app in its own folder. LOKI Desktop offers its builds for download and updates.</p>`;
-  return `<form data-form="share" data-id="${esc(r.id || "")}">${field("name", "Share name", r.name || "", "text", "required")}${kind}<div class="input-with-button">${field("root", "Folder on this server", r.root || "", "text", "required")}${button("Browse", "folder-picker", r.id || "", "", "subtle", "folder")}</div>${field("excluded_extensions", "Ignore file extensions (optional)", excluded, "text", 'maxlength="4096" placeholder=".tmp, .bak, .psd, .tar.gz"')}<p class="help">Separate extensions with commas or spaces. Matching ignores case and applies in every folder. These files are hidden from listings and cannot be previewed or downloaded through this share. Folders are kept.</p><div class="actions"><button>${r.id ? "Save share" : "Create share"}</button>${r.id ? button("Remove share", "share-delete", r.id, "", "danger", "trash") : ""}</div>${r.id ? "" : '<p class="help">New shares are restricted to you until you grant access.</p>'}</form>`;
+  const type = r.id
+    ? html`<p class="field-static"><span class="field-label">Type</span>${Badge(r.share_type === "apps" ? "App repository" : "File server", "neutral")}</p>`
+    : Select({ name: "share_type", label: "Kind of share", options: [["files", "File server"], ["apps", "App repository"]], value: r.share_type, help: "For an app repository, put each app in its own folder. LOKI Desktop offers its builds for download and updates." });
+  return Form({ name: "share", id: r.id || "", body: html`${Field({ name: "name", label: "Share name", value: r.name || "", required: true })}${type}<div class="input-with-button">${Field({ name: "root", label: "Folder on this server", value: r.root || "", required: true })}${Button({ label: "Browse", action: "folder-picker", id: r.id || "", icon: "folder" })}</div>${Field({ name: "excluded_extensions", label: "Ignore file extensions (optional)", value: excluded, maxlength: 4096, placeholder: ".tmp, .bak, .psd, .tar.gz", help: "Separate extensions with commas or spaces. Matching ignores case and applies in every folder. These files are hidden from listings and can't be previewed or downloaded through this share." })}${r.id ? "" : Help("New shares are restricted to you until you grant access.")}${FormFooter(Submit({ label: r.id ? "Save share" : "Create share" }))}` });
 }
 export function shareManage(id, draft = {}) {
   const r = resource(id);
-  modal(r.name, shareForm({ ...r, ...draft, id }) + section("Who can browse this share", accessPanel(r)));
+  modal(r.name, html`${shareForm({ ...r, ...draft, id })}${DialogSection("Who can browse this share", accessPanel(r))}${DialogSection("Remove share", html`<div class="danger-row"><p>Stops sharing the folder through LOKI. Files on disk are kept.</p>${Button({ label: "Remove share", action: "share-delete", id, kind: "danger", icon: "trash", size: "sm" })}</div>`)}`);
 }
 
 export function routeForm(r = {}) {
-  const adapters = { none: "No OS service", windows: "Windows service", systemd: "Linux systemd", brew: "macOS Homebrew" };
-  return `<form data-form="route" data-id="${esc(r.id || "")}">${field("name", "Service name", r.name || "")}${field("hostname", "Public hostname", r.hostname || "", "text", "placeholder=jellyfin.example.com required")}${field("upstream", "Upstream origin", r.upstream || "http://127.0.0.1:8096", "url", "required")}${check("gated", "Require LOKI browser sign-in before forwarding", r.gated)}<p class="help">Leave the browser gate off for Jellyfin and services used by native clients. They keep their own login.</p><div class="two"><div><label for="service-kind">OS service adapter (optional)</label><select id="service-kind" name="service_kind">${Object.entries(adapters).map(([k, label]) => `<option value="${k}" ${r.service_kind === k ? "selected" : ""}>${label}</option>`).join("")}</select></div><div>${field("service", "OS service name", r.service || "")}</div></div><div class="actions"><button>Save route</button></div></form>`;
+  const adapters = [["none", "No OS service"], ["windows", "Windows service"], ["systemd", "Linux systemd"], ["brew", "macOS Homebrew"]];
+  return Form({ name: "route", id: r.id || "", body: html`${Field({ name: "name", label: "Service name", value: r.name || "" })}${Field({ name: "hostname", label: "Public hostname", value: r.hostname || "", placeholder: "jellyfin.example.com", required: true })}${Field({ name: "upstream", label: "Upstream origin", value: r.upstream || "http://127.0.0.1:8096", type: "url", required: true })}${Checkbox({ name: "gated", label: "Require LOKI browser sign-in before forwarding", checked: r.gated, help: "Leave this off for Jellyfin and services used by native apps. They keep their own sign-in." })}${FieldRow(Select({ name: "service_kind", label: "OS service adapter (optional)", options: adapters, value: r.service_kind }), Field({ name: "service", label: "OS service name", value: r.service || "" }))}${FormFooter(Submit({ label: "Save route" }))}` });
 }
 export function routeManage(id) {
   const r = resource(id);
-  const operation = (label, op, kind, iconName) => button(label, "route-operation", id, `data-operation="${op}"`, kind, iconName);
-  modal(r.name, `<div class="tags">${resourceStatus(r)}${r.gated ? tag("Sign-in gate") : ""}</div><div class="actions">${operation(r.enabled ? "Disable route" : "Enable route", r.enabled ? "disable" : "enable", "primary", "power")}${operation("Delete route", "delete", "danger", "trash")}</div>`
-    + (r.service ? section("OS service", `<div class="actions">${["status", "start", "stop", "restart"].map(op => button(op[0].toUpperCase() + op.slice(1), "service-operation", id, `data-operation="${op}"`)).join("")}</div>`) : "")
-    + section("Address", r.enabled ? '<p class="notice">Disable this route to edit its address or upstream.</p>' : routeForm(r))
-    + section("Who sees this service", accessPanel(r)));
+  const operation = (label, op, kind, iconName) => Button({ label, action: "route-operation", id, data: { operation: op }, kind, icon: iconName, size: "sm" });
+  modal(r.name, [html`<div class="badge-row">${resourceStatus(r)}${r.gated ? Badge("Sign-in gate") : ""}</div>${ButtonGroup(operation(r.enabled ? "Disable route" : "Enable route", r.enabled ? "disable" : "enable", "primary", "power"))}`,
+    r.service ? DialogSection("OS service", ButtonGroup(...["status", "start", "stop", "restart"].map(op => Button({ label: op[0].toUpperCase() + op.slice(1), action: "service-operation", id, data: { operation: op }, size: "sm" })))) : "",
+    DialogSection("Address", r.enabled ? Notice({ tone: "info", body: "Disable this route to edit its address or upstream." }) : routeForm(r)),
+    DialogSection("Who sees this service", accessPanel(r)),
+    DialogSection("Delete route", html`<div class="danger-row"><p>LOKI stops forwarding to the service. The service itself keeps running.</p>${operation("Delete route", "delete", "danger", "trash")}</div>`)]);
 }
 
 export async function folderPicker(path = "") {
@@ -84,5 +99,5 @@ export async function folderPicker(path = "") {
   const parent = result.parent !== undefined && result.parent !== null;
   // Inside a folder, list each subfolder by its own name; the full path is above.
   const label = p => result.path ? p.split(/[\\/]/).filter(Boolean).pop() || p : p;
-  modal("Choose a folder on this server", `<p class="mono path-display">${icon("folder")}${esc(result.path || "Available roots")}</p><div class="actions">${result.path ? button("Use this folder", "folder-select", "", `data-path="${esc(result.path)}"`, "primary", "check") : ""}${parent ? button("Parent folder", "folder-open", "", `data-path="${esc(result.parent)}"`, "subtle", "up") : ""}</div><div class="folder-list">${result.folders.map(p => button(label(p), "folder-open", "", `data-path="${esc(p)}"`, "subtle", "folder")).join("") || '<p class="help">No folders inside.</p>'}</div>`);
+  modal("Choose a folder on this server", html`<p class="path-display mono">${icon("folder")}${result.path || "Available roots"}</p>${ButtonGroup(result.path ? Button({ label: "Use this folder", action: "folder-select", data: { path: result.path }, kind: "primary", icon: "check", size: "sm" }) : "", parent ? Button({ label: "Parent folder", action: "folder-open", data: { path: result.parent }, icon: "up", size: "sm" }) : "")}<div class="folder-list">${result.folders.length ? result.folders.map(p => html`<button type="button" class="folder-item" data-action="folder-open" data-path="${p}">${icon("folder")}<span>${label(p)}</span></button>`) : Help("No folders inside.")}</div>`);
 }

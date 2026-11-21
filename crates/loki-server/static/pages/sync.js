@@ -1,13 +1,14 @@
 // Save sync: folders kept the same across a person's devices, with version history.
 // Devices use /sync/v1; account settings manage their shared sign-in.
-import { ago, api, enc, esc, fmt, modal, store } from "../lib/core.js";
+import { ago, api, enc, fmt, modal, store } from "../lib/core.js";
+import { html, plural } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
-import { button, empty, field, heading, linkButton, table, tag } from "../lib/ui.js";
+import { Badge, Breadcrumbs, Button, Card, DialogSection, EmptyState, Field, Form, FormFooter, IconButton, IconLink, LinkButton, List, Meter, Notice, PageHeader, Pager, Row, Select, Split, Submit, Table, Toolbar } from "../lib/ui.js";
 
 const kinds = { generic: "General files", "retroarch-saves": "RetroArch saves", "retroarch-states": "RetroArch save states", "emulator-saves": "Other emulator saves", "pc-game-saves": "PC game saves", documents: "Documents" };
 const kindLabel = kind => kinds[kind] || kind;
-const disabled = () => heading("Save sync", "Your saves and files, the same on every device.", "", "sync")
-  + empty("Sync is not enabled for your account.", "Ask the server owner to give you access to Save sync.", "", "ᛇ");
+const header = actions => PageHeader({ title: "Save sync", description: "Your saves and files, the same on every device.", actions, realm: "sync" });
+const disabled = () => html`${header()}${EmptyState({ title: "Sync is not enabled for your account.", text: "Ask the server owner to give you access to Save sync.", rune: "ᛇ" })}`;
 
 export const folderUrl = (id, path = "", page = 0) => {
   const query = new URLSearchParams();
@@ -17,26 +18,30 @@ export const folderUrl = (id, path = "", page = 0) => {
 };
 const fileUrl = (id, path) => `/api/sync/folders/${enc(id)}/file?path=${enc(path)}`;
 const historyFileUrl = (id, history) => `/api/sync/folders/${enc(id)}/file?history=${enc(history)}`;
+const conflictCount = n => Badge(`${n} conflict${n === 1 ? "" : "s"}`, "warn");
 
 export function syncPage() {
   const sync = store.state.sync;
   if (!sync) return disabled();
   const conflicts = sync.folders.reduce((n, f) => n + f.conflicts, 0);
-  const folders = table(["Folder", "Kind", "Files", "Size", ""], sync.folders.map(f => ({
-    key: f.id,
-    cells: [
-      `<a class="file-name" href="${esc(folderUrl(f.id))}"><span class="file-icon folder" aria-hidden="true">${icon("folder")}</span>${esc(f.name)}</a>${f.conflicts ? tag(`${f.conflicts} conflict${f.conflicts === 1 ? "" : "s"}`, "warn") : ""}`,
-      `<span class="muted">${esc(kindLabel(f.kind))}</span>`,
-      String(f.files),
-      fmt(f.bytes),
-      button("Manage", "sync-folder-manage", f.id, "", "ghost", "settings"),
-    ],
-  })));
-  return heading("Save sync", "Your saves and files, the same on every device.", linkButton("Devices & sign-in", "/account", "subtle", "account"), "sync")
-    + (conflicts ? `<div class="pending-banner">${icon("alert")}<span>${conflicts} conflicting version${conflicts === 1 ? "" : "s"} need${conflicts === 1 ? "s" : ""} a decision. Open the folder to choose.</span></div>` : "")
-    + `<div class="split"><div class="stack"><section class="card"><div class="card-header"><h2>Folders</h2>${button("New folder", "sync-folder-new", "", "", "subtle", "plus")}</div>${sync.folders.length ? folders : '<p class="help">Create a folder, then map it to a local directory on each device, such as RetroArch’s saves folder.</p>'}</section></div>`
-    + `<div class="stack"><section class="card"><h2>Storage</h2><progress class="quota" max="${sync.quota}" value="${Math.min(sync.usage, sync.quota)}" aria-label="Storage used"></progress><p><strong>${fmt(sync.usage)}</strong> of ${fmt(sync.quota)} used, including version history.</p><small>Files up to ${fmt(sync.max_file_bytes)} each.</small></section>`
-    + `<section class="card"><h2>Device sign-in</h2><p>Pair devices and manage their access from your account.</p>${linkButton("Account & devices", "/account", "subtle", "account")}</section></div></div>`;
+  const owned = store.session?.user?.owner && store.state.resources?.find(r => r.kind === "sync");
+  const folders = sync.folders.map(f => Row({
+    key: f.id, icon: "folder", tone: "gold", title: f.name, href: folderUrl(f.id),
+    badges: f.conflicts ? conflictCount(f.conflicts) : "",
+    meta: html`<span>${kindLabel(f.kind)}</span><span>${plural(f.files, "file")}</span><span>${fmt(f.bytes)}</span>`,
+    actions: IconButton({ icon: "settings", label: `Manage ${f.name}`, action: "sync-folder-manage", id: f.id, size: "sm" }),
+  }));
+  const main = Card({
+    title: "Folders", description: "Each device chooses its own local folder for each of these.",
+    actions: Button({ label: "New folder", action: "sync-folder-new", icon: "plus", size: "sm" }),
+    flush: true,
+    body: folders.length ? List(folders) : EmptyState({ compact: true, rune: "ᛇ", text: "Create a folder, then map it to a local directory on each device, such as RetroArch’s saves folder." }),
+  });
+  const side = [
+    Card({ title: "Storage", body: html`${Meter({ value: sync.usage, max: sync.quota, label: "Storage used" })}<p class="meter-caption"><strong>${fmt(sync.usage)}</strong> of ${fmt(sync.quota)} used, including version history.</p><p class="help">Files up to ${fmt(sync.max_file_bytes)} each.</p>` }),
+    Card({ title: "Devices", body: html`<p>Pair a device with a code, then choose a local folder for each sync folder on it. Rename or sign out devices from your account.</p>${LinkButton({ label: "Your devices", href: "/account#devices", icon: "server", size: "sm" })}` }),
+  ];
+  return html`${header(owned ? Button({ label: "Manage", action: "sync-manage", id: owned.id, icon: "settings" }) : "")}${conflicts ? Notice({ tone: "warn", body: `${conflicts} conflicting version${conflicts === 1 ? "" : "s"} need${conflicts === 1 ? "s" : ""} a decision. Open the folder to choose.` }) : ""}${Split(main, side)}`;
 }
 
 export async function folderPage(id, { path = "", page = 0 } = {}) {
@@ -44,80 +49,72 @@ export async function folderPage(id, { path = "", page = 0 } = {}) {
   const listing = await api(`/api/sync/folders/${enc(id)}?path=${enc(path)}&page=${page}`);
   const folder = listing.folder, summary = store.state.sync.folders.find(f => f.id === id);
   let prefix = "";
-  const crumbs = path.split("/").filter(Boolean).map(part => {
+  const crumbs = [{ label: "Save sync", href: "/sync", icon: "left" }, { label: folder.name, href: path ? folderUrl(id) : "" }, ...path.split("/").filter(Boolean).map((part, i, all) => {
     prefix += (prefix ? "/" : "") + part;
-    return `${icon("chevron", "crumb-sep")}<a href="${esc(folderUrl(id, prefix))}">${esc(part)}</a>`;
-  }).join("");
+    return { label: part, href: i === all.length - 1 ? "" : folderUrl(id, prefix) };
+  })];
   const rows = listing.entries.map(e => {
     const full = path ? `${path}/${e.name}` : e.name;
     const name = e.directory
-      ? `<a class="file-name" href="${esc(folderUrl(id, full))}"><span class="file-icon folder" aria-hidden="true">${icon("folder")}</span>${esc(e.name)}</a>`
-      : `<span class="file-name"><span class="file-icon" aria-hidden="true">${icon("file")}</span>${esc(e.name)}</span>`;
+      ? html`<a class="file-name" href="${folderUrl(id, full)}"><span class="file-icon folder" aria-hidden="true">${icon("folder")}</span>${e.name}</a>`
+      : html`<span class="file-name"><span class="file-icon" aria-hidden="true">${icon("file")}</span>${e.name}</span>`;
     return {
       key: full,
       cells: [
         name,
-        fmt(e.size),
-        `<span class="file-meta">${e.modified ? ago(e.modified) : "—"}</span>`,
-        e.directory ? "" : `<span class="muted">v${e.version} · ${esc(e.device)}</span>`,
-        e.directory ? "" : `<div class="actions">${button("History", "sync-history", id, `data-path="${esc(full)}"`, "ghost", "archive")}<a class="icon-link" href="${esc(fileUrl(id, full))}" download aria-label="Download ${esc(e.name)}">${icon("download")}</a></div>`,
+        e.directory ? html`<span class="muted">—</span>` : fmt(e.size),
+        html`<span class="muted nowrap">${e.modified ? ago(e.modified) : "—"}</span>`,
+        e.directory ? "" : html`<span class="muted">v${e.version} · ${e.device}</span>`,
+        e.directory ? "" : html`<div class="cell-actions">${Button({ label: "History", action: "sync-history", id, data: { path: full }, icon: "history", size: "sm", kind: "ghost" })}${IconLink({ icon: "download", label: `Download ${e.name}`, href: fileUrl(id, full), download: true, size: "sm" })}</div>`,
       ],
     };
   });
-  const pager = [
-    page > 0 ? linkButton("Previous", folderUrl(id, path, page - 1), "subtle", "left") : "",
-    (page + 1) * 100 < listing.total ? linkButton("Next", folderUrl(id, path, page + 1), "subtle", "chevron") : "",
-  ].join("");
   const conflicts = summary?.conflicts || 0;
-  const actions = (conflicts ? button(`Resolve ${conflicts} conflict${conflicts === 1 ? "" : "s"}`, "sync-conflicts", id, "", "primary", "alert") : "") + button("Manage", "sync-folder-manage", id, "", "subtle", "settings");
-  return heading(folder.name, `${kindLabel(folder.kind)} · keeps ${folder.keep_versions} earlier version${folder.keep_versions === 1 ? "" : "s"} of each file.`, actions, "sync")
-    + `<div class="toolbar"><nav class="breadcrumbs" aria-label="Folder"><a href="/sync">${icon("left")}Save sync</a>${icon("chevron", "crumb-sep")}<a href="${esc(folderUrl(id))}">${esc(folder.name)}</a>${crumbs}</nav><div class="toolbar-end"><span class="muted">${listing.total} item${listing.total === 1 ? "" : "s"}</span></div></div>`
-    + (listing.entries.length ? table(["Name", "Size", "Modified", "Version", ""], rows) : '<div class="empty small"><span class="empty-rune" aria-hidden="true">ᛇ</span><p>Nothing synced here yet.</p></div>')
-    + (pager ? `<div class="actions pager">${pager}</div>` : "");
+  const actions = [conflicts ? Button({ label: `Resolve ${plural(conflicts, "conflict")}`, action: "sync-conflicts", id, kind: "primary", icon: "alert" }) : "", Button({ label: "Manage", action: "sync-folder-manage", id, icon: "settings" })];
+  return html`${PageHeader({ title: folder.name, description: `${kindLabel(folder.kind)} · keeps ${plural(folder.keep_versions, "earlier version")} of each file.`, actions, realm: "sync" })}${Toolbar({ start: Breadcrumbs(crumbs, "Folder"), end: html`<span class="muted">${plural(listing.total, "item")}</span>` })}${listing.entries.length ? Table({ columns: ["Name", "Size", "Modified", "Version", ""], rows }) : EmptyState({ compact: true, rune: "ᛇ", text: "Nothing synced here yet." })}${Pager({ previous: page > 0 ? folderUrl(id, path, page - 1) : "", next: (page + 1) * 100 < listing.total ? folderUrl(id, path, page + 1) : "" })}`;
 }
 
-const reasons = { replaced: ["Replaced", "dim"], deleted: ["Deleted", "dim"], conflict: ["Conflict", "warn"] };
+const reasons = { replaced: ["Replaced", "neutral"], deleted: ["Deleted", "neutral"], conflict: ["Conflict", "warn"] };
 function historyRows(id, entries, showPath) {
   return entries.map(h => {
-    const [label, kind] = reasons[h.reason] || [h.reason, "dim"];
+    const [label, tone] = reasons[h.reason] || [h.reason, "neutral"];
     const open = !h.resolved;
     const controls = open
-      ? button("Use this version", "sync-conflict-resolve", id, `data-history="${h.id}" data-keep="this"`, "primary", "check") + button("Keep current", "sync-conflict-resolve", id, `data-history="${h.id}" data-keep="current"`, "ghost", "close")
-      : button("Restore", "sync-restore", id, `data-history="${h.id}"`, "ghost", "refresh");
+      ? [Button({ label: "Use this version", action: "sync-conflict-resolve", id, data: { history: h.id, keep: "this" }, kind: "primary", icon: "check", size: "sm" }), Button({ label: "Keep current", action: "sync-conflict-resolve", id, data: { history: h.id, keep: "current" }, kind: "ghost", size: "sm" })]
+      : Button({ label: "Restore", action: "sync-restore", id, data: { history: h.id }, kind: "ghost", icon: "refresh", size: "sm" });
     return {
       key: String(h.id),
       cells: [
-        ...(showPath ? [`<span class="mono">${esc(h.path)}</span>`] : []),
-        `v${h.version} ${tag(open ? "Needs decision" : label, open ? "warn" : kind)}`,
-        `${esc(h.device_name)}<br><small>${ago(h.created)}</small>`,
+        ...(showPath ? [html`<span class="mono">${h.path}</span>`] : []),
+        html`v${h.version} ${Badge(open ? "Needs decision" : label, open ? "warn" : tone)}`,
+        html`${h.device_name}<small class="muted block">${ago(h.created)}</small>`,
         fmt(h.size),
-        `<div class="actions">${h.hash ? `<a class="icon-link" href="${esc(historyFileUrl(id, h.id))}" download aria-label="Download version ${h.version}">${icon("download")}</a>` : ""}${h.hash ? controls : ""}</div>`,
+        h.hash ? html`<div class="cell-actions">${IconLink({ icon: "download", label: `Download version ${h.version}`, href: historyFileUrl(id, h.id), download: true, size: "sm" })}${controls}</div>` : "",
       ],
     };
   });
 }
 export async function historyDialog(id, path) {
   const entries = await api(`/api/sync/folders/${enc(id)}/history?path=${enc(path)}`);
-  modal(path.split("/").pop(), `<p>Earlier versions kept on the server. Restoring makes a version current again on every device; the version it replaces is kept here too.</p>`
-    + table(["Version", "From", "Size", ""], historyRows(id, entries, false), "No earlier versions yet."));
+  modal(path.split("/").pop(), html`<p class="lead">Earlier versions kept on the server. Restoring makes a version current again on every device; the version it replaces is kept here too.</p>${Table({ columns: ["Version", "From", "Size", ""], rows: historyRows(id, entries, false), empty: "No earlier versions yet." })}`);
 }
 export async function conflictsDialog(id) {
   const entries = await api(`/api/sync/folders/${enc(id)}/history?conflicts=true`);
-  modal("Resolve conflicts", `<p>Two devices changed these files from the same starting point. Nothing was lost: choose which version every device should use.</p>`
-    + table(["File", "Version", "From", "Size", ""], historyRows(id, entries, true), "No conflicts remain."));
+  modal("Resolve conflicts", html`<p class="lead">Two devices changed these files from the same starting point. Nothing was lost: choose which version every device should use.</p>${Table({ columns: ["File", "Version", "From", "Size", ""], rows: historyRows(id, entries, true), empty: "No conflicts remain." })}`);
 }
 
 export function folderForm(f = {}) {
-  const options = Object.entries(kinds).map(([value, label]) => `<option value="${value}" ${f.kind === value ? "selected" : ""}>${esc(label)}</option>`).join("");
-  return `<form data-form="sync-folder" data-id="${esc(f.id || "")}">${field("name", "Folder name", f.name || "", "text", "required maxlength=100 placeholder=\"GBA saves\"")}${f.id ? field("keep_versions", "Earlier versions to keep per file", f.keep_versions, "number", "required min=1 max=1000") : `<label for="sync-kind">What it holds</label><select id="sync-kind" name="kind">${options}</select><p class="help">A hint for sync clients. Each device chooses its own local directory for this folder.</p>`}<div class="actions"><button>${f.id ? "Save folder" : "Create folder"}</button></div></form>`;
+  return Form({ name: "sync-folder", id: f.id || "", body: html`${Field({ name: "name", label: "Folder name", value: f.name || "", required: true, maxlength: 100, placeholder: "GBA saves" })}${f.id
+    ? Field({ name: "keep_versions", label: "Earlier versions to keep per file", value: f.keep_versions, type: "number", required: true, min: 1, max: 1000 })
+    : Select({ name: "kind", label: "What it holds", options: Object.entries(kinds), value: f.kind, help: "A hint for sync clients. Each device chooses its own local directory for this folder." })}${FormFooter(Submit({ label: f.id ? "Save folder" : "Create folder" }))}` });
 }
 export function folderManage(id) {
   const f = store.state.sync.folders.find(f => f.id === id);
-  modal(f.name, folderForm(f) + `<section class="dialog-section"><h3>Delete this folder</h3><p>Removes the folder, its files, and their history from the server. Files already on your devices stay there, but stop syncing.</p><form data-form="sync-folder-delete" data-id="${esc(id)}">${field("confirm", `Type “${f.name}” to confirm`, "", "text", "required autocomplete=off")}<div class="actions"><button class="danger">${icon("trash")}Delete folder</button></div></form></section>`);
+  modal(f.name, html`${folderForm(f)}${DialogSection("Delete this folder", html`<p>Removes the folder, its files, and their history from the server. Files already on your devices stay there, but stop syncing.</p>${Form({ name: "sync-folder-delete", id, body: html`${Field({ name: "confirm", label: `Type “${f.name}” to confirm`, required: true, autocomplete: "off" })}${FormFooter(Submit({ label: "Delete folder", kind: "danger", icon: "trash" }))}` })}`)}`);
 }
 export function quotaSection(userId) {
   const sync = store.state.sync;
   if (!sync) return "";
   const custom = sync.quotas?.[userId];
-  return `<section class="dialog-section"><h3>Save sync storage</h3><form data-form="sync-quota" data-id="${esc(userId)}">${field("mb", "Quota in MiB (blank uses the server default)", custom === undefined ? "" : Math.round(custom / 1048576), "number", "min=0")}<div class="actions"><button>Save quota</button></div></form></section>`;
+  return DialogSection("Save sync storage", Form({ name: "sync-quota", id: userId, body: html`${Field({ name: "mb", label: "Quota in MiB", value: custom === undefined ? "" : Math.round(custom / 1048576), type: "number", min: 0, help: "Leave blank to use the server default." })}${FormFooter(Submit({ label: "Save quota" }))}` }));
 }

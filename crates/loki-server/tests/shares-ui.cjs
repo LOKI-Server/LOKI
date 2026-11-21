@@ -30,7 +30,7 @@ async function browser() {
 
 test('new and existing shares expose editable extension exclusions', async () => {
   const app = await browser();
-  const created = app.manage.shareForm();
+  const created = String(app.manage.shareForm());
   assert.match(created, /name="excluded_extensions"/);
   assert.match(created, /placeholder=".tmp, .bak, .psd, .tar.gz"/);
   app.manage.shareManage('saved');

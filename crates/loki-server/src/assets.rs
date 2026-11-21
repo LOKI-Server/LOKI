@@ -14,6 +14,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("app.js", JS, include_bytes!("../static/app.js")),
     ("pages/vcs.js", JS, include_bytes!("../static/pages/vcs.js")),
     ("lib/core.js", JS, include_bytes!("../static/lib/core.js")),
+    ("lib/html.js", JS, include_bytes!("../static/lib/html.js")),
     ("lib/icons.js", JS, include_bytes!("../static/lib/icons.js")),
     ("lib/ui.js", JS, include_bytes!("../static/lib/ui.js")),
     (

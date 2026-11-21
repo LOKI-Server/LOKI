@@ -1,12 +1,13 @@
 // What happens when people submit forms, press buttons, and change controls.
-import { $, act, api, close, confirmDialog, enc, esc, modal, resource, store, toast } from "./core.js";
-import { field, jsonView } from "./ui.js";
+import { $, act, api, close, confirmDialog, enc, modal, resource, store, toast } from "./core.js";
+import { html } from "./html.js";
+import { Button, Field, FileInput, Form, FormFooter, LinkButton, Notice, Select, Submit, jsonView } from "./ui.js";
 import { navigate, refresh, routable } from "./router.js";
 import { submitSetup, submitStartupAware } from "../pages/auth.js";
-import { appManage, folderPicker, vcsCreation, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
-import { vcsAccess, vcsSettings, newItem, newRepo } from "../pages/vcs.js";
+import { appManage, folderPicker, vcsManage, vcsLimits, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
+import { newItem, newRepo } from "../pages/vcs.js";
 import { userManage } from "../pages/people.js";
-import { passwordProof, deviceRename, pairDialog, vcsTokenDialog, vcsLimits } from "../pages/account.js";
+import { passwordProof, deviceRename, pairDialog, vcsTokenDialog } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
 import { conflictsDialog, folderForm, folderManage, historyDialog } from "../pages/sync.js";
 import { panelAction, panelDialog } from "../pages/panel.js";
@@ -21,7 +22,15 @@ export function formData(form) {
   return values;
 }
 
-const secret = (title, text, value) => modal(title, `<p>${esc(text)}</p><pre class="secret">${esc(value)}</pre>`);
+/** The server's current settings with a form's changes applied over them. */
+function settingsWith(data) {
+  const current = store.state.settings, startup = store.state.startup;
+  const merged = { ...current, startup: current.startup && !startup?.needs_confirmation, ...data };
+  for (const key of ["sync_quota_mb", "sync_max_file_mb", ...Object.keys(vcsLimits)]) merged[key] = Number(merged[key]);
+  return merged;
+}
+
+const secret = (title, text, value) => modal(title, html`<p>${text}</p><pre class="secret">${value}</pre>`);
 
 export async function onSubmit(event) {
   const form = event.target.closest("form[data-form]");
@@ -29,8 +38,8 @@ export async function onSubmit(event) {
   event.preventDefault();
   if (busy) return;
   busy = true;
-  const submit = form.querySelector('button:not([type="button"])');
-  if (submit) submit.disabled = true;
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit) { submit.disabled = true; submit.setAttribute("aria-busy", "true"); }
   try {
     const data = formData(form), kind = form.dataset.form, id = form.dataset.id || "";
     if (kind === "setup") { await submitSetup(data); return; }
@@ -55,7 +64,7 @@ export async function onSubmit(event) {
       const result = await act(kind, "", data);
       if (kind === "password") { location.href = "/login"; return; }
       if (kind === "mfa-start") {
-        modal("Connect your authenticator", `<p>Add a time-based account in your authenticator app using this secret.</p><pre class="secret">${esc(result.secret)}</pre><small class="mono">${esc(result.uri)}</small><form data-form="mfa-enable">${field("code", "Current six-digit code", "", "text", "required autocomplete=one-time-code inputmode=numeric")}<div class="actions"><button>Enable two-factor authentication</button></div></form>`);
+        modal("Connect your authenticator", html`<p>Add a time-based account in your authenticator app using this secret.</p><pre class="secret">${result.secret}</pre><p class="help mono">${result.uri}</p>${Form({ name: "mfa-enable", body: html`${Field({ name: "code", label: "Current six-digit code", required: true, autocomplete: "one-time-code", inputmode: "numeric" })}${FormFooter(Submit({ label: "Turn on two-factor authentication" }))}` })}`);
         return;
       }
       close();
@@ -64,7 +73,7 @@ export async function onSubmit(event) {
     }
     else if (kind === "mfa-enable") {
       const result = await act(kind, "", data);
-      modal("Save your recovery codes", `<p>Each code works once. Store them somewhere private before closing this window.</p><pre class="secret">${result.recovery_codes.map(esc).join("\n")}</pre>`);
+      modal("Save your recovery codes", html`<p>Each code works once. Store them somewhere private before closing this window.</p><pre class="secret">${result.recovery_codes.join("\n")}</pre>`);
       await refresh();
       return;
     }
@@ -76,9 +85,10 @@ export async function onSubmit(event) {
       return;
     }
     else if (kind === "settings") {
-      const numbers = Object.fromEntries(["sync_quota_mb", "sync_max_file_mb", ...Object.keys(vcsLimits)].map(key => [key, Number(data[key])]));
-      const result = await submitStartupAware(confirmation => act("settings", "", { ...data, ...numbers, startup_confirmation: confirmation }));
+      // Settings are edited a few at a time, so each form sends only its own fields.
+      const result = await submitStartupAware(confirmation => act("settings", "", { ...settingsWith(data), startup_confirmation: confirmation }));
       if (!result) return;
+      if (form.closest("dialog")) close();
       session = true;
       toast("Settings saved.");
     }
@@ -133,7 +143,7 @@ export async function onSubmit(event) {
     else if (kind === "vcs-grant") {
       const [subject_kind, subject] = data.subject.split(":");
       await api(`/api/repos/${enc(id)}/permissions`, { subject_kind, subject, role: data.role });
-      return await vcsAccess(id);
+      toast("Access updated.");
     }
     else if (kind === "vcs-token") {
       const { scope, ...input } = data;
@@ -143,8 +153,7 @@ export async function onSubmit(event) {
     }
     else if (kind === "vcs-settings") {
       await api(`/api/repos/${enc(id)}/settings`, data);
-      close();
-      return await navigate(`/repositories/${enc(id)}`, { replace: true });
+      toast("Repository settings saved.");
     }
     else if (kind === "vcs-item") {
       const item = await api(`/api/repos/${enc(id)}/items`, data);
@@ -178,24 +187,24 @@ export async function onSubmit(event) {
     toast(error.message, true);
   } finally {
     busy = false;
-    if (submit) submit.disabled = false;
+    if (submit) { submit.disabled = false; submit.removeAttribute("aria-busy"); }
   }
 }
 
 // Buttons that only open a dialog; nothing changes on the server.
 const dialogs = {
-  "backup-import": () => modal("Import a backup", '<p>Choose a LOKI backup ZIP up to 2 GiB. Importing stores it locally; restoration is a separate action. Backups include private credentials and native app packages, so use a source you trust.</p><form data-form="backup-import"><input type="file" name="backup" aria-label="Backup archive" accept=".zip" required><div class="actions"><button>Import backup archive</button></div></form>'),
-  "app-import": () => modal("Import a LOKI application", `<p>Select a .loki-app package.</p><div class="notice">Apps are WASI components: they share LOKI’s web server and can use only the app services LOKI gives them. Review the package source before importing.</div><form data-form="import"><input type="file" name="package" aria-label="Application package" accept=".loki-app" required><p class="help">Up to 512 MiB. Replacing an installed package snapshots its stopped data before updating, including builds with the same prerelease version.</p><div id="package-preview" aria-live="polite"></div><div class="actions"><button disabled>Import package</button></div></form>`),
+  "backup-import": () => modal("Import a backup", html`<p>Choose a LOKI backup ZIP up to 2 GiB. Importing stores it here; restoring is a separate step.</p>${Notice({ tone: "warn", body: "Backups include private credentials and native app packages, so use a source you trust." })}${Form({ name: "backup-import", body: html`${FileInput({ name: "backup", label: "Backup archive", accept: ".zip" })}${FormFooter(Submit({ label: "Import backup", icon: "upload" }))}` })}`),
+  "app-import": () => modal("Import a LOKI application", html`${Notice({ tone: "info", body: "Apps are WASI components: they share LOKI’s web server and can use only the app services LOKI gives them. Review the package source before importing." })}${Form({ name: "import", body: html`${FileInput({ name: "package", label: "Application package (.loki-app)", accept: ".loki-app", help: "Up to 512 MiB. Replacing an installed package snapshots its stopped data before updating, including builds with the same prerelease version." })}<div id="package-preview" aria-live="polite"></div>${FormFooter(Button({ label: "Import package", type: "submit", kind: "primary", disabled: true }))}` })}`),
   "app-manage": id => appManage(id),
   "share-manage": id => shareManage(id),
   "route-manage": id => routeManage(id),
   "share-new": () => modal("Share a folder", shareForm()),
   "route-new": () => modal("Connect a service", routeForm()),
-  "user-new": () => modal("Create an account", `<form data-form="user-create">${field("username", "Username", "", "text", "required minlength=3 maxlength=32")}<p class="help">The member chooses their own password using a one-time activation link.</p><div class="actions"><button>Create account</button></div></form>`),
+  "user-new": () => modal("Create an account", Form({ name: "user-create", body: html`${Field({ name: "username", label: "Username", required: true, minlength: 3, maxlength: 32, help: "The member chooses their own password using a one-time activation link." })}${FormFooter(Submit({ label: "Create account" }))}` })),
   "user-manage": id => userManage(id),
-  "group-new": () => modal("Create a group", `<form data-form="group-create">${field("name", "Group name", "", "text", "required maxlength=80")}<div class="actions"><button>Create group</button></div></form>`),
-  "mfa-start": () => modal("Set up two-factor authentication", `<form data-form="mfa-start">${passwordProof()}<div class="actions"><button>Continue</button></div></form>`),
-  "mfa-disable": () => modal("Disable two-factor authentication", `<form data-form="mfa-disable">${passwordProof()}<div class="actions"><button>Continue</button></div></form>`),
+  "group-new": () => modal("Create a group", Form({ name: "group-create", body: html`${Field({ name: "name", label: "Group name", required: true, maxlength: 80 })}${FormFooter(Submit({ label: "Create group" }))}` })),
+  "mfa-start": () => modal("Set up two-factor authentication", Form({ name: "mfa-start", body: html`${passwordProof()}${FormFooter(Submit({ label: "Continue" }))}` })),
+  "mfa-disable": () => modal("Turn off two-factor authentication", Form({ name: "mfa-disable", body: html`${passwordProof()}${FormFooter(Submit({ label: "Turn off", kind: "danger" }))}` })),
   "sync-manage": id => syncManage(id),
   "sync-pair": () => navigate("/pair"),
   "device-pair": () => navigate("/pair"),
@@ -208,7 +217,7 @@ const dialogs = {
   "storage-restore": () => storage("Restore a backup", true),
 };
 function storage(title, restore) {
-  modal(title, `<p>Choose an empty directory on this server. The current installation is retained, and LOKI restarts using the selected data. External shared folders stay in place.</p><form data-form="storage">${field("target", "New empty data directory", "", "text", "required")}${restore ? `<label for="restore-backup">Backup to restore</label><select id="restore-backup" name="backup" required>${store.state.backups.map(b => `<option>${esc(b)}</option>`).join("")}</select>` : ""}${passwordProof()}<div class="actions"><button>Prepare data & restart LOKI</button></div></form>`);
+  modal(title, html`<p>Choose an empty directory on this server. The current installation is kept, and LOKI restarts using the selected data. Shared folders outside LOKI stay where they are.</p>${Form({ name: "storage", body: html`${Field({ name: "target", label: "New empty data directory", required: true })}${restore ? Select({ name: "backup", label: "Backup to restore", options: store.state.backups, attrs: { required: true } }) : ""}${passwordProof()}${FormFooter(Submit({ label: "Prepare data & restart LOKI" }))}` })}`);
 }
 
 const warnings = {
@@ -221,6 +230,10 @@ const ask = ([title, message, confirm]) => confirmDialog({ title, message, confi
 let folderReturn = null;
 
 export async function onClick(event) {
+  // Dropdown menus close when something outside them, or a link inside them, is clicked.
+  for (const open of document.querySelectorAll?.("details.menu[open]") ?? []) {
+    if (!open.contains(event.target) || event.target.closest(".menu-panel a")) open.removeAttribute("open");
+  }
   const previewLink = event.target.closest("[data-preview]");
   if (previewLink && !event.ctrlKey && !event.metaKey) {
     event.preventDefault();
@@ -240,25 +253,23 @@ export async function onClick(event) {
   const id = b.dataset.id, action = b.dataset.action;
   try {
     if (dialogs[action]) return dialogs[action](id);
-    if (action === "vcs-creation") return vcsCreation();
+    if (action === "vcs-manage") return vcsManage();
     if (action === "vcs-new-item") return await newItem(id, b.dataset.kind);
     if (action === "vcs-new") return newRepo();
     if (action === "vcs-fork") return newRepo(id);
-    if (action === "vcs-access") return await vcsAccess(id);
     if (action === "vcs-delete") {
       if (!(await ask(["Delete this repository?", `This removes ${b.dataset.name}, including its revisions, files, and discussions.`, "Delete repository"]))) return;
       await api(`/api/repos/${enc(id)}`, {}, "DELETE");
       return await navigate("/repositories");
     }
     if (action === "vcs-new-token") return vcsTokenDialog();
-    if (action === "vcs-settings") return await vcsSettings(id);
-    if (action === "vcs-copy") {
+    if (action === "copy") {
       await navigator.clipboard.writeText(b.dataset.copy);
-      return toast("Clone command copied.");
+      return toast("Copied to the clipboard.");
     }
     if (action === "vcs-remove-access") {
       await api(`/api/repos/${enc(id)}/permissions`, { subject_kind: b.dataset.kind, subject: b.dataset.subject, role: "remove" });
-      return await vcsAccess(id);
+      return await refresh();
     }
     if (action === "vcs-revoke-token") {
       if (!(await ask(["Revoke this Skald token?", "Clients using this token will need a new one.", "Revoke token"]))) return;
@@ -283,7 +294,7 @@ export async function onClick(event) {
     if (action === "registry-confirm") {
       const label = b.innerHTML;
       b.disabled = true;
-      b.textContent = "Downloading and installingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦";
+      b.textContent = "Downloading and installing…";
       let result;
       try { result = await api("/api/registry/install", { id }); }
       catch (error) { b.innerHTML = label; throw error; }
@@ -299,7 +310,7 @@ export async function onClick(event) {
     }
     if (action === "reload") return location.reload();
     if (action === "grant-remove") { b.closest(".grant-row").remove(); return; }
-    if (action === "grant-add") { $("#grants").insertAdjacentHTML("beforeend", grantRow(subjects(), roles(resource(id)))); return; }
+    if (action === "grant-add") { $("#grants").insertAdjacentHTML("beforeend", String(grantRow(subjects(), roles(resource(id))))); return; }
     if (action === "folder-picker") {
       const form = b.closest("form");
       folderReturn = { id: form.dataset.id || "", name: form.elements.name.value, excluded_extensions: form.elements.excluded_extensions.value, ...(form.elements.share_type ? { share_type: form.elements.share_type.value } : {}) };
@@ -315,17 +326,17 @@ export async function onClick(event) {
     if (action === "sync-history") return await historyDialog(id, b.dataset.path);
     if (action === "logs") {
       const result = await api(`/api/logs/${enc(id)}`);
-      return modal(id === "caddy" ? "Caddy logs" : "Service logs", `<pre class="log">${esc(result.text || "No log output yet.")}</pre>`);
+      return modal(id === "caddy" ? "Caddy logs" : "Service logs", html`<pre class="log">${result.text || "No log output yet."}</pre>`);
     }
     if (action === "caddy-preview") {
-      const result = await act(action, "", formData(b.closest("form")));
+      const result = await act(action, "", settingsWith(formData(b.closest("form"))));
       return modal("Validated Caddy configuration", jsonView(result));
     }
     if (action === "caddy-adopt") {
       const result = await act(action), form = b.closest("form");
       form.elements.caddy_base.value = result.base;
       form.elements.caddy_mode.value = "existing";
-      form.querySelector("details.advanced")?.setAttribute("open", "");
+      form.querySelector("details.disclosure")?.setAttribute("open", "");
       toast("Existing configuration backed up and loaded into the editor. Review and save to adopt it.");
       return;
     }
@@ -335,6 +346,7 @@ export async function onClick(event) {
     if (action === "revoke-all" && !(await ask(["Sign out everywhere?", "Every browser and application session for your account ends, including this one.", "Sign out everywhere"]))) return;
     if (action === "sync-device-revoke" && !(await ask(["Sign out this device?", "It stops syncing until you pair it again. Files already on it stay there.", "Sign out device"]))) return;
     b.disabled = true;
+    b.setAttribute("aria-busy", "true");
     if (action === "logout") { await api("/api/logout", {}); location.href = "/login"; return; }
     if (action === "revoke-all") { await act(action); location.href = "/login"; return; }
     if (action === "app-operation" || action === "route-operation") {
@@ -343,7 +355,7 @@ export async function onClick(event) {
     }
     else if (action === "service-operation") {
       const result = await act("service", id, { operation: b.dataset.operation });
-      return modal("Service result", `<pre class="log">${esc(result.message)}</pre>`);
+      return modal("Service result", html`<pre class="log">${result.message}</pre>`);
     }
     else if (action === "user-status") { await act(action, id, { status: b.dataset.status }); close(); }
     else if (action === "reset-issue") {
@@ -370,7 +382,7 @@ export async function onClick(event) {
       const result = await act(action);
       toast("Backup created.");
       await refresh();
-      return modal("Backup ready", `<p>Download and store this snapshot somewhere private.</p><div class="actions"><a class="button" href="/api/backups/${enc(result.file)}" download>Download backup</a></div>`);
+      return modal("Backup ready", html`<p>Download and store this snapshot somewhere private.</p>${FormFooter(LinkButton({ label: "Download backup", href: `/api/backups/${enc(result.file)}`, download: true, kind: "primary", icon: "download" }), { divider: false })}`);
     }
     else if (action === "caddy-apply") await act(action);
     toast("Updated.");
@@ -379,6 +391,7 @@ export async function onClick(event) {
     toast(error.message, true);
   } finally {
     b.disabled = false;
+    b.removeAttribute?.("aria-busy");
   }
 }
 

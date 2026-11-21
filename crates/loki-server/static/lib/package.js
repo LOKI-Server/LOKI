@@ -1,8 +1,9 @@
 // Reads a .loki-app package in the browser so the import dialog can say what it is
 // before anything is uploaded. Only the zip directory and manifest.json are read.
 // The server still checks every file and checksum when it installs the package.
-import { $, esc, fmt, resource, store } from "./core.js";
-import { tag } from "./ui.js";
+import { $, fmt, resource, store } from "./core.js";
+import { html } from "./html.js";
+import { Badge, Help, KeyValue, Notice } from "./ui.js";
 
 const MAX_PACKAGE = 536870912, MAX_MANIFEST = 131072, MAX_FILES = 2048;
 const CAPABILITIES = ["database", "uploads", "forms", "storage", "realtime", "outbound", "personal-storage"];
@@ -77,10 +78,10 @@ function compareVersions(a, b) {
 // Mirrors apps::unsupported: apps need a loki-sdk from oldest_sdk up to this LOKI's own version.
 export function sdkProblem(sdk) {
   const { loki_version: loki, oldest_sdk: oldest } = store.state, [, major, minor] = SEMVER.exec(oldest);
-  if (typeof sdk !== "string") return `This app was built for a LOKI older than ${major}.${minor}. Rebuild it with loki-sdk ${esc(oldest)} or newer (update its loki-sdk dependency and run cargo loki package), then import the new package.`;
+  if (typeof sdk !== "string") return `This app was built for a LOKI older than ${major}.${minor}. Rebuild it with loki-sdk ${oldest} or newer (update its loki-sdk dependency and run cargo loki package), then import the new package.`;
   if (!SEMVER.test(sdk)) return "The package's loki-sdk version is not a valid version.";
-  if (compareVersions(sdk, oldest) < 0) return `This app was built with loki-sdk ${esc(sdk)}, which LOKI ${esc(loki)} no longer runs. Rebuild it with loki-sdk ${esc(oldest)} or newer, then import the new package.`;
-  if (compareVersions(sdk, loki) > 0) return `This app was built with loki-sdk ${esc(sdk)}, which needs LOKI ${esc(sdk)} or newer. Update LOKI to run it.`;
+  if (compareVersions(sdk, oldest) < 0) return `This app was built with loki-sdk ${sdk}, which LOKI ${loki} no longer runs. Rebuild it with loki-sdk ${oldest} or newer, then import the new package.`;
+  if (compareVersions(sdk, loki) > 0) return `This app was built with loki-sdk ${sdk}, which needs LOKI ${sdk} or newer. Update LOKI to run it.`;
   return "";
 }
 
@@ -88,7 +89,7 @@ export function sdkProblem(sdk) {
 function problems(m, names, file, installed) {
   const out = [], runtime = m.runtime ?? "native", files = m.files && typeof m.files === "object" ? Object.keys(m.files) : [];
   if (file.size > MAX_PACKAGE) out.push("The package is larger than 512 MiB.");
-  if (m.protocol !== 1) out.push(`This server reads app protocol 1; the package uses ${esc(m.protocol ?? "none")}.`);
+  if (m.protocol !== 1) out.push(`This server reads app protocol 1; the package uses ${m.protocol ?? "none"}.`);
   if (typeof m.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(m.id) || m.id.startsWith("loki-")) out.push("The app ID is missing or invalid.");
   if (typeof m.name !== "string" || !m.name || m.name.length > 100) out.push("The app name is missing or too long.");
   if (typeof m.version !== "string" || !SEMVER.test(m.version)) out.push("The version is not a valid semantic version.");
@@ -100,44 +101,49 @@ function problems(m, names, file, installed) {
   if (!files.includes(m.entry)) out.push("The entry file is not listed in the manifest.");
   if (files.some(f => !names.has(f))) out.push("The package is missing a declared file.");
   const unknown = (m.capabilities || []).filter(c => !CAPABILITIES.includes(c));
-  if (unknown.length) out.push(`Unknown capabilities: ${unknown.map(esc).join(", ")}.`);
-  if (installed && !out.length && compareVersions(m.version, installed.manifest.version) < 0) out.push(`Version ${esc(m.version)} is older than the installed ${esc(installed.manifest.version)}. Import the same or a newer version.`);
+  if (unknown.length) out.push(`Unknown capabilities: ${unknown.join(", ")}.`);
+  if (installed && !out.length && compareVersions(m.version, installed.manifest.version) < 0) out.push(`Version ${m.version} is older than the installed ${installed.manifest.version}. Import the same or a newer version.`);
   return out;
 }
 
-const row = (label, value) => `<div class="kv-row"><dt>${esc(label)}</dt><dd>${value}</dd></div>`;
-const list = items => items.length ? `<div class="tags">${items.map(i => tag(i)).join("")}</div>` : '<span class="kv-none">None</span>';
+const list = items => items.length ? html`<div class="badge-row">${items.map(i => Badge(i))}</div>` : "";
 
 function summary(m, names, file, installed, issues) {
   const order = installed && SEMVER.test(m.version) ? compareVersions(m.version, installed.manifest.version) : 1, was = installed?.manifest.version;
-  const change = !installed ? tag("New app") : order === 0 ? tag(`Reinstalls v${was}`, "warn") : order < 0 ? tag(`Older than v${was}`, "bad") : tag(`Updates v${was}`);
-  return `<div class="package-preview"><h3>${esc(m.name || m.id || "Unnamed app")}</h3><div class="tags">${tag(`v${m.version}`)}${change}</div>${m.description ? `<p>${esc(m.description)}</p>` : ""}`
-    + `<dl class="kv">${row("App ID", `<span class="kv-str">${esc(m.id)}</span>`)}${row("Built with", m.built_with ? `loki-sdk ${esc(m.built_with.sdk)} · cargo-loki ${esc(m.built_with.cargo_loki)}` : '<span class="kv-none">Unknown (before LOKI 0.3)</span>')}${row("Capabilities", list(m.capabilities || []))}${m.outbound?.length ? row("Sends requests to", list(m.outbound)) : ""}${m.schedules?.length ? row("Scheduled jobs", esc(m.schedules.map(j => `${j.name} (every ${j.every_minutes} min)`).join(", "))) : ""}${row("Roles", list(m.roles || []))}${row("Settings", m.fields?.length ? esc(m.fields.map(f => f.label || f.key).join(", ")) : '<span class="kv-none">None</span>')}${row("Panel", m.panel ? "Yes" : "No")}${row("Package", `${esc(fmt(file.size))}, ${names.size} files`)}</dl>`
-    + (installed && !issues.length ? '<p class="help">LOKI stops the installed version and snapshots its data before updating.</p>' : "")
-    + (issues.length ? `<div class="notice error">LOKI cannot import this package:<ul>${issues.map(i => `<li>${i}</li>`).join("")}</ul></div>` : "")
-    + "</div>";
+  const change = !installed ? Badge("New app") : order === 0 ? Badge(`Reinstalls v${was}`, "warn") : order < 0 ? Badge(`Older than v${was}`, "danger") : Badge(`Updates v${was}`, "info");
+  return html`<div class="package-preview"><h3>${m.name || m.id || "Unnamed app"}</h3><div class="badge-row">${Badge(`v${m.version}`, "neutral")}${change}</div>${m.description ? html`<p>${m.description}</p>` : ""}${KeyValue([
+    ["App ID", html`<span class="kv-str">${m.id}</span>`],
+    ["Built with", m.built_with ? `loki-sdk ${m.built_with.sdk} · cargo-loki ${m.built_with.cargo_loki}` : "Unknown (before LOKI 0.3)"],
+    ["Capabilities", list(m.capabilities || [])],
+    m.outbound?.length && ["Sends requests to", list(m.outbound)],
+    m.schedules?.length && ["Scheduled jobs", m.schedules.map(j => `${j.name} (every ${j.every_minutes} min)`).join(", ")],
+    ["Roles", list(m.roles || [])],
+    ["Settings", m.fields?.length ? m.fields.map(f => f.label || f.key).join(", ") : ""],
+    ["Panel", m.panel ? "Yes" : "No"],
+    ["Package", `${fmt(file.size)}, ${names.size} files`],
+  ])}${installed && !issues.length ? Help("LOKI stops the installed version and snapshots its data before updating.") : ""}${issues.length ? Notice({ tone: "danger", title: "LOKI can't import this package", body: html`<ul>${issues.map(i => html`<li>${i}</li>`)}</ul>` }) : ""}</div>`;
 }
 
 let reading = 0;
 /** Shows what the chosen package is, and allows importing it only when it looks installable. */
 export async function previewPackage(input) {
-  const form = input.form, box = $("#package-preview", form), submit = form.querySelector('button:not([type="button"])');
+  const form = input.form, box = $("#package-preview", form), submit = form.querySelector('button[type="submit"]');
   const file = input.files[0], run = ++reading;
   submit.disabled = true;
-  submit.textContent = "Import package";
+  submit.querySelector("span").textContent = "Import package";
   if (!file) { box.innerHTML = ""; return; }
-  box.innerHTML = '<p class="help">Reading package…</p>';
-  let html, label = "";
+  box.innerHTML = String(Help("Reading package…"));
+  let markup, label = "";
   try {
     const { manifest, names } = await readPackage(file);
     if (!manifest || typeof manifest !== "object" || Array.isArray(manifest) || ["capabilities", "roles", "fields"].some(k => manifest[k] !== undefined && !Array.isArray(manifest[k]))) throw new Error("The package manifest is not valid.");
     const installed = resource(manifest.id)?.kind === "app" ? resource(manifest.id) : null, issues = problems(manifest, names, file, installed);
-    html = summary(manifest, names, file, installed, issues);
+    markup = summary(manifest, names, file, installed, issues);
     if (!issues.length) label = `${installed ? "Update" : "Install"} ${manifest.name}`;
   } catch (error) {
-    html = `<p class="notice error">${esc(error instanceof TypeError ? "The package manifest is not valid." : error.message)}</p>`;
+    markup = Notice({ tone: "danger", body: error instanceof TypeError ? "The package manifest is not valid." : error.message });
   }
   if (run !== reading) return;
-  box.innerHTML = html;
-  if (label) { submit.textContent = label; submit.disabled = false; }
+  box.innerHTML = String(markup);
+  if (label) { submit.querySelector("span").textContent = label; submit.disabled = false; }
 }

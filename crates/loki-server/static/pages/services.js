@@ -1,63 +1,109 @@
-// Overview and the three kinds of resource: applications, file shares, and routes.
-import { enc, esc, store } from "../lib/core.js";
+// The overview, and the three kinds of resource: applications, file shares, and routes.
+import { api, enc, fmt, store } from "../lib/core.js";
+import { html } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
-import { button, empty, heading, linkButton, status, tag } from "../lib/ui.js";
+import { Badge, Button, EmptyState, Hint, IconButton, LinkButton, Meter, Notice, PageHeader, SectionHead, Status } from "../lib/ui.js";
 
 const kinds = { app: "apps", share: "folder", route: "route", sync: "sync" };
+const audiences = { public: "Public", members: "All members", restricted: "Restricted" };
 
 export function resourceStatus(r) {
-  if (r.kind === "app") return r.ready ? status("Running") : r.enabled ? status("Starting", "live") : status("Disabled", "dim");
-  if (r.kind === "route") return r.enabled ? status("Enabled") : status("Disabled", "dim");
-  return status({ public: "Public", members: "Members", restricted: "Restricted" }[r.visibility] || r.visibility, r.visibility === "public" ? "" : "dim");
+  if (r.kind === "app") return r.ready ? Status("Running") : r.enabled ? Status("Starting", "live") : Status("Disabled", "neutral");
+  if (r.kind === "route") return r.enabled ? Status("Enabled") : Status("Disabled", "neutral");
+  return Status(audiences[r.visibility] || r.visibility, r.visibility === "public" ? "ok" : "neutral");
 }
 
-export function cards(items) {
-  const owner = store.session.user.owner;
-  return `<div class="grid">${items.map(r => {
-    const description = r.kind === "app" ? r.manifest.description : r.kind === "share" ? (r.share_type === "apps" ? "Download and update desktop builds in LOKI Client." : "Browse, preview, and download shared files.") : r.kind === "sync" ? "Keep game saves and files the same on every device." : r.hostname || r.url;
-    const open = r.kind === "share" ? linkButton("Browse files", `/shares/${enc(r.id)}`, "subtle", "folder")
-      : r.kind === "sync" ? linkButton("Open sync", "/sync", "subtle", "sync")
-      : r.kind === "route" || (r.ready && r.manifest?.site !== false) ? linkButton("Open service", r.url, "subtle", "external", 'target="_blank" rel="noopener"') : "";
-    // Apps that describe a panel are managed here, inside LOKI.
-    const panel = r.kind === "app" && r.ready && r.manifest.panel ? button("Open panel", "app-panel", r.id, "", "subtle", "apps") : "";
-    const manage = owner ? button("Manage", `${r.kind}-manage`, r.id, "", "ghost", "settings") : "";
-    // Set for apps installed from the app registry when it lists a newer release.
-    const update = r.update ? button(`Update to v${r.update}`, "registry-install", r.id, "", "subtle", "refresh") : "";
-    return `<article class="card resource ${r.kind}" data-key="${esc(r.id)}"><div class="card-header"><span class="card-symbol" aria-hidden="true">${icon(kinds[r.kind])}</span><div class="tags">${r.update ? tag("Update available") : ""}${r.kind === "share" ? tag(r.share_type === "apps" ? "App repository" : "File server", "dim") : ""}${resourceStatus(r)}</div></div><h2>${esc(r.name)}</h2><p>${esc(description)}</p>${r.error ? `<p class="help error-text">${icon("alert")}${esc(r.error)}</p>` : ""}<div class="actions">${update}${panel}${open}${manage}</div></article>`;
-  }).join("")}</div>`;
+// Where a resource opens: a link, or an action for apps managed in a panel.
+function opener(r) {
+  if (r.kind === "share") return { href: `/shares/${enc(r.id)}` };
+  if (r.kind === "route") return { href: r.url, external: true };
+  if (r.kind === "app" && r.ready && r.manifest?.site !== false) return { href: r.url, external: true };
+  if (r.kind === "app" && r.ready && r.manifest?.panel) return { action: "app-panel" };
+  return {};
 }
 
-function stat(value, total, label, iconName, href) {
-  return `<a class="stat" href="${href}"><span class="stat-icon" aria-hidden="true">${icon(iconName)}</span><span><strong>${value}${total !== undefined ? `<small> / ${total}</small>` : ""}</strong><span>${esc(label)}</span></span></a>`;
+const manage = r => store.session.user.owner ? IconButton({ icon: "settings", label: `Manage ${r.name}`, action: `${r.kind}-manage`, id: r.id, size: "sm" }) : "";
+
+/** A full card for one resource, used on the Applications, File shares and Routes pages. */
+export function resourceCard(r) {
+  const description = r.kind === "app" ? r.manifest.description : r.kind === "share" ? (r.share_type === "apps" ? "Desktop builds people can download and update with LOKI Client." : "Browse, preview, and download shared files.") : r.hostname || r.url;
+  const open = opener(r);
+  const primary = open.href ? LinkButton({ label: r.kind === "share" ? "Browse files" : "Open", href: open.href, external: open.external, icon: r.kind === "share" ? "folder" : "external", size: "sm" })
+    : open.action ? Button({ label: "Open panel", action: open.action, id: r.id, icon: "apps", size: "sm" }) : "";
+  const panel = r.kind === "app" && open.href && r.manifest?.panel ? Button({ label: "Panel", action: "app-panel", id: r.id, icon: "apps", size: "sm", kind: "ghost" }) : "";
+  const update = r.update ? Button({ label: `Update to v${r.update}`, action: "registry-install", id: r.id, icon: "refresh", size: "sm", kind: "primary" }) : "";
+  return html`<article class="${`resource-card kind-${r.kind}`}" data-key="${r.id}"><header class="resource-head"><span class="resource-icon" aria-hidden="true">${icon(kinds[r.kind])}</span><div class="resource-title"><h3>${r.name}</h3><div class="resource-tags">${r.kind === "share" ? Badge(r.share_type === "apps" ? "App repository" : "File server", "neutral") : ""}${r.kind === "app" ? Badge(`v${r.manifest.version}`, "neutral") : ""}${r.update ? Badge("Update available", "info") : ""}</div></div><div class="resource-end">${resourceStatus(r)}${manage(r)}</div></header><p class="resource-text">${description}</p>${r.error ? Notice({ tone: "danger", body: r.error }) : ""}<footer class="resource-actions">${update}${primary}${panel}</footer></article>`;
 }
 
-export function overview() {
-  const { session, state } = store;
-  const apps = state.resources.filter(r => r.kind === "app"), shares = state.resources.filter(r => r.kind === "share"), routes = state.resources.filter(r => r.kind === "route");
+export const resourceGrid = items => html`<div class="card-grid">${items.map(resourceCard)}</div>`;
+
+/** A compact, clickable row for one resource, used on the overview. */
+function tile(r) {
+  const open = opener(r);
+  const subtitle = r.kind === "share" ? `${r.share_type === "apps" ? "App repository" : "File server"} · ${audiences[r.visibility] || r.visibility}` : r.kind === "route" ? r.hostname || r.url : r.manifest?.description || "";
+  const name = open.href ? html`<a class="tile-title" href="${open.href}"${open.external ? html` target="_blank" rel="noopener noreferrer"` : ""}>${r.name}${open.external ? icon("external", "tile-external") : ""}</a>`
+    : open.action ? html`<button type="button" class="tile-title link-button" data-action="${open.action}" data-id="${r.id}">${r.name}</button>`
+    : html`<span class="tile-title">${r.name}</span>`;
+  return html`<article class="${`tile kind-${r.kind}`}" data-key="${r.id}"><span class="tile-icon" aria-hidden="true">${icon(kinds[r.kind])}</span><div class="tile-body">${name}<span class="tile-sub">${r.error || subtitle}</span></div><div class="tile-end">${r.update ? Badge("Update", "info") : ""}${r.kind === "share" ? "" : resourceStatus(r)}${manage(r)}</div></article>`;
+}
+const tiles = items => html`<div class="tiles">${items.map(tile)}</div>`;
+
+// The features LOKI itself provides, shown above the things people add to it.
+function features(repos) {
+  const { session, state } = store, owner = session.user.owner;
+  const syncResource = state.resources.find(r => r.kind === "sync");
+  const cards = [];
+  if (state.sync || (owner && syncResource)) {
+    const sync = state.sync, conflicts = sync ? sync.folders.reduce((n, f) => n + f.conflicts, 0) : 0;
+    cards.push(feature({
+      kind: "sync", icon: "sync", title: "Save sync", href: "/sync", subtitle: "Game saves and files, the same on every device",
+      badge: conflicts ? Badge(`${conflicts} conflict${conflicts === 1 ? "" : "s"}`, "warn") : "",
+      body: sync ? html`<p>${sync.folders.length} folder${sync.folders.length === 1 ? "" : "s"} · ${fmt(sync.usage)} of ${fmt(sync.quota)}</p>${Meter({ value: sync.usage, max: sync.quota, label: "Save sync storage used" })}` : html`<p>Sync is off for your account. Give yourself access to use it.</p>`,
+      actions: [LinkButton({ label: "Open", href: "/sync", icon: "sync", size: "sm" }), owner && syncResource ? Button({ label: "Manage", action: "sync-manage", id: syncResource.id, icon: "settings", size: "sm", kind: "ghost" }) : ""],
+    }));
+  }
+  if (repos) {
+    const count = repos.repositories.length;
+    cards.push(feature({
+      kind: "repos", icon: "repo", title: "Repositories", href: "/repositories", subtitle: "Version control with Skald",
+      body: html`<p>${count ? `${count} repositor${count === 1 ? "y" : "ies"} you can open` : "No repositories yet"}</p>`,
+      actions: [LinkButton({ label: "Open", href: "/repositories", icon: "repo", size: "sm" }), repos.create ? Button({ label: "New", action: "vcs-new", icon: "plus", size: "sm", kind: "ghost" }) : "", owner ? Button({ label: "Manage", action: "vcs-manage", icon: "settings", size: "sm", kind: "ghost" }) : ""],
+    }));
+  }
+  return cards.length ? html`<div class="features">${cards}</div>` : "";
+}
+const feature = f => html`<article class="${`feature kind-${f.kind}`}"><header class="feature-head"><span class="resource-icon" aria-hidden="true">${icon(f.icon)}</span><div><h3><a href="${f.href}">${f.title}</a></h3><span class="tile-sub">${f.subtitle}</span></div>${f.badge}</header>${f.body}<footer class="feature-actions">${f.actions}</footer></article>`;
+
+export async function overview() {
+  const { session, state } = store, owner = session.user.owner;
+  const repos = await api("/api/repos").catch(() => null);
+  const by = kind => state.resources.filter(r => r.kind === kind);
+  const apps = by("app"), routes = by("route"), shares = by("share");
   const pending = state.users?.filter(u => u.status === "pending").length || 0;
-  const owner = session.user.owner;
-  return heading(`Welcome, ${session.user.display_name || session.user.username}.`, "A place for everything you bring to life.", "", "overview")
-    + `<div class="stats">${stat(apps.filter(a => a.ready).length, apps.length, "Applications running", "apps", "/apps")}${stat(shares.length, undefined, "File shares", "folder", "/shares")}${stat(routes.filter(r => r.enabled).length, owner ? routes.length : undefined, "Connected routes", "route", owner ? "/routes" : "/")}</div>`
-    + (pending ? `<div class="pending-banner">${icon("people")}<span>${pending} account request${pending === 1 ? "" : "s"} waiting.</span><a href="/accounts">Review requests ${icon("chevron")}</a></div>` : "")
-    + `<div class="section-heading"><h2>Your services</h2>${owner ? `<a href="/apps">Manage applications ${icon("chevron")}</a>` : ""}</div>`
-    + (state.resources.some(r => r.kind !== "vcs-create") ? cards(state.resources.filter(r => r.kind !== "vcs-create")) : empty("Every universe starts somewhere.", owner ? "Import your first app, connect an existing service, or share a folder." : "Your server owner can give you access to apps and file shares.", owner ? linkButton("Add your first app", "/apps", "primary", "plus") : "", "á›Ÿ"));
+  const running = apps.filter(a => a.ready).length;
+  const groups = [
+    (apps.length || owner) && html`${SectionHead({ title: "Applications", count: apps.length ? `${running} of ${apps.length} running` : undefined, href: "/apps", linkLabel: owner ? "Manage" : "View all" })}${apps.length ? tiles(apps) : Hint({ text: "Install your first app from the registry.", action: LinkButton({ label: "Browse apps", href: "/apps/browse", size: "sm" }) })}`,
+    (routes.length || owner) && html`${SectionHead({ title: "Connected services", count: routes.length || undefined, href: owner ? "/routes" : "", linkLabel: "Manage" })}${routes.length ? tiles(routes) : Hint({ text: "Give Jellyfin or another service you already run a place here.", action: Button({ label: "Add route", action: "route-new", size: "sm" }) })}`,
+    (shares.length || owner) && html`${SectionHead({ title: "File shares", count: shares.length || undefined, href: "/shares", linkLabel: owner ? "Manage" : "View all" })}${shares.length ? tiles(shares) : Hint({ text: "Share a folder on this server.", action: Button({ label: "Share a folder", action: "share-new", size: "sm" }) })}`,
+  ];
+  const body = html`${features(repos)}${groups.map(g => g ? html`<section class="page-section">${g}</section>` : "")}`;
+  return html`${PageHeader({ title: `Welcome, ${session.user.display_name || session.user.username}.`, description: "A place for everything you bring to life.", realm: "overview" })}${pending ? Notice({ tone: "warn", icon: "people", body: `${pending} account request${pending === 1 ? "" : "s"} waiting.`, action: html`<a href="/accounts">Review requests${icon("chevron")}</a>` }) : ""}${String(body).trim() ? body : EmptyState({ title: "Every universe starts somewhere.", text: "Your server owner can give you access to apps and file shares.", rune: "ᛟ" })}`;
 }
 
 export function appsPage() {
   const items = store.state.resources.filter(r => r.kind === "app"), owner = store.session.user.owner;
-  const add = owner ? linkButton("Browse apps", "/apps/browse", "primary", "apps") + button("Import app package", "app-import", "", "", "subtle", "upload") : "";
-  return heading("Applications", "Independent services. One place to keep them together.", add, "apps")
-    + (items.length ? cards(items) : empty("Bring a new branch to life.", owner ? "Install a reviewed app from the LOKI app registry, or import a .loki-app package." : "No applications have been shared with you yet.", add, "áš²"));
+  const add = owner ? [Button({ label: "Import package", action: "app-import", icon: "upload" }), LinkButton({ label: "Browse apps", href: "/apps/browse", kind: "primary", icon: "apps" })] : "";
+  return html`${PageHeader({ title: "Applications", description: "Independent services. One place to keep them together.", actions: add, realm: "apps" })}${items.length ? resourceGrid(items) : EmptyState({ title: "Bring a new branch to life.", text: owner ? "Install a reviewed app from the LOKI app registry, or import a .loki-app package." : "No applications have been shared with you yet.", action: add, rune: "ᚲ" })}`;
 }
 
 export function sharesPage() {
   const items = store.state.resources.filter(r => r.kind === "share"), owner = store.session.user.owner;
-  return heading("File shares", "A window into the things you want to share.", owner ? button("Share a folder", "share-new", "", "", "primary", "plus") : "", "shares")
-    + (items.length ? cards(items) : empty("A place for your files.", owner ? "Select a folder on this server. Files stay where they are and appear as you add them." : "No file shares have been shared with you yet.", owner ? button("Share a folder", "share-new", "", "", "primary", "plus") : "", "áš "));
+  const add = owner ? Button({ label: "Share a folder", action: "share-new", kind: "primary", icon: "plus" }) : "";
+  return html`${PageHeader({ title: "File shares", description: "A window into the things you want to share.", actions: add, realm: "shares" })}${items.length ? resourceGrid(items) : EmptyState({ title: "A place for your files.", text: owner ? "Select a folder on this server. Files stay where they are and appear as you add them." : "No file shares have been shared with you yet.", action: add, rune: "ᚠ" })}`;
 }
 
 export function routesPage() {
   const items = store.state.resources.filter(r => r.kind === "route");
-  return heading("Routes & services", "Give Jellyfin and your other services a place in your universe.", button("Add route", "route-new", "", "", "primary", "plus"), "routes")
-    + (items.length ? cards(items) : empty("Connect what you already run.", "Set a hostname and upstream address. LOKI will configure Caddy for you.", button("Add route", "route-new", "", "", "primary", "plus"), "áš±"));
+  const add = Button({ label: "Add route", action: "route-new", kind: "primary", icon: "plus" });
+  return html`${PageHeader({ title: "Routes & services", description: "Give Jellyfin and your other services a place in your universe.", actions: add, realm: "routes" })}${items.length ? resourceGrid(items) : EmptyState({ title: "Connect what you already run.", text: "Set a hostname and upstream address. LOKI will configure Caddy for you.", action: add, rune: "ᚱ" })}`;
 }
