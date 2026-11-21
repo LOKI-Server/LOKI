@@ -8,7 +8,6 @@ pub mod db;
 pub mod device_codes;
 pub mod devices;
 pub mod files;
-pub mod git;
 pub mod identity;
 mod personal;
 pub mod platform;
@@ -17,6 +16,7 @@ pub mod registry;
 pub mod startup;
 pub mod storage;
 pub mod sync;
+mod vcs;
 pub mod web;
 
 use axum::{
@@ -123,12 +123,10 @@ pub struct Settings {
     pub startup: bool,
     pub sync_quota_mb: u64,
     pub sync_max_file_mb: u64,
-    pub git_push_mib: u64,
-    pub git_repo_mib: u64,
-    pub git_total_mib: u64,
-    pub git_lfs_object_mib: u64,
-    pub git_lfs_repo_mib: u64,
-    pub git_lfs_total_mib: u64,
+    #[serde(alias = "git_repo_mib")]
+    pub vcs_repo_mib: u64,
+    #[serde(alias = "git_total_mib")]
+    pub vcs_total_mib: u64,
     /// Where the app registry's `index.json` lives. Empty turns the registry off.
     pub registry_url: String,
 }
@@ -154,12 +152,8 @@ impl Default for Settings {
             startup: false,
             sync_quota_mb: 10240,
             sync_max_file_mb: 2048,
-            git_push_mib: 64,
-            git_repo_mib: 1024,
-            git_total_mib: 20 * 1024,
-            git_lfs_object_mib: 4096,
-            git_lfs_repo_mib: 20 * 1024,
-            git_lfs_total_mib: 50 * 1024,
+            vcs_repo_mib: 1024,
+            vcs_total_mib: 20 * 1024,
             registry_url: registry::DEFAULT_URL.into(),
         }
     }
@@ -170,7 +164,7 @@ const PASSWORD_HASHES: usize = 2;
 /// Requests LOKI handles at once. Storage operations drain all but their own.
 pub(crate) const REQUESTS: u32 = 1024;
 /// WASI component requests running at once across every app: two per CPU core,
-/// within 8–64.
+/// within 8â€“64.
 fn component_requests() -> usize {
     std::thread::available_parallelism()
         .map_or(8, |n| n.get() * 2)
@@ -220,12 +214,8 @@ pub struct Inner {
     pub sync_blobs: RwLock<()>,
     pub(crate) personal_files: RwLock<()>,
     pub(crate) exports: Arc<Semaphore>,
-    pub(crate) git_files: Arc<RwLock<()>>,
-    pub(crate) git_processes: Arc<Semaphore>,
-    pub(crate) git_uploads: Arc<Semaphore>,
-    pub(crate) git_lfs_uploads: Arc<Semaphore>,
-    pub(crate) git_transfer_bytes: Arc<std::sync::Mutex<u64>>,
-    pub(crate) git_binary: tokio::sync::OnceCell<PathBuf>,
+    pub(crate) vcs_transfers: Arc<Semaphore>,
+    pub(crate) vcs_files: Arc<RwLock<()>>,
     /// The last app registry index LOKI read; see [`registry`].
     pub registry: Mutex<Option<Arc<registry::Cache>>>,
 }
@@ -242,14 +232,13 @@ impl State {
             "apps",
             "app-data",
             "backups",
-            "git-lfs",
-            "git-staging",
             "staging",
             "avatars",
             "logs",
             "caddy",
             "sync/blobs",
             "sync/staging",
+            "skald-repos",
         ] {
             std::fs::create_dir_all(data.join(p))?;
         }
@@ -260,7 +249,6 @@ impl State {
         platform::private_directory(&data)?;
         let db = db::open(&data.join("loki.db")).await?;
         personal::recover(&data, &db).await?;
-        git::recover(&data, &db).await?;
         let previous: Vec<String> =
             sqlx::query_scalar("SELECT id FROM apps WHERE previous IS NOT NULL")
                 .fetch_all(&db)
@@ -327,12 +315,8 @@ impl State {
             sync_blobs: RwLock::new(()),
             personal_files: RwLock::new(()),
             exports: Arc::new(Semaphore::new(2)),
-            git_files: Arc::new(RwLock::new(())),
-            git_processes: Arc::new(Semaphore::new(8)),
-            git_uploads: Arc::new(Semaphore::new(2)),
-            git_lfs_uploads: Arc::new(Semaphore::new(8)),
-            git_transfer_bytes: Arc::new(std::sync::Mutex::new(0)),
-            git_binary: tokio::sync::OnceCell::new(),
+            vcs_transfers: Arc::new(Semaphore::new(8)),
+            vcs_files: Arc::new(RwLock::new(())),
             registry: Mutex::new(None),
         }));
         Ok(http)

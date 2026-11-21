@@ -12,7 +12,7 @@ export const roles = r => [...new Set(["access", ...(r.kind === "app" ? ["admin"
 
 export function accessPanel(r) {
   const grants = store.state.grants.filter(g => g.resource === r.id);
-  const audiences = { restricted: "Selected people and groups", ...(r.kind === "git-create" ? {} : { members: "All approved members" }), ...(["sync", "git-create"].includes(r.kind) ? {} : { public: "Public" }) };
+  const audiences = { restricted: "Selected people and groups", ...(r.kind === "vcs-create" ? {} : { members: "All approved members" }), ...(["sync", "vcs-create"].includes(r.kind) ? {} : { public: "Public" }) };
   return `<form data-form="access" data-id="${esc(r.id)}"><label for="access-visibility">Audience</label><select id="access-visibility" name="visibility">${Object.entries(audiences).map(([v, label]) => `<option ${r.visibility === v ? "selected" : ""} value="${v}">${label}</option>`).join("")}</select>${r.kind === "app" ? '<p class="help">Public visibility makes the service discoverable, but this app may still require a LOKI sign-in for its features.</p>' : ""}${r.kind === "route" && !r.gated ? '<p class="help">Without a browser sign-in gate, these permissions control the service card in LOKI. The upstream service controls sign-in.</p>' : ""}<label>Permissions</label><div id="grants">${grants.map(g => grantRow(subjects(), roles(r), `${g.subject_kind}:${g.subject}`, g.role)).join("")}</div>${button("Add permission", "grant-add", r.id, "", "ghost", "plus")}<div class="actions"><button>Save access</button></div></form>`;
 }
 
@@ -27,8 +27,8 @@ export function syncManage(id) {
   modal(r.name, `<p>Who may pair devices and keep files in sync. Each person only ever sees their own folders. Set storage limits in Server settings and per person in People &amp; groups.</p>` + section("Who can use sync", accessPanel(r)));
 }
 
-export function gitCreation() {
-  modal("Repository creation", accessPanel(resource("git-create")));
+export function vcsCreation() {
+  modal("Repository creation", accessPanel(resource("vcs-create")));
 }
 
 // Apps that keep files can be given more room, or less, than they ask for.

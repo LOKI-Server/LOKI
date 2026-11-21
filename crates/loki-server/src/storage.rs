@@ -46,6 +46,7 @@ fn validated_archive(backup: &Path) -> anyhow::Result<zip::ZipArchive<std::fs::F
                     "rollback-data/",
                     "sync/blobs/",
                     "personal-files/",
+                    "skald-repos/",
                     "git-repos/",
                     "git-lfs/",
                 ]
@@ -54,15 +55,27 @@ fn validated_archive(backup: &Path) -> anyhow::Result<zip::ZipArchive<std::fs::F
         {
             anyhow::bail!("Unsafe backup entry");
         }
+        if let Some(path) = name.strip_prefix("skald-repos/") {
+            crate::vcs::backup_entry(path)?;
+        }
+        // Prior hosting data is validated as archival files and never interpreted.
         if let Some(path) = name.strip_prefix("git-repos/") {
-            crate::git::backup_entry(path)?;
+            anyhow::ensure!(
+                path.split_once('/').is_some_and(|(repo, _)| repo
+                    .strip_suffix(".git")
+                    .is_some_and(crate::vcs::valid_id)),
+                "Invalid archived repository path"
+            );
         }
         if let Some(path) = name.strip_prefix("git-lfs/") {
             anyhow::ensure!(
-                path.split_once('/').is_some_and(
-                    |(shard, oid)| crate::git::lfs::valid_oid(oid) && shard == &oid[..2]
-                ),
-                "Invalid Git LFS backup object"
+                path.split_once('/')
+                    .is_some_and(|(shard, oid)| oid.len() == 64
+                        && oid
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                        && shard == &oid[..2]),
+                "Invalid archived asset path"
             );
         }
         total = total
@@ -95,7 +108,7 @@ pub async fn restore(backup: &Path, data: &Path) -> anyhow::Result<()> {
     let destination = stage.path().to_owned();
     tokio::task::spawn_blocking(move || unpack(&backup, &destination)).await??;
     let db = crate::db::open(&stage.path().join("loki.db")).await?;
-    let result = crate::git::verify_restore(stage.path(), &db).await;
+    let result = crate::vcs::verify_restore(stage.path(), &db).await;
     db.close().await;
     result?;
     platform::private_directory(data)?;

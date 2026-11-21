@@ -40,24 +40,24 @@ export function overview() {
     + `<div class="stats">${stat(apps.filter(a => a.ready).length, apps.length, "Applications running", "apps", "/apps")}${stat(shares.length, undefined, "File shares", "folder", "/shares")}${stat(routes.filter(r => r.enabled).length, owner ? routes.length : undefined, "Connected routes", "route", owner ? "/routes" : "/")}</div>`
     + (pending ? `<div class="pending-banner">${icon("people")}<span>${pending} account request${pending === 1 ? "" : "s"} waiting.</span><a href="/accounts">Review requests ${icon("chevron")}</a></div>` : "")
     + `<div class="section-heading"><h2>Your services</h2>${owner ? `<a href="/apps">Manage applications ${icon("chevron")}</a>` : ""}</div>`
-    + (state.resources.some(r => r.kind !== "git-create") ? cards(state.resources.filter(r => r.kind !== "git-create")) : empty("Every universe starts somewhere.", owner ? "Import your first app, connect an existing service, or share a folder." : "Your server owner can give you access to apps and file shares.", owner ? linkButton("Add your first app", "/apps", "primary", "plus") : "", "ᛟ"));
+    + (state.resources.some(r => r.kind !== "vcs-create") ? cards(state.resources.filter(r => r.kind !== "vcs-create")) : empty("Every universe starts somewhere.", owner ? "Import your first app, connect an existing service, or share a folder." : "Your server owner can give you access to apps and file shares.", owner ? linkButton("Add your first app", "/apps", "primary", "plus") : "", "á›Ÿ"));
 }
 
 export function appsPage() {
   const items = store.state.resources.filter(r => r.kind === "app"), owner = store.session.user.owner;
   const add = owner ? linkButton("Browse apps", "/apps/browse", "primary", "apps") + button("Import app package", "app-import", "", "", "subtle", "upload") : "";
   return heading("Applications", "Independent services. One place to keep them together.", add, "apps")
-    + (items.length ? cards(items) : empty("Bring a new branch to life.", owner ? "Install a reviewed app from the LOKI app registry, or import a .loki-app package." : "No applications have been shared with you yet.", add, "ᚲ"));
+    + (items.length ? cards(items) : empty("Bring a new branch to life.", owner ? "Install a reviewed app from the LOKI app registry, or import a .loki-app package." : "No applications have been shared with you yet.", add, "áš²"));
 }
 
 export function sharesPage() {
   const items = store.state.resources.filter(r => r.kind === "share"), owner = store.session.user.owner;
   return heading("File shares", "A window into the things you want to share.", owner ? button("Share a folder", "share-new", "", "", "primary", "plus") : "", "shares")
-    + (items.length ? cards(items) : empty("A place for your files.", owner ? "Select a folder on this server. Files stay where they are and appear as you add them." : "No file shares have been shared with you yet.", owner ? button("Share a folder", "share-new", "", "", "primary", "plus") : "", "ᚠ"));
+    + (items.length ? cards(items) : empty("A place for your files.", owner ? "Select a folder on this server. Files stay where they are and appear as you add them." : "No file shares have been shared with you yet.", owner ? button("Share a folder", "share-new", "", "", "primary", "plus") : "", "áš "));
 }
 
 export function routesPage() {
   const items = store.state.resources.filter(r => r.kind === "route");
   return heading("Routes & services", "Give Jellyfin and your other services a place in your universe.", button("Add route", "route-new", "", "", "primary", "plus"), "routes")
-    + (items.length ? cards(items) : empty("Connect what you already run.", "Set a hostname and upstream address. LOKI will configure Caddy for you.", button("Add route", "route-new", "", "", "primary", "plus"), "ᚱ"));
+    + (items.length ? cards(items) : empty("Connect what you already run.", "Set a hostname and upstream address. LOKI will configure Caddy for you.", button("Add route", "route-new", "", "", "primary", "plus"), "áš±"));
 }

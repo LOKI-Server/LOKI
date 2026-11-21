@@ -3,10 +3,10 @@ import { $, act, api, close, confirmDialog, enc, esc, modal, resource, store, to
 import { field, jsonView } from "./ui.js";
 import { navigate, refresh, routable } from "./router.js";
 import { submitSetup, submitStartupAware } from "../pages/auth.js";
-import { appManage, folderPicker, gitCreation, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
-import { gitAccess, gitSettings, newItem, newRepo } from "../pages/git.js";
+import { appManage, folderPicker, vcsCreation, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
+import { vcsAccess, vcsSettings, newItem, newRepo } from "../pages/vcs.js";
 import { userManage } from "../pages/people.js";
-import { passwordProof, deviceRename, pairDialog, gitTokenDialog, gitLimits } from "../pages/account.js";
+import { passwordProof, deviceRename, pairDialog, vcsTokenDialog, vcsLimits } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
 import { conflictsDialog, folderForm, folderManage, historyDialog } from "../pages/sync.js";
 import { panelAction, panelDialog } from "../pages/panel.js";
@@ -76,7 +76,7 @@ export async function onSubmit(event) {
       return;
     }
     else if (kind === "settings") {
-      const numbers = Object.fromEntries(["sync_quota_mb", "sync_max_file_mb", ...Object.keys(gitLimits)].map(key => [key, Number(data[key])]));
+      const numbers = Object.fromEntries(["sync_quota_mb", "sync_max_file_mb", ...Object.keys(vcsLimits)].map(key => [key, Number(data[key])]));
       const result = await submitStartupAware(confirmation => act("settings", "", { ...data, ...numbers, startup_confirmation: confirmation }));
       if (!result) return;
       session = true;
@@ -125,34 +125,34 @@ export async function onSubmit(event) {
     else if (kind === "device-rename" || kind === "sync-device-rename") { await act(kind, id, data); close(); toast("Device renamed."); }
     else if (kind === "sync-quota") { await act(kind, id, { mb: data.mb === "" ? null : Number(data.mb) }); toast("Quota saved."); }
     else if (kind === "personal-enable") { await api(`/api/personal/settings/apps/${enc(id)}`, { enabled: data.enabled }); close(); toast("Personal storage permission saved."); }
-    else if (kind === "git-create") {
-      const repo = await api("/api/git", { name: data.name, upstream: id || null, default_branch: data.default_branch || null });
+    else if (kind === "vcs-create") {
+      const repo = await api("/api/repos", { name: data.name, upstream: id || null, default_branch: data.default_branch || null });
       close();
-      return await navigate(`/git/${enc(repo.id)}`);
+      return await navigate(`/repositories/${enc(repo.id)}`);
     }
-    else if (kind === "git-grant") {
+    else if (kind === "vcs-grant") {
       const [subject_kind, subject] = data.subject.split(":");
-      await api(`/api/git/${enc(id)}/permissions`, { subject_kind, subject, role: data.role });
-      return await gitAccess(id);
+      await api(`/api/repos/${enc(id)}/permissions`, { subject_kind, subject, role: data.role });
+      return await vcsAccess(id);
     }
-    else if (kind === "git-token") {
+    else if (kind === "vcs-token") {
       const { scope, ...input } = data;
-      const result = await api("/api/account/git-tokens", { ...input, write: scope === "write" });
-      secret("Git token", `Use ${result.username} as your username. Copy the token now.`, result.token);
+      const result = await api("/api/account/vcs-tokens", { ...input, write: scope === "write" });
+      secret("Skald token", "Copy the token now and set SKALD_TOKEN before running skald.", result.token);
       return await refresh();
     }
-    else if (kind === "git-settings") {
-      await api(`/api/git/${enc(id)}/settings`, data);
+    else if (kind === "vcs-settings") {
+      await api(`/api/repos/${enc(id)}/settings`, data);
       close();
-      return await navigate(`/git/${enc(id)}`, { replace: true });
+      return await navigate(`/repositories/${enc(id)}`, { replace: true });
     }
-    else if (kind === "git-item") {
-      const item = await api(`/api/git/${enc(id)}/items`, data);
+    else if (kind === "vcs-item") {
+      const item = await api(`/api/repos/${enc(id)}/items`, data);
       close();
-      return await navigate(`/git/${enc(id)}/items/${enc(item.id)}`);
+      return await navigate(`/repositories/${enc(id)}/items/${enc(item.id)}`);
     }
-    else if (kind === "git-comment") {
-      await api(`/api/git/${enc(id)}/items/${enc(form.dataset.item)}`, { action: "comment", body: data.body });
+    else if (kind === "vcs-comment") {
+      await api(`/api/repos/${enc(id)}/items/${enc(form.dataset.item)}`, { action: "comment", body: data.body });
       form.reset();
     }
     else if (kind === "device-owner-approve") {
@@ -240,32 +240,37 @@ export async function onClick(event) {
   const id = b.dataset.id, action = b.dataset.action;
   try {
     if (dialogs[action]) return dialogs[action](id);
-    if (action === "git-creation") return gitCreation();
-    if (action === "git-new" || action === "git-fork") return newRepo(id);
-    if (action === "git-new-item") return await newItem(id, b.dataset.kind);
-    if (action === "git-access") return await gitAccess(id);
-    if (action === "git-delete") {
-      if (!(await ask(["Delete this repository?", `This removes ${b.dataset.name}, including its issues and pull requests.`, "Delete repository"]))) return;
-      await api(`/api/git/${enc(id)}`, {}, "DELETE");
-      return await navigate("/git");
+    if (action === "vcs-creation") return vcsCreation();
+    if (action === "vcs-new-item") return await newItem(id, b.dataset.kind);
+    if (action === "vcs-new") return newRepo();
+    if (action === "vcs-fork") return newRepo(id);
+    if (action === "vcs-access") return await vcsAccess(id);
+    if (action === "vcs-delete") {
+      if (!(await ask(["Delete this repository?", `This removes ${b.dataset.name}, including its revisions, files, and discussions.`, "Delete repository"]))) return;
+      await api(`/api/repos/${enc(id)}`, {}, "DELETE");
+      return await navigate("/repositories");
     }
-    if (action === "git-new-token") return gitTokenDialog();
-    if (action === "git-settings") return await gitSettings(id);
-    if (action === "git-copy") {
+    if (action === "vcs-new-token") return vcsTokenDialog();
+    if (action === "vcs-settings") return await vcsSettings(id);
+    if (action === "vcs-copy") {
       await navigator.clipboard.writeText(b.dataset.copy);
       return toast("Clone command copied.");
     }
-    if (action === "git-remove-access") {
-      await api(`/api/git/${enc(id)}/permissions`, { subject_kind: b.dataset.kind, subject: b.dataset.subject, role: "remove" });
-      return await gitAccess(id);
+    if (action === "vcs-remove-access") {
+      await api(`/api/repos/${enc(id)}/permissions`, { subject_kind: b.dataset.kind, subject: b.dataset.subject, role: "remove" });
+      return await vcsAccess(id);
     }
-    if (action === "git-revoke-token") {
-      if (!(await ask(["Revoke this Git token?", "Clients using this token will need a new one.", "Revoke token"]))) return;
-      await api(`/api/account/git-tokens/${enc(id)}`, {}, "DELETE");
+    if (action === "vcs-revoke-token") {
+      if (!(await ask(["Revoke this Skald token?", "Clients using this token will need a new one.", "Revoke token"]))) return;
+      await api(`/api/account/vcs-tokens/${enc(id)}`, {}, "DELETE");
       return await refresh();
     }
-    if (action === "git-item-action") {
-      await api(`/api/git/${enc(id)}/items/${enc(b.dataset.item)}`, { action: b.dataset.change, head: b.dataset.head || null, base: b.dataset.base || null });
+    if (action === "vcs-verify" || action === "vcs-gc") {
+      const result = await api(`/api/repos/${enc(id)}/maintenance`, { operation: action === "vcs-verify" ? "verify" : "gc" });
+      return toast(action === "vcs-verify" ? "Repository verified." : `Removed ${result.removed} unreachable objects.`);
+    }
+    if (action === "vcs-item-action") {
+      await api(`/api/repos/${enc(id)}/items/${enc(b.dataset.item)}`, { action: b.dataset.change, head: b.dataset.head || null, base: b.dataset.base || null });
       return await refresh();
     }
     if (action === "app-panel") return await panelDialog(id);
@@ -278,7 +283,7 @@ export async function onClick(event) {
     if (action === "registry-confirm") {
       const label = b.innerHTML;
       b.disabled = true;
-      b.textContent = "Downloading and installing…";
+      b.textContent = "Downloading and installingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦";
       let result;
       try { result = await api("/api/registry/install", { id }); }
       catch (error) { b.innerHTML = label; throw error; }

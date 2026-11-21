@@ -13,7 +13,7 @@ async fn fixture() -> (tempfile::TempDir, State) {
     let state = State::open(folder.path().to_owned(), "127.0.0.1:7070".parse().unwrap())
         .await
         .unwrap();
-    let password = auth::hash(&state, "test password for Git".into())
+    let password = auth::hash(&state, "test password for LOKI".into())
         .await
         .unwrap();
     for (id, owner) in [("owner", true), ("alice", false), ("bob", false)] {
@@ -229,985 +229,6 @@ async fn selected_exports_are_private_and_shares_cannot_serve_personal_bodies() 
 }
 
 #[tokio::test]
-#[ignore = "requires Git 2.54+ (LOKI_GIT_EXECUTABLE) and loopback networking, optional Caddy TLS"]
-async fn real_git_clients_enforce_private_access_and_merge_reviewed_forks() {
-    use sha2::{Digest, Sha256};
-    use std::{
-        path::{Path, PathBuf},
-        process::Stdio,
-        time::Duration,
-    };
-
-    async fn git(
-        binary: &Path,
-        folder: &Path,
-        args: &[&str],
-        secret: Option<&str>,
-    ) -> std::process::Output {
-        let mut git = tokio::process::Command::new(binary);
-        git.current_dir(folder)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env(
-                "GIT_CONFIG_GLOBAL",
-                if cfg!(windows) { "NUL" } else { "/dev/null" },
-            )
-            .args([
-                "-c",
-                "credential.helper=",
-                "-c",
-                "user.name=LOKI Test",
-                "-c",
-                "user.email=test@example.test",
-            ]);
-        if let Some(certificate) = folder
-            .ancestors()
-            .map(|dir| dir.join("test-ca.pem"))
-            .find(|path| path.is_file())
-        {
-            git.env("GIT_SSL_CAINFO", certificate);
-            if cfg!(windows) {
-                git.args(["-c", "http.sslBackend=openssl"]);
-            }
-        }
-        if let Some(secret) = secret {
-            git.env("LOKI_TEST_GIT_TOKEN", secret).args([
-                "-c",
-                r#"credential.helper=!f() { if test "$1" = get; then printf 'username=test\npassword=%s\n' "$LOKI_TEST_GIT_TOKEN"; fi; }; f"#,
-            ]);
-        }
-        git.args(args).output().await.unwrap()
-    }
-
-    fn success(result: std::process::Output) {
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-    }
-
-    let bin = std::env::var_os("LOKI_GIT_EXECUTABLE")
-        .map(PathBuf::from)
-        .expect("set LOKI_GIT_EXECUTABLE to a Git 2.54+ executable");
-    let (folder, state) = fixture().await;
-    fn available_address() -> std::net::SocketAddr {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-    }
-    let bind = available_address();
-    let mut http = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(15));
-    let caddy = if let Some(binary) = std::env::var_os("LOKI_TEST_CADDY_EXECUTABLE") {
-        let address = available_address();
-        let storage = folder.path().join("caddy-test-data");
-        let caddyfile = folder.path().join("Caddyfile.test");
-        std::fs::write(&caddyfile, format!(
-            "{{\n admin off\n persist_config off\n auto_https disable_redirects\n servers {{\n protocols h1 h2\n }}\n skip_install_trust\n storage file_system {{\n root \"{}\"\n }}\n}}\nhttps://{address} {{\n bind 127.0.0.1\n tls internal\n reverse_proxy {bind}\n}}\n",
-            storage.to_string_lossy().replace('\\', "/")
-        )).unwrap();
-        let mut child = tokio::process::Command::new(binary)
-            .arg("run")
-            .arg("--config")
-            .arg(caddyfile)
-            .args(["--adapter", "caddyfile"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let root = storage.join("pki/authorities/local/root.crt");
-        for _ in 0..100 {
-            if root.is_file() {
-                break;
-            }
-            assert!(
-                child.try_wait().unwrap().is_none(),
-                "test HTTPS proxy failed"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        let pem = std::fs::read(root).unwrap();
-        std::fs::write(folder.path().join("test-ca.pem"), &pem).unwrap();
-        http = http.add_root_certificate(reqwest::Certificate::from_pem(&pem).unwrap());
-        Some((child, format!("https://{address}")))
-    } else {
-        None
-    };
-    let origin = caddy
-        .as_ref()
-        .map(|(_, origin)| origin.clone())
-        .unwrap_or_else(|| format!("http://{bind}"));
-    let cookie_name = if origin.starts_with("https://") {
-        "__Host-loki_session"
-    } else {
-        "loki_session"
-    };
-    let mut settings = state.0.settings.read().await.clone();
-    settings.public_url = origin.clone();
-    state.save_settings(settings).await.unwrap();
-    let (owner, csrf) = auth::new_session(&state, Some(("owner", 0)), "test")
-        .await
-        .unwrap();
-    let (alice, alice_csrf) = auth::new_session(&state, Some(("alice", 0)), "test")
-        .await
-        .unwrap();
-    state.0.db.close().await;
-    drop(state);
-    let start_server = |path: &Path| {
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_loki-server"))
-            .env("LOKI_GIT_EXECUTABLE", &bin)
-            .arg("--data-dir")
-            .arg(path)
-            .args(["--bind", &bind.to_string(), "--no-tray"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap()
-    };
-    let mut child = start_server(folder.path());
-    let http = http.build().unwrap();
-    for _ in 0..100 {
-        if http
-            .get(format!("{origin}/health"))
-            .send()
-            .await
-            .is_ok_and(|r| r.status().is_success())
-        {
-            break;
-        }
-        assert!(
-            child.try_wait().unwrap().is_none(),
-            "server exited during startup"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let post = |path: String, owner_account: bool, value: Value| {
-        let (token, csrf) = if owner_account {
-            (&owner, &csrf)
-        } else {
-            (&alice, &alice_csrf)
-        };
-        http.post(format!("{origin}{path}"))
-            .header("cookie", format!("{cookie_name}={token}"))
-            .header("x-csrf-token", csrf)
-            .json(&value)
-            .send()
-    };
-    async fn json_response(response: reqwest::Response) -> Value {
-        let code = response.status();
-        let value: Value = response.json().await.unwrap();
-        assert!(code.is_success(), "{code}: {value}");
-        value
-    }
-    let repo = json_response(
-        post("/api/git".into(), true, json!({"name":"upstream"}))
-            .await
-            .unwrap(),
-    )
-    .await;
-    let id = repo["id"].as_str().unwrap();
-    let creds = json_response(
-        post(
-            "/api/account/git-tokens".into(),
-            true,
-            json!({"label":"Owner PC","write":true,"current_password":"test password for Git"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let token = creds["token"].as_str().unwrap();
-    json_response(
-        post(
-            format!("/api/git/{id}/settings"),
-            true,
-            json!({"default_branch":"main","protect_default":true}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let empty = json_response(
-        post(
-            "/api/git".into(),
-            true,
-            json!({"name":"empty","default_branch":"trunk"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let empty_id = empty["id"].as_str().unwrap();
-    let empty_url = format!("{origin}/git-http/{empty_id}.git");
-    success(git(&bin, folder.path(), &["ls-remote", &empty_url], Some(token)).await);
-    let clone_url = format!("{origin}/git-http/{id}.git");
-    let old_token = format!("loki_git_{}", auth::random());
-    let migration_db = sqlx::SqlitePool::connect_with(
-        sqlx::sqlite::SqliteConnectOptions::new().filename(folder.path().join("loki.db")),
-    )
-    .await
-    .unwrap();
-    sqlx::query("INSERT INTO git_tokens(id,digest,user_id,repo_id,write,created,expires,auth_version) VALUES(?,?,'owner',?,0,?,?,0)")
-        .bind(auth::id()).bind(auth::digest(&old_token)).bind(id).bind(auth::now()).bind(auth::now() + 3600)
-        .execute(&migration_db).await.unwrap();
-    migration_db.close().await;
-    success(
-        git(
-            &bin,
-            folder.path(),
-            &["ls-remote", &clone_url],
-            Some(&old_token),
-        )
-        .await,
-    );
-    assert!(
-        !git(
-            &bin,
-            folder.path(),
-            &["ls-remote", &empty_url],
-            Some(&old_token)
-        )
-        .await
-        .status
-        .success()
-    );
-    let solo = json_response(
-        post(
-            "/api/git".into(),
-            true,
-            json!({"name":"solo","default_branch":"trunk"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let solo_id = solo["id"].as_str().unwrap();
-    let solo_url = format!("{origin}/git-http/{solo_id}.git");
-    let solo_work = folder.path().join("solo");
-    std::fs::create_dir(&solo_work).unwrap();
-    success(git(&bin, &solo_work, &["init", "-b", "trunk"], None).await);
-    success(
-        git(
-            &bin,
-            &solo_work,
-            &["commit", "--allow-empty", "-m", "Initial"],
-            None,
-        )
-        .await,
-    );
-    success(git(&bin, &solo_work, &["push", &solo_url, "trunk"], Some(token)).await);
-    success(
-        git(
-            &bin,
-            &solo_work,
-            &["commit", "--allow-empty", "-m", "Direct update"],
-            None,
-        )
-        .await,
-    );
-    success(git(&bin, &solo_work, &["push", &solo_url, "trunk"], Some(token)).await);
-    success(
-        git(
-            &bin,
-            &solo_work,
-            &["push", &solo_url, "HEAD:refs/heads/release"],
-            Some(token),
-        )
-        .await,
-    );
-    json_response(
-        post(
-            format!("/api/git/{solo_id}/settings"),
-            true,
-            json!({"default_branch":"release","protect_default":false}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let advertised = git(
-        &bin,
-        &solo_work,
-        &["ls-remote", "--symref", &solo_url, "HEAD"],
-        Some(token),
-    )
-    .await;
-    assert!(String::from_utf8_lossy(&advertised.stdout).starts_with("ref: refs/heads/release"));
-    assert!(
-        !git(&bin, folder.path(), &["ls-remote", &clone_url], None)
-            .await
-            .status
-            .success()
-    );
-    let work = folder.path().join("work");
-    std::fs::create_dir(&work).unwrap();
-    success(git(&bin, &work, &["init", "-b", "main"], None).await);
-    let lfs = git(&bin, &work, &["lfs", "version"], None)
-        .await
-        .status
-        .success();
-    if lfs {
-        success(git(&bin, &work, &["lfs", "install", "--local"], None).await);
-        success(git(&bin, &work, &["lfs", "track", "*.asset"], None).await);
-        std::fs::write(work.join("level.asset"), b"initial binary asset\x00\xff").unwrap();
-        success(git(&bin, &work, &["add", ".gitattributes", "level.asset"], None).await);
-    }
-    std::fs::write(work.join("readme.txt"), "initial").unwrap();
-    success(git(&bin, &work, &["add", "readme.txt"], None).await);
-    success(git(&bin, &work, &["commit", "-m", "initial"], None).await);
-    if lfs {
-        let missing = git(
-            &bin,
-            &work,
-            &["push", "--no-verify", &clone_url, "main"],
-            Some(token),
-        )
-        .await;
-        assert!(!missing.status.success());
-        assert!(
-            String::from_utf8_lossy(&missing.stderr).contains("Missing Git LFS object"),
-            "{}",
-            String::from_utf8_lossy(&missing.stderr)
-        );
-    }
-    success(git(&bin, &work, &["push", &clone_url, "main"], Some(token)).await);
-    success(
-        git(
-            &bin,
-            folder.path(),
-            &["clone", &clone_url, "checkout"],
-            Some(token),
-        )
-        .await,
-    );
-    assert_eq!(
-        std::fs::read_to_string(folder.path().join("checkout/readme.txt")).unwrap(),
-        "initial"
-    );
-    if lfs {
-        let checkout = folder.path().join("checkout");
-        success(git(&bin, &checkout, &["lfs", "install", "--local"], None).await);
-        success(git(&bin, &checkout, &["lfs", "pull"], Some(token)).await);
-        assert_eq!(
-            std::fs::read(checkout.join("level.asset")).unwrap(),
-            b"initial binary asset\x00\xff"
-        );
-        std::fs::write(work.join("level.asset"), b"updated binary asset\x00\xff").unwrap();
-        success(git(&bin, &work, &["add", "level.asset"], None).await);
-    }
-    if lfs {
-        let oid = hex::encode(Sha256::digest(b"initial binary asset\x00\xff"));
-        let path = format!("/info/lfs/objects/{oid}");
-        let denied = http
-            .get(format!("{empty_url}{path}"))
-            .basic_auth("owner", Some(token))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(denied.status(), StatusCode::NOT_FOUND);
-        let ranged = http
-            .get(format!("{clone_url}{path}"))
-            .basic_auth("owner", Some(token))
-            .header(header::RANGE, "bytes=0-6")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(ranged.status(), StatusCode::PARTIAL_CONTENT);
-        assert_eq!(ranged.bytes().await.unwrap(), &b"initial"[..]);
-        let wrong = http
-            .put(format!("{empty_url}{path}"))
-            .basic_auth("owner", Some(token))
-            .body("wrong hash")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(wrong.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    }
-    std::fs::write(work.join("readme.txt"), "change").unwrap();
-    success(git(&bin, &work, &["commit", "-am", "change"], None).await);
-    let protect = git(
-        &bin,
-        &work,
-        &["push", "--no-verify", &clone_url, "main"],
-        Some(token),
-    )
-    .await;
-    assert!(
-        !protect.status.success(),
-        "the default branch accepted a direct push"
-    );
-    assert!(String::from_utf8_lossy(&protect.stderr).contains("Open a pull request"));
-    json_response(post("/api/action".into(),true,json!({"action":"resource-access","id":"git-create","data":{"visibility":"restricted","grants":[{"subject_kind":"user","subject":"alice","role":"access"}]}})).await.unwrap()).await;
-    json_response(
-        post(
-            format!("/api/git/{id}/permissions"),
-            true,
-            json!({"subject_kind":"user","subject":"alice","role":"read"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let fork = json_response(
-        post(
-            "/api/git".into(),
-            false,
-            json!({"name":"fork","upstream":id}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let fork = fork["id"].as_str().unwrap();
-    let creds = json_response(
-        post(
-            "/api/account/git-tokens".into(),
-            false,
-            json!({"label":"Alice PC","write":true,"current_password":"test password for Git"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let fork_token = creds["token"].as_str().unwrap();
-    let fork_url = format!("{origin}/git-http/{fork}.git");
-    success(git(&bin, folder.path(), &["ls-remote", &fork_url], Some(token)).await);
-    assert!(
-        !git(
-            &bin,
-            folder.path(),
-            &["ls-remote", &empty_url],
-            Some(fork_token)
-        )
-        .await
-        .status
-        .success()
-    );
-    success(
-        git(
-            &bin,
-            &work,
-            &["push", &fork_url, "HEAD:refs/heads/topic"],
-            Some(fork_token),
-        )
-        .await,
-    );
-    let pull = json_response(
-        post(
-            format!("/api/git/{id}/items"),
-            false,
-            json!({"kind":"pull","title":"Change","body":"","source":fork,"branch":"topic"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let item = format!("/api/git/{id}/items/{}", pull["id"].as_str().unwrap());
-    let reviewed = json_response(
-        http.get(format!("{origin}{item}"))
-            .header("cookie", format!("{cookie_name}={owner}"))
-            .send()
-            .await
-            .unwrap(),
-    )
-    .await;
-    let head = &reviewed["item"]["head"];
-    let base = &reviewed["item"]["base"];
-    assert_eq!(
-        post(
-            item.clone(),
-            true,
-            json!({"action":"merge","head":head,"base":base})
-        )
-        .await
-        .unwrap()
-        .status(),
-        StatusCode::CONFLICT
-    );
-    assert_eq!(
-        post(
-            item.clone(),
-            true,
-            json!({"action":"approve","head":"stale","base":base})
-        )
-        .await
-        .unwrap()
-        .status(),
-        StatusCode::CONFLICT
-    );
-    json_response(
-        post(
-            item.clone(),
-            true,
-            json!({"action":"approve","head":head,"base":base}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    json_response(
-        post(
-            item,
-            true,
-            json!({"action":"merge","head":head,"base":base}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    success(
-        git(
-            &bin,
-            folder.path(),
-            &["clone", &clone_url, "merged"],
-            Some(token),
-        )
-        .await,
-    );
-    assert_eq!(
-        std::fs::read_to_string(folder.path().join("merged/readme.txt")).unwrap(),
-        "change"
-    );
-    let user_cookie = format!("{cookie_name}={alice}");
-    let listed = json_response(
-        http.get(format!("{origin}/api/git/{id}/items"))
-            .header("cookie", &user_cookie)
-            .send()
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(listed["items"][0]["status"], "merged");
-    let group_name = "Git contributors";
-    json_response(
-        post(
-            "/api/action".into(),
-            true,
-            json!({"action":"group-create","data":{"name":group_name}}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let dashboard = json_response(
-        http.get(format!("{origin}/api/state"))
-            .header("cookie", format!("{cookie_name}={owner}"))
-            .send()
-            .await
-            .unwrap(),
-    )
-    .await;
-    let group = dashboard["groups"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|group| group["name"] == group_name)
-        .unwrap()["id"]
-        .as_str()
-        .unwrap();
-    json_response(
-        post(
-            format!("/api/git/{id}/permissions"),
-            true,
-            json!({"subject_kind":"group","subject":group,"role":"read"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    json_response(
-        post(
-            "/api/action".into(),
-            true,
-            json!({"action":"membership","id":"alice","data":{"group":group,"enabled":true}}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    json_response(
-        post(
-            format!("/api/git/{id}/permissions"),
-            true,
-            json!({"subject_kind":"user","subject":"alice","role":"remove"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let alice_creds = json_response(
-        post(
-            "/api/account/git-tokens".into(),
-            false,
-            json!({"label":"Alice read only","write":false,"current_password":"test password for Git"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    let alice_token = alice_creds["token"].as_str().unwrap();
-    success(
-        git(
-            &bin,
-            folder.path(),
-            &["ls-remote", &clone_url],
-            Some(alice_token),
-        )
-        .await,
-    );
-    json_response(
-        post(
-            "/api/action".into(),
-            true,
-            json!({"action":"membership","id":"alice","data":{"group":group,"enabled":false}}),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    assert!(
-        !git(
-            &bin,
-            folder.path(),
-            &["ls-remote", &clone_url],
-            Some(alice_token)
-        )
-        .await
-        .status
-        .success()
-    );
-    success(
-        git(
-            &bin,
-            folder.path(),
-            &["ls-remote", &fork_url],
-            Some(fork_token),
-        )
-        .await,
-    );
-    let list = json_response(
-        http.get(format!("{origin}/api/account/git-tokens"))
-            .header("cookie", format!("{cookie_name}={alice}"))
-            .send()
-            .await
-            .unwrap(),
-    )
-    .await;
-    let read_id = list
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["label"] == "Alice read only")
-        .unwrap()["id"]
-        .as_str()
-        .unwrap();
-    assert!(
-        !git(
-            &bin,
-            &work,
-            &[
-                "push",
-                "--no-verify",
-                &fork_url,
-                "HEAD:refs/heads/read-only"
-            ],
-            Some(alice_token)
-        )
-        .await
-        .status
-        .success()
-    );
-    json_response(
-        http.delete(format!("{origin}/api/account/git-tokens/{read_id}"))
-            .header("cookie", format!("{cookie_name}={alice}"))
-            .header("x-csrf-token", &alice_csrf)
-            .send()
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        !git(
-            &bin,
-            folder.path(),
-            &["ls-remote", &fork_url],
-            Some(alice_token)
-        )
-        .await
-        .status
-        .success()
-    );
-
-    if let Some(cli) = std::env::var_os("LOKI_TEST_CLI_EXECUTABLE") {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
-        assert!(
-            origin.starts_with("http://"),
-            "Run the desktop CLI fixture on loopback HTTP"
-        );
-        let config = folder.path().join("cli-gitconfig");
-        std::fs::write(
-            &config,
-            b"[filter \"lfs\"]\nprocess = git-lfs filter-process\nrequired = true\n",
-        )
-        .unwrap();
-        let profile = folder.path().join("cli-profile");
-        let open = |directory: &Path, args: &[&str]| {
-            let mut command = tokio::process::Command::new(&cli);
-            command
-                .current_dir(directory)
-                .args(args)
-                .env("LOKI_GIT_CONFIG_DIR", &profile)
-                .env_remove("LOKI_CONFIG_DIR")
-                .env_remove("LOKI_TOKEN")
-                .env_remove("LOKI_SERVER")
-                .env("GIT_CONFIG_GLOBAL", &config)
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .kill_on_drop(true);
-            command
-        };
-        let mut pairing = open(&work, &["auth", "login", &origin])
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut lines = BufReader::new(pairing.stdout.take().unwrap()).lines();
-        let code = tokio::time::timeout(Duration::from_secs(15), async {
-            assert!(
-                lines
-                    .next_line()
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .starts_with("Open ")
-            );
-            let line = lines.next_line().await.unwrap().unwrap();
-            line.strip_prefix("Approve code ")
-                .unwrap()
-                .split_ascii_whitespace()
-                .next()
-                .unwrap()
-                .to_owned()
-        })
-        .await
-        .unwrap();
-        json_response(
-            post(
-                "/api/action".into(),
-                true,
-                json!({"action":"device-approve","data":{"code":code}}),
-            )
-            .await
-            .unwrap(),
-        )
-        .await;
-        assert!(
-            tokio::time::timeout(Duration::from_secs(20), pairing.wait())
-                .await
-                .unwrap()
-                .unwrap()
-                .success()
-        );
-        success(open(&work, &["auth", "status"]).output().await.unwrap());
-        success(
-            open(&work, &["repo", "create", "cli-game", "--push"])
-                .output()
-                .await
-                .unwrap(),
-        );
-        success(
-            open(
-                folder.path(),
-                &["repo", "clone", "cli-game", "cli-checkout"],
-            )
-            .output()
-            .await
-            .unwrap(),
-        );
-        let checkout = folder.path().join("cli-checkout");
-        assert_eq!(
-            std::fs::read_to_string(checkout.join("readme.txt")).unwrap(),
-            "change"
-        );
-        if lfs {
-            assert_eq!(
-                std::fs::read(checkout.join("level.asset")).unwrap(),
-                b"updated binary asset\x00\xff"
-            );
-        }
-        std::fs::write(work.join("readme.txt"), "pulled update").unwrap();
-        success(
-            git(
-                &bin,
-                &work,
-                &["commit", "-am", "Advance the CLI repository"],
-                None,
-            )
-            .await,
-        );
-        success(
-            open(&work, &["repo", "push", "cli-game"])
-                .output()
-                .await
-                .unwrap(),
-        );
-        success(
-            open(&checkout, &["repo", "fetch", "cli-game"])
-                .output()
-                .await
-                .unwrap(),
-        );
-        assert_eq!(
-            std::fs::read_to_string(checkout.join("readme.txt")).unwrap(),
-            "change"
-        );
-        success(
-            open(&checkout, &["repo", "pull", "cli-game"])
-                .output()
-                .await
-                .unwrap(),
-        );
-        assert_eq!(
-            std::fs::read_to_string(checkout.join("readme.txt")).unwrap(),
-            "pulled update"
-        );
-        success(open(&work, &["auth", "logout"]).output().await.unwrap());
-        let stored: Value =
-            serde_json::from_slice(&std::fs::read(profile.join("config.json")).unwrap()).unwrap();
-        assert_eq!(stored["profile"], "git");
-        assert_eq!(stored["token"], "");
-        assert!(!profile.join("index").exists());
-        let mut password = open(
-            &work,
-            &["auth", "login", &origin, "--password-stdin", "owner"],
-        )
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-        password
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"test password for Git\n")
-            .await
-            .unwrap();
-        success(password.wait_with_output().await.unwrap());
-        success(open(&work, &["repo", "list"]).output().await.unwrap());
-        success(open(&work, &["auth", "logout"]).output().await.unwrap());
-    }
-    let repository = folder.path().join("git-repos").join(format!("{id}.git"));
-    success(
-        git(
-            &bin,
-            folder.path(),
-            &[
-                "--git-dir",
-                repository.to_str().unwrap(),
-                "pack-refs",
-                "--all",
-                "--prune",
-            ],
-            None,
-        )
-        .await,
-    );
-    let backup = json_response(
-        post("/api/action".into(), true, json!({"action":"backup"}))
-            .await
-            .unwrap(),
-    )
-    .await;
-    let restored = folder.path().join("restored");
-    std::fs::create_dir(&restored).unwrap();
-    let backup_path = folder
-        .path()
-        .join("backups")
-        .join(backup["file"].as_str().unwrap());
-    loki_server::storage::restore(&backup_path, &restored)
-        .await
-        .unwrap();
-    let restored_repo = restored.join("git-repos").join(format!("{id}.git"));
-    success(
-        git(
-            &bin,
-            &restored,
-            &[
-                "--git-dir",
-                restored_repo.to_str().unwrap(),
-                "fsck",
-                "--no-reflogs",
-            ],
-            None,
-        )
-        .await,
-    );
-    let restored_empty = restored.join("git-repos").join(format!("{empty_id}.git"));
-    let output = git(
-        &bin,
-        &restored,
-        &[
-            "--git-dir",
-            restored_empty.to_str().unwrap(),
-            "symbolic-ref",
-            "HEAD",
-        ],
-        None,
-    )
-    .await;
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "refs/heads/trunk"
-    );
-    child.kill().await.unwrap();
-    if lfs {
-        let mut restored_server = start_server(&restored);
-        for _ in 0..100 {
-            if http
-                .get(format!("{origin}/health"))
-                .send()
-                .await
-                .is_ok_and(|r| r.status().is_success())
-            {
-                break;
-            }
-            assert!(
-                restored_server.try_wait().unwrap().is_none(),
-                "restored server exited"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        success(
-            git(
-                &bin,
-                folder.path(),
-                &["clone", &clone_url, "restored-checkout"],
-                Some(token),
-            )
-            .await,
-        );
-        let checkout = folder.path().join("restored-checkout");
-        success(git(&bin, &checkout, &["lfs", "install", "--local"], None).await);
-        success(git(&bin, &checkout, &["lfs", "pull"], Some(token)).await);
-        assert_eq!(
-            std::fs::read(checkout.join("level.asset")).unwrap(),
-            b"updated binary asset\x00\xff"
-        );
-        success(git(&bin, &checkout, &["checkout", "HEAD^1"], Some(token)).await);
-        assert_eq!(
-            std::fs::read(checkout.join("level.asset")).unwrap(),
-            b"initial binary asset\x00\xff"
-        );
-        restored_server.kill().await.unwrap();
-    }
-}
-#[tokio::test]
 async fn management_pairing_keeps_browser_native_and_owner_permissions_separate() {
     let (_folder, state) = fixture().await;
     let owner = Browser::new(&state, "owner").await;
@@ -1297,7 +318,7 @@ async fn management_pairing_keeps_browser_native_and_owner_permissions_separate(
             "POST",
             "/auth/v1/login",
             "",
-            json!({"username":"owner","password":"test password for Git","name":"Old client"}),
+            json!({"username":"owner","password":"test password for LOKI","name":"Old client"}),
         )
         .await
         .unwrap(),
@@ -1316,7 +337,7 @@ async fn management_pairing_keeps_browser_native_and_owner_permissions_separate(
         StatusCode::FORBIDDEN
     );
     let password_login = call(
-        "POST", "/api/v1/auth/login", "", json!({"scope":"repositories","username":"alice","password":"test password for Git","name":"Git CLI"})
+        "POST", "/api/v1/auth/login", "", json!({"scope":"repositories","username":"alice","password":"test password for LOKI","name":"Repository CLI"})
     ).await.unwrap();
     assert_eq!(password_login.status(), StatusCode::OK);
     let password_session = json_body(password_login).await;
@@ -1333,7 +354,7 @@ async fn management_pairing_keeps_browser_native_and_owner_permissions_separate(
         .status(),
         StatusCode::OK
     );
-    assert_eq!(call("POST", "/api/v1/auth/login", "", json!({"scope":"owner","username":"owner","password":"test password for Git","name":"Git CLI"})).await.unwrap().status(), StatusCode::FORBIDDEN);
+    assert_eq!(call("POST", "/api/v1/auth/login", "", json!({"scope":"owner","username":"owner","password":"test password for LOKI","name":"Repository CLI"})).await.unwrap().status(), StatusCode::FORBIDDEN);
     let admin = json_body(
         call(
             "POST",
@@ -1348,7 +369,7 @@ async fn management_pairing_keeps_browser_native_and_owner_permissions_separate(
     let decide = |password: &str| json!({"action":"device-approve","data":{"code":admin["user_code"],"proof":{"current_password":password}}});
     assert_eq!(
         alice
-            .request("POST", "/api/action", decide("test password for Git"))
+            .request("POST", "/api/action", decide("test password for LOKI"))
             .await
             .status(),
         StatusCode::FORBIDDEN
@@ -1366,7 +387,7 @@ async fn management_pairing_keeps_browser_native_and_owner_permissions_separate(
     );
     assert_eq!(
         owner
-            .request("POST", "/api/action", decide("test password for Git"))
+            .request("POST", "/api/action", decide("test password for LOKI"))
             .await
             .status(),
         StatusCode::OK
@@ -1505,7 +526,7 @@ async fn app_repositories_respect_access_and_keep_their_creation_type() {
             "POST",
             "/auth/v1/login",
             "",
-            json!({"username":username,"password":"test password for Git","name":"Catalog test"}),
+            json!({"username":username,"password":"test password for LOKI","name":"Catalog test"}),
         )
     };
     let owner_auth = read(token("owner").await.unwrap()).await;
@@ -1598,4 +619,459 @@ async fn app_repositories_respect_access_and_keep_their_creation_type() {
         to_bytes(response.into_body(), 100).await.unwrap(),
         &b"new"[..]
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires real loopback TCP"]
+async fn native_repository_push_clone_review_and_backup() {
+    use skald_vcs_client::{Repository, WorkspaceChange};
+    use skald_vcs_core::{Id, Kind, Settings, Store};
+    async fn json_body(response: axum::response::Response) -> Value {
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(
+            status.is_success(),
+            "{status}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    let (folder, state) = fixture().await;
+    let owner = Browser::new(&state, "owner").await;
+    let alice = Browser::new(&state, "alice").await;
+    let repo = json_body(
+        owner
+            .request("POST", "/api/repos", json!({"name":"test-project"}))
+            .await,
+    )
+    .await;
+    let id = repo["id"].as_str().unwrap();
+    let browser_url = format!("/api/repos/{id}");
+    assert_eq!(
+        alice
+            .request("GET", &browser_url, Value::Null)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(
+        owner
+            .request(
+                "POST",
+                &format!("{browser_url}/permissions"),
+                json!({"subject_kind":"user","subject":"alice","role":"read"})
+            )
+            .await
+            .status()
+            .is_success()
+    );
+
+    let token_path = "/api/account/vcs-tokens";
+    let issue = |label: &str, write| json!({"label":label,"write":write,"current_password":"test password for LOKI"});
+    let owner_token = json_body(
+        owner
+            .request("POST", token_path, issue("writer", true))
+            .await,
+    )
+    .await;
+    let alice_token = json_body(
+        alice
+            .request("POST", token_path, issue("reader", false))
+            .await,
+    )
+    .await;
+    let writer = owner_token["token"].as_str().unwrap().to_owned();
+    let reader = alice_token["token"].as_str().unwrap().to_owned();
+    assert!(writer.starts_with("skald_"));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let app = web::router(state.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let url = format!("{origin}/skald/v1/repos/{id}");
+    let client = reqwest::Client::new();
+    let discovery: Value = client
+        .get(format!("{origin}/skald/v1"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(discovery["repository_discovery"], "/skald/v1/repos");
+    assert_eq!(
+        client
+            .get(format!("{url}/refs"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let paired: Value = client
+        .post(format!("{origin}/api/v1/auth/login"))
+        .json(&json!({
+            "scope":"repositories","username":"alice","password":"test password for LOKI",
+            "name":"Native integration test"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scoped: Value = client
+        .post(format!("{origin}/api/v1/repos/{id}/credential"))
+        .bearer_auth(paired["token"].as_str().unwrap())
+        .json(&json!({"write":false}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        scoped["remote_url"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("/skald/v1/repos/{id}"))
+    );
+    let scoped = scoped["token"].as_str().unwrap();
+    let visible: Value = client
+        .get(format!("{origin}/skald/v1/repos"))
+        .bearer_auth(scoped)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(visible["repositories"].as_array().unwrap().len(), 1);
+    assert_eq!(visible["repositories"][0]["id"], id);
+    let test_id = Id::of(Kind::Chunk, b"true bytes");
+    let object = format!("{url}/objects/{test_id}");
+    for (token, wanted) in [
+        (&reader, StatusCode::FORBIDDEN),
+        (&writer, StatusCode::BAD_REQUEST),
+    ] {
+        let response = client
+            .put(&object)
+            .bearer_auth(token)
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body("wrong bytes")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), wanted);
+    }
+    let working = tempfile::tempdir().unwrap();
+    let path = working.path().to_owned();
+    let clone_url = url.clone();
+    let write_token = writer.clone();
+    let read_token = reader.clone();
+    let first = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let source = Repository::init(path.join("source"), Settings::default())?;
+        let bytes = [0, 250, 249, 99].repeat(400_000);
+        std::fs::write(source.root().join("asset.bin"), &bytes)?;
+        source.stage(&[".".into()])?;
+        let first = source.commit("Owner", "first asset")?;
+        source.remote("origin", Some(&clone_url))?;
+        source.push("origin", &write_token, None, false, false)?;
+        source.branch("feature/texture", None)?;
+        source.checkout("feature/texture", false)?;
+        std::fs::write(source.root().join("notes.txt"), "Updated asset notes.\n")?;
+        source.stage(&["notes.txt".into()])?;
+        source.commit("Owner", "add notes")?;
+        source.push("origin", &write_token, None, false, false)?;
+        let clone = Repository::clone_remote(&path.join("clone"), &clone_url, &read_token)?;
+        assert_eq!(std::fs::read(clone.root().join("asset.bin"))?, bytes);
+        assert_eq!(clone.history(None, 30)?.len(), 1);
+        assert!(clone.branches()?.contains_key("feature/texture"));
+
+        let sparse = Repository::clone_sparse(
+            &path.join("sparse"),
+            &clone_url,
+            &read_token,
+            &["notes.txt".into()],
+        )?;
+        let store = Store::open(&sparse.root().join(".skald/objects"), Settings::default())?;
+        let excluded = store.snapshot(Some(first))?["asset.bin"].id;
+        let excluded_chunks = store.manifest(excluded)?.chunks;
+        assert!(!sparse.root().join("asset.bin").exists());
+        assert!(
+            excluded_chunks
+                .iter()
+                .all(|chunk| !store.contains(chunk.id))
+        );
+        assert!(sparse.status()?.unstaged.is_empty());
+
+        sparse.pull("origin", &read_token, Some("feature/texture"), "Owner")?;
+        assert_eq!(
+            std::fs::read_to_string(sparse.root().join("notes.txt"))?,
+            "Updated asset notes.\n"
+        );
+        sparse.branch("feature/sparse", None)?;
+        sparse.checkout("feature/sparse", false)?;
+        std::fs::write(sparse.root().join("notes.txt"), "Sparse checkout notes.\n")?;
+        sparse.stage(&[".".into()])?;
+        assert_eq!(
+            sparse.status()?.staged.keys().collect::<Vec<_>>(),
+            ["notes.txt"]
+        );
+        let sparse_tip = sparse.commit("Owner", "edit from sparse workspace")?;
+        assert!(
+            excluded_chunks
+                .iter()
+                .all(|chunk| !store.contains(chunk.id))
+        );
+        sparse.push("origin", &write_token, None, false, false)?;
+        assert_eq!(store.snapshot(Some(sparse_tip))?["asset.bin"].id, excluded);
+        let full = Repository::clone_remote(&path.join("full-check"), &clone_url, &read_token)?;
+        full.checkout("feature/sparse", false)?;
+        assert_eq!(std::fs::read(full.root().join("asset.bin"))?, bytes);
+
+        let add = WorkspaceChange::Add(vec!["asset.bin".into()]);
+        assert_eq!(
+            sparse.change_workspace(&add, true, None)?.add,
+            ["asset.bin"]
+        );
+        assert!(sparse.change_workspace(&add, false, None).is_err());
+        sparse.change_workspace(&add, false, Some(&read_token))?;
+        assert_eq!(std::fs::read(sparse.root().join("asset.bin"))?, bytes);
+        assert!(excluded_chunks.iter().all(|chunk| store.contains(chunk.id)));
+        sparse.change_workspace(
+            &WorkspaceChange::Remove(vec!["asset.bin".into()]),
+            false,
+            None,
+        )?;
+        assert!(sparse.prune_workspace(&read_token)? > 0);
+        assert!(
+            excluded_chunks
+                .iter()
+                .all(|chunk| !store.contains(chunk.id))
+        );
+        sparse.verify()?;
+        sparse.change_workspace(&add, false, Some(&read_token))?;
+        assert_eq!(std::fs::read(sparse.root().join("asset.bin"))?, bytes);
+
+        let ours = [0, 81, 82, 83].repeat(400_000);
+        std::fs::write(sparse.root().join("asset.bin"), &ours)?;
+        sparse.stage(&["asset.bin".into()])?;
+        sparse.commit("Owner", "local asset edits")?;
+        let remove = WorkspaceChange::Remove(vec!["asset.bin".into()]);
+        sparse.change_workspace(&remove, false, None)?;
+        sparse.prune_workspace(&read_token)?;
+        sparse.change_workspace(&add, false, None)?;
+        assert_eq!(std::fs::read(sparse.root().join("asset.bin"))?, ours);
+        sparse.change_workspace(&remove, false, None)?;
+
+        full.branch("feature/other-asset", None)?;
+        full.checkout("feature/other-asset", false)?;
+        let theirs = [0, 61, 62, 63].repeat(400_000);
+        std::fs::write(full.root().join("asset.bin"), &theirs)?;
+        full.stage(&["asset.bin".into()])?;
+        full.commit("Owner", "remote asset edits")?;
+        full.push("origin", &write_token, None, false, false)?;
+        let merge = sparse.pull("origin", &read_token, Some("feature/other-asset"), "Owner")?;
+        assert_eq!(
+            merge.conflicts.into_iter().collect::<Vec<_>>(),
+            ["asset.bin"]
+        );
+        assert_eq!(std::fs::read(sparse.root().join("asset.bin"))?, ours);
+        sparse.restore_with_token(
+            "remotes/origin/branches/feature/other-asset",
+            &["asset.bin".into()],
+            Some(&read_token),
+        )?;
+        assert_eq!(std::fs::read(sparse.root().join("asset.bin"))?, theirs);
+        sparse.stage(&[".".into()])?;
+        sparse.commit("Owner", "resolve sparse asset conflict")?;
+        sparse.verify()?;
+        Ok(first)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let raw = alice
+        .request(
+            "GET",
+            &format!("{browser_url}/file?path=asset.bin&raw=true"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(
+        to_bytes(raw.into_body(), 2_000_000).await.unwrap().len(),
+        1_600_000
+    );
+
+    assert!(
+        owner
+            .request(
+                "POST",
+                &format!("{browser_url}/settings"),
+                json!({"default_branch":"main","protect_default":true})
+            )
+            .await
+            .status()
+            .is_success()
+    );
+    let review = json_body(alice.request("POST", &format!("{browser_url}/items"),
+        json!({"kind":"pull","title":"Asset notes","body":"Review notes","branch":"feature/texture"})).await).await;
+    let review_url = format!("{browser_url}/items/{}", review["id"].as_str().unwrap());
+    let detail = json_body(owner.request("GET", &review_url, Value::Null).await).await;
+    assert_eq!(detail["item"]["base"], first.to_string());
+    for action in ["approve", "merge"] {
+        assert!(owner.request("POST", &review_url,
+            json!({"action":action,"head":detail["item"]["head"],"base":detail["item"]["base"]})).await.status().is_success());
+    }
+    let stale = client
+        .put(format!("{url}/refs/branches/main"))
+        .bearer_auth(&writer)
+        .json(&json!({"expected":first,"target":detail["item"]["head"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), StatusCode::FORBIDDEN);
+    let path = working.path().join("clone");
+    let pull_token = reader.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let clone = Repository::open(&path)?;
+        assert!(
+            clone
+                .pull("origin", &pull_token, None, "Reader")?
+                .conflicts
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read(clone.root().join("notes.txt"))?,
+            b"Updated asset notes.\n"
+        );
+        clone.verify()
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let fork = json_body(
+        owner
+            .request(
+                "POST",
+                "/api/repos",
+                json!({"name":"test-fork","upstream":id}),
+            )
+            .await,
+    )
+    .await;
+    let fork_id = fork["id"].as_str().unwrap();
+    let fork_url = format!("/api/repos/{fork_id}");
+    let fork_detail = json_body(owner.request("GET", &fork_url, Value::Null).await).await;
+    assert_eq!(fork_detail["upstream"]["id"], id);
+    assert_eq!(fork_detail["revision"], detail["item"]["head"]);
+    assert_eq!(
+        alice.request("GET", &fork_url, Value::Null).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    let usage: (i64, i64) = sqlx::query_as("SELECT bytes,object_count FROM skald_repos WHERE id=?")
+        .bind(fork_id)
+        .fetch_one(&state.0.db)
+        .await
+        .unwrap();
+    let original_usage: (i64, i64) =
+        sqlx::query_as("SELECT bytes,object_count FROM skald_repos WHERE id=?")
+            .bind(id)
+            .fetch_one(&state.0.db)
+            .await
+            .unwrap();
+    assert_eq!(usage, original_usage);
+    assert!(usage.0 > 0 && usage.1 >= 8);
+    assert!(
+        owner
+            .request(
+                "POST",
+                &format!("{fork_url}/permissions"),
+                json!({"subject_kind":"user","subject":"alice","role":"read"})
+            )
+            .await
+            .status()
+            .is_success()
+    );
+    let fork_refs = format!("{origin}/skald/v1/repos/{fork_id}/refs");
+    assert!(
+        client
+            .get(&fork_refs)
+            .bearer_auth(&reader)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    assert_eq!(
+        client
+            .get(&fork_refs)
+            .bearer_auth(scoped)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    server.abort();
+    let clone = Repository::open(working.path().join("clone")).unwrap();
+    assert_eq!(clone.history(None, 30).unwrap().len(), 2);
+    assert!(clone.status().unwrap().unstaged.is_empty());
+
+    let old = folder.path().join("git-repos").join(format!("{id}.git"));
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    let asset_bytes = b"legacy large-file content";
+    let oid = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(asset_bytes));
+    let legacy_asset = std::path::Path::new("git-lfs").join(&oid[..2]).join(&oid);
+    let asset = folder.path().join(&legacy_asset);
+    std::fs::create_dir_all(asset.parent().unwrap()).unwrap();
+    std::fs::write(asset, asset_bytes).unwrap();
+    let backup = web::backup(&state).await.unwrap();
+    let restore = tempfile::tempdir().unwrap();
+    loki_server::storage::restore(&folder.path().join("backups").join(backup), restore.path())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(
+            restore
+                .path()
+                .join("git-repos")
+                .join(format!("{id}.git"))
+                .join("HEAD")
+        )
+        .unwrap(),
+        "ref: refs/heads/main\n"
+    );
+    assert_eq!(
+        std::fs::read(restore.path().join(legacy_asset)).unwrap(),
+        asset_bytes
+    );
+    let hosted =
+        skald_vcs_server::Hosted::open(&restore.path().join("skald-repos").join(id)).unwrap();
+    assert_eq!(
+        hosted.refs().unwrap().branches["main"].to_string(),
+        detail["item"]["head"]
+    );
+    hosted.verify().unwrap();
 }

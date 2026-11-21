@@ -95,6 +95,24 @@ const MIGRATIONS: &[Migration] = &[
         "share_type",
         "TEXT NOT NULL DEFAULT 'files' CHECK(share_type IN ('files','apps'))",
     ),
+    Column(
+        "skald_repos",
+        "protect_default",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    Sql(
+        "INSERT OR IGNORE INTO grants(resource,subject_kind,subject,role)
+         SELECT 'vcs-create',subject_kind,subject,role FROM grants WHERE resource='git-create'",
+    ),
+    Column("skald_repos", "upstream", "TEXT REFERENCES skald_repos(id) ON DELETE SET NULL"),
+    Column("skald_repos", "bytes", "INTEGER NOT NULL DEFAULT 0"),
+    Column("skald_repos", "object_count", "INTEGER NOT NULL DEFAULT 0"),
+    Sql("UPDATE skald_repos SET bytes=(SELECT coalesce(sum(size),0) FROM skald_objects WHERE repo_id=skald_repos.id),
+        object_count=(SELECT count(*) FROM skald_objects WHERE repo_id=skald_repos.id)"),
+    Sql("CREATE TRIGGER IF NOT EXISTS skald_object_insert AFTER INSERT ON skald_objects BEGIN
+        UPDATE skald_repos SET bytes=bytes+new.size,object_count=object_count+1 WHERE id=new.repo_id; END"),
+    Sql("CREATE TRIGGER IF NOT EXISTS skald_object_delete AFTER DELETE ON skald_objects BEGIN
+        UPDATE skald_repos SET bytes=bytes-old.size,object_count=object_count-1 WHERE id=old.repo_id; END"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
@@ -113,7 +131,14 @@ async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
                     .await?
                     .iter()
                     .any(|r| r.get::<String, _>("name") == *column);
-                if !exists {
+                if !exists
+                    && (sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?)",
+                    )
+                    .bind(table)
+                    .fetch_one(&mut *tx)
+                    .await?)
+                {
                     sqlx::query(&format!(
                         "ALTER TABLE {table} ADD COLUMN {column} {definition}"
                     ))
@@ -279,43 +304,6 @@ mod tests {
             assert_eq!(source, "upload", "from {done} steps");
             pool.close().await;
         }
-    }
-
-    #[tokio::test]
-    async fn existing_git_repositories_keep_protection_and_tokens() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("loki.db");
-        let pool = open(&path).await.unwrap();
-        sqlx::raw_sql(
-            "ALTER TABLE git_repos DROP COLUMN default_branch;
-             ALTER TABLE git_repos DROP COLUMN protect_default;
-             ALTER TABLE git_items DROP COLUMN base_ref;
-             INSERT INTO users(id,username,display_name,email,password,owner,status,created)
-             VALUES('user','user','User','user@example.test','unused',0,'approved',1);
-             INSERT INTO git_repos(id,owner_id,name,created) VALUES('repo','user','repo',1);
-             INSERT INTO git_tokens(id,digest,user_id,repo_id,write,created,expires,auth_version)
-             VALUES('token','digest','user','repo',1,1,2,0);",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query("PRAGMA user_version=24")
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-        let migrated = open(&path).await.unwrap();
-        let repo: (String, bool) =
-            sqlx::query_as("SELECT default_branch,protect_default FROM git_repos WHERE id='repo'")
-                .fetch_one(&migrated)
-                .await
-                .unwrap();
-        assert_eq!(repo, ("main".to_owned(), true));
-        let repo_id: String = sqlx::query_scalar("SELECT repo_id FROM git_tokens WHERE id='token'")
-            .fetch_one(&migrated)
-            .await
-            .unwrap();
-        assert_eq!(repo_id, "repo");
     }
 
     #[tokio::test]

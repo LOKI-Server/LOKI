@@ -88,7 +88,7 @@ pub fn router(state: State) -> Router {
         .route("/_loki/callback", get(gateway_callback))
         .merge(crate::sync::router())
         .merge(crate::personal::router())
-        .merge(crate::git::router())
+        .merge(crate::vcs::router())
         .merge(management::router(state.clone()))
         .merge(files::api::router())
         .merge(crate::devices::router())
@@ -176,7 +176,7 @@ async fn guard(
             || path.starts_with("/gateway/")
             || path.starts_with("/_loki/")
             || path.starts_with("/sync/v1")
-            || path.starts_with("/git-http/")
+            || path.starts_with(crate::vcs::PROTOCOL_PATH)
             || path.starts_with("/files/v1")
             || path.starts_with("/auth/v1"))
     {
@@ -277,7 +277,10 @@ async fn dashboard(
     let mut resources = Vec::new();
     for row in rows {
         let id: String = row.get("id");
-        if row.get::<String, _>("kind") == "git-repo" {
+        if matches!(
+            row.get::<String, _>("kind").as_str(),
+            "git-repo" | "git-create" | "vcs-repo"
+        ) {
             continue;
         }
         if !auth::allowed(&state, Some(user), &id, "access").await? {
@@ -684,7 +687,7 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
     }
     let result = async {
         let _personal = state.0.personal_files.read().await;
-        let _git = state.0.git_files.read().await;
+        let repositories = state.0.vcs_files.read().await;
         let temporary = tempfile::tempdir_in(state.0.data.join("staging"))?;
         let stage = temporary.path().to_owned();
         sqlx::query("VACUUM INTO ?")
@@ -697,7 +700,11 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
             sqlx::query_as("SELECT id,previous FROM apps WHERE previous IS NOT NULL")
                 .fetch_all(&state.0.db)
                 .await?;
+        let repo_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM skald_repos")
+            .fetch_all(&state.0.db)
+            .await?;
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            crate::vcs::backup_copy(&source, &output, &repo_ids)?;
             std::fs::copy(source.join("identity.pem"), output.join("identity.pem"))?;
             for name in [
                 "apps",
@@ -722,7 +729,7 @@ pub async fn snapshot(state: &State, resume: bool) -> Result<String> {
         .await??;
         let name = format!("loki-{}-{}.zip", auth::now(), auth::id());
         let dest = state.0.data.join("backups").join(&name);
-        drop(_git);
+        drop(repositories);
         drop(_personal);
         tokio::task::spawn_blocking(move || {
             let output = tempfile::NamedTempFile::new_in(dest.parent().expect("backup directory"))?;
@@ -766,7 +773,10 @@ fn zip_tree(source: &std::path::Path, file: std::fs::File) -> anyhow::Result<()>
                     *total <= crate::storage::BACKUP_MAX,
                     "Backup exceeds 100 GiB"
                 );
-                let compression = if name.starts_with("git-lfs/") || name.ends_with(".pack") {
+                let compression = if name.starts_with("skald-repos/")
+                    || name.starts_with("git-lfs/")
+                    || name.ends_with(".pack")
+                {
                     zip::CompressionMethod::Stored
                 } else {
                     zip::CompressionMethod::Deflated

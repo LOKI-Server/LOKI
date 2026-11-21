@@ -6,13 +6,13 @@ import { button, heading, skeleton, tag } from "./ui.js";
 import { authPage, signOutPage } from "../pages/auth.js";
 import { appsPage, overview, routesPage, sharesPage } from "../pages/services.js";
 import { accountsPage, activityPage, avatar } from "../pages/people.js";
-import { accountPage, exportPage, settingsPage, pairPage, gitCredentialsPage } from "../pages/account.js";
+import { accountPage, exportPage, settingsPage, pairPage, vcsCredentialsPage } from "../pages/account.js";
 import { browse } from "../pages/files.js";
 import { marketplacePage } from "../pages/marketplace.js";
 import { folderPage, syncPage } from "../pages/sync.js";
-import { gitPage, gitRepo, gitItem } from "../pages/git.js";
+import { vcsPage, vcsRepo, vcsItem } from "../pages/vcs.js";
 
-const memberPages = { "/": overview, "/apps": appsPage, "/shares": sharesPage, "/sync": syncPage, "/pair": pairPage, "/account": accountPage, "/account/export": exportPage, "/account/git-credentials": gitCredentialsPage, "/git": gitPage };
+const memberPages = { "/": overview, "/apps": appsPage, "/shares": sharesPage, "/sync": syncPage, "/pair": pairPage, "/account": accountPage, "/account/export": exportPage, "/account/vcs-credentials": vcsCredentialsPage, "/repositories": vcsPage };
 const ownerPages = { "/apps/browse": marketplacePage, "/routes": routesPage, "/accounts": accountsPage, "/activity": activityPage, "/settings": settingsPage };
 const STALE_MS = 15000;
 
@@ -48,8 +48,8 @@ async function resolve() {
   if (session.user.status !== "approved") return heading("Your account is waiting", "The server owner will review your account request.", "", "waiting") + `<div class="card narrow"><p>Status: ${tag(session.user.status, "warn")}</p>${button("Sign out", "logout", "", "", "subtle", "logout")}</div>`;
   if (page.startsWith("/shares/")) return browse(decodeURIComponent(page.split("/")[2]), browseParams());
   if (page.startsWith("/sync/")) return folderPage(decodeURIComponent(page.split("/")[2]), browseParams());
-  const git = /^\/git\/([^/]+)(?:\/items\/([^/]+))?$/.exec(page);
-  if (git) return git[2] ? gitItem(decodeURIComponent(git[1]), decodeURIComponent(git[2])) : gitRepo(decodeURIComponent(git[1]));
+  const repo = /^\/repositories\/([^/]+)(?:\/items\/([^/]+))?$/.exec(page);
+  if (repo) return repo[2] ? vcsItem(decodeURIComponent(repo[1]), decodeURIComponent(repo[2])) : vcsRepo(decodeURIComponent(repo[1]));
   const view = memberPages[page] || (session.user.owner && ownerPages[page]) || overview;
   return view();
 }
@@ -63,7 +63,7 @@ export function nav() {
   };
   let links = "";
   if (user && user.status === "approved") {
-    links = `<div class="nav-section"><span class="section-label">Your universe</span>${link("/", "Overview", "home")}${link("/apps", "Applications", "apps")}${link("/shares", "File shares", "folder")}${link("/git", "Repositories", "git")}${state?.sync ? link("/sync", "Save sync", "sync", state.sync.folders.reduce((n, f) => n + f.conflicts, 0)) : ""}</div>`;
+    links = `<div class="nav-section"><span class="section-label">Your universe</span>${link("/", "Overview", "home")}${link("/apps", "Applications", "apps")}${link("/shares", "File shares", "folder")}${link("/repositories", "Repositories", "folder")}${state?.sync ? link("/sync", "Save sync", "sync", state.sync.folders.reduce((n, f) => n + f.conflicts, 0)) : ""}</div>`;
     if (user.owner) {
       const pending = state?.users?.filter(u => u.status === "pending").length || 0;
       links += `<div class="nav-section"><span class="section-label">Server</span>${link("/routes", "Routes & services", "route")}${link("/accounts", "People & groups", "people", pending)}${link("/activity", "Activity", "activity")}${link("/settings", "Server settings", "settings")}</div>`;

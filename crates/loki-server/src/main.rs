@@ -26,8 +26,6 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
-    #[command(hide = true)]
-    GitReceiveHook,
     /// Inspect local state, DNS and listeners.
     Doctor,
     /// Issue a local owner recovery link; invalidates all owner sessions and MFA.
@@ -45,9 +43,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let cli = Cli::parse();
-    if matches!(cli.command, Some(Action::GitReceiveHook)) {
-        return loki_server::git::receive_hook().await;
-    }
     if let Some(pid) = cli.wait_for_pid {
         loki_server::storage::wait_for_pid(pid).await?;
     }

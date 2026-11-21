@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub(super) fn router(state: State) -> Router<State> {
-    let private = crate::git::api_router()
+    let private = crate::vcs::api_router()
         .route("/api/v1/me", get(me))
         .route("/api/v1/resources", get(resources))
         .route("/api/v1/devices", get(list_devices))
@@ -181,7 +181,7 @@ async fn resources(
     Extension(user): Extension<auth::User>,
 ) -> Result<Json<Value>> {
     let records: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT id,name,kind,visibility FROM resources WHERE kind!='git-repo' ORDER BY kind,name,id",
+        "SELECT id,name,kind,visibility FROM resources WHERE kind NOT IN ('git-repo','git-create','vcs-repo') ORDER BY kind,name,id",
     ).fetch_all(&state.0.db).await?;
     let mut result = Vec::new();
     for (id, name, kind, visibility) in records {
@@ -361,8 +361,6 @@ async fn settings(
     Ok(Json(json!({
         "name":settings.name,"public_url":settings.public_url,"registration":settings.registration,
         "sync_quota_mb":settings.sync_quota_mb,"sync_max_file_mb":settings.sync_max_file_mb,
-        "git_push_mib":settings.git_push_mib,"git_repo_mib":settings.git_repo_mib,
-        "git_total_mib":settings.git_total_mib,"git_lfs_object_mib":settings.git_lfs_object_mib,
-        "git_lfs_repo_mib":settings.git_lfs_repo_mib,"git_lfs_total_mib":settings.git_lfs_total_mib,
+        "vcs_repo_mib":settings.vcs_repo_mib,"vcs_total_mib":settings.vcs_total_mib,
     })))
 }

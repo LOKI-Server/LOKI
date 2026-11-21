@@ -25,32 +25,7 @@ pub struct Options {
     pub caddy_archive: Option<PathBuf>,
     #[arg(long, requires = "caddy_archive")]
     pub caddy_checksums: Option<PathBuf>,
-    /// Windows: use a previously downloaded MinGit archive without network access.
-    /// It must match the pinned release unless `--mingit-sha256` names another.
-    #[arg(long)]
-    pub mingit_archive: Option<PathBuf>,
-    /// The SHA-256 of `--mingit-archive`, for a MinGit release other than the pinned one.
-    #[arg(long, requires = "mingit_archive")]
-    pub mingit_sha256: Option<String>,
 }
-
-/// The Git for Windows release bundled on Windows, so Git hosting works without a
-/// separate Git installation. Update all three together from the release's assets.
-const MINGIT_TAG: &str = "v2.56.1.windows.1";
-const MINGIT_ASSETS: [(&str, &str, &str); 2] = [
-    (
-        "x86_64",
-        "MinGit-2.56.1-64-bit.zip",
-        "4a92850b6e917da4fd010669b614b55dccf5b0ec333a534cc4be4700dfefdafd",
-    ),
-    (
-        "aarch64",
-        "MinGit-2.56.1-arm64.zip",
-        "96571e442e90523a90e5fd8661b4c4e43bc192910f3c6db938816e6955b4cc8c",
-    ),
-];
-const MINGIT_BYTES: u64 = 512 * 1024 * 1024;
-const MINGIT_ENTRIES: usize = 20_000;
 
 struct DeveloperInputs {
     tool: PathBuf,
@@ -235,90 +210,7 @@ fn caddy_files(
     )?;
     Ok(())
 }
-/// Verifies a MinGit archive and unpacks it to `destination` (the bundle's `git`).
-fn mingit_files(archive: &[u8], sha256: &str, destination: &Path) -> Result<()> {
-    ensure!(
-        hex::encode(Sha256::digest(archive)).eq_ignore_ascii_case(sha256),
-        "MinGit archive checksum mismatch"
-    );
-    let mut archive = zip::ZipArchive::new(Cursor::new(archive))?;
-    ensure!(
-        archive.len() <= MINGIT_ENTRIES,
-        "MinGit archive has too many entries"
-    );
-    let mut total = 0u64;
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index)?;
-        let name = entry.name()?.trim_end_matches('/').to_owned();
-        ensure!(relative(&name), "Unsafe MinGit archive path: {name}");
-        ensure!(
-            !entry.is_symlink(),
-            "MinGit archive contains a link: {name}"
-        );
-        let path = destination.join(&name);
-        if entry.is_dir() {
-            fs::create_dir_all(&path)?;
-            continue;
-        }
-        ensure!(entry.is_file(), "Unsupported MinGit archive entry: {name}");
-        let declared = entry.size();
-        total = total
-            .checked_add(declared)
-            .context("MinGit size overflow")?;
-        ensure!(total <= MINGIT_BYTES, "MinGit archive is too large");
-        fs::create_dir_all(path.parent().context("MinGit entry without a parent")?)?;
-        let mut output = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        let written = std::io::copy(&mut (&mut entry).take(declared + 1), &mut output)?;
-        ensure!(written == declared, "MinGit entry size mismatch: {name}");
-    }
-    for required in ["cmd/git.exe", "usr/bin/sh.exe"] {
-        ensure!(
-            destination.join(required).is_file(),
-            "MinGit archive is missing {required}"
-        );
-    }
-    Ok(())
-}
-fn bundle_mingit(options: &Options, destination: &Path) -> Result<()> {
-    let (_, filename, pinned) = MINGIT_ASSETS
-        .iter()
-        .find(|(arch, ..)| *arch == std::env::consts::ARCH)
-        .with_context(|| format!("No MinGit build for {}", std::env::consts::ARCH))?;
-    let (bytes, sha256, source) = match &options.mingit_archive {
-        Some(archive) => (
-            fs::read(archive)?,
-            options
-                .mingit_sha256
-                .as_deref()
-                .unwrap_or(pinned)
-                .to_owned(),
-            archive.display().to_string(),
-        ),
-        None => {
-            let url = format!(
-                "https://github.com/git-for-windows/git/releases/download/{MINGIT_TAG}/{filename}"
-            );
-            (download(&url)?, pinned.to_string(), url)
-        }
-    };
-    let git = destination.join("git");
-    mingit_files(&bytes, &sha256, &git)?;
-    fs::write(
-        git.join("LOKI-MINGIT-SOURCE.txt"),
-        format!(
-            "MinGit from Git for Windows {MINGIT_TAG}, licensed under the GNU GPL v2 (LICENSE.txt).\n\
-             Archive: {source}\n\
-             Archive SHA256: {}\n\
-             Corresponding source: https://github.com/git-for-windows/git/releases/tag/{MINGIT_TAG}\n\
-             LOKI runs this copy of Git as a separate program for Git hosting.\n",
-            sha256.to_ascii_lowercase()
-        ),
-    )?;
-    Ok(())
-}
+
 fn extract_sdk(source: &Path, dest: &Path, version: &str) -> Result<()> {
     let mut archive = tar::Archive::new(GzDecoder::new(fs::File::open(source)?));
     let prefix = format!("loki-sdk-{version}/");
@@ -560,9 +452,6 @@ pub fn run(options: Options) -> Result<()> {
     if let Some(checksums) = &options.caddy_checksums {
         inputs.push(checksums);
     }
-    if let Some(archive) = &options.mingit_archive {
-        inputs.push(archive);
-    }
     let output = validate_output(&output, &inputs)?;
     let (bytes, checksums) = match (&options.caddy_archive, &options.caddy_checksums) {
         (Some(archive), Some(checksums)) => (fs::read(archive)?, fs::read_to_string(checksums)?),
@@ -611,9 +500,6 @@ pub fn run(options: Options) -> Result<()> {
         }),
     )?;
     fs::copy(crate::root().join("LICENSE"), dest.join("LICENSE"))?;
-    if cfg!(windows) {
-        bundle_mingit(&options, dest)?;
-    }
     if let Some(DeveloperInputs { tool, sdk, version }) = developer {
         fs::copy(&tool, dest.join(tool.file_name().unwrap()))?;
         fs::copy(crate::root().join("README.md"), dest.join("README.md"))?;
@@ -715,9 +601,6 @@ mod tests {
         )
         .unwrap();
         let output = directory.path().join("runtime");
-        let mingit = directory.path().join("mingit.zip");
-        let mingit_bytes = fake_mingit(&["cmd/git.exe", "usr/bin/sh.exe"], "LICENSE.txt");
-        fs::write(&mingit, &mingit_bytes).unwrap();
         let options = || Options {
             binary: server.clone(),
             output: output.clone(),
@@ -725,8 +608,6 @@ mod tests {
             caddy_version: "2.11.4".into(),
             caddy_archive: Some(archive.clone()),
             caddy_checksums: Some(sums.clone()),
-            mingit_archive: Some(mingit.clone()),
-            mingit_sha256: Some(hex::encode(Sha256::digest(&mingit_bytes))),
         };
         run(options()).unwrap();
         let mut names: Vec<_> = fs::read_dir(&output)
@@ -741,15 +622,8 @@ mod tests {
             "CADDY-LICENSE.txt",
             "CADDY-SOURCE.txt",
         ];
-        if cfg!(windows) {
-            expected.push("git");
-        }
         expected.sort();
         assert_eq!(names, expected);
-        if cfg!(windows) {
-            assert!(output.join("git/cmd/git.exe").is_file());
-            assert!(output.join("git/LOKI-MINGIT-SOURCE.txt").is_file());
-        }
         assert_eq!(fs::read(output.join(executable)).unwrap(), b"caddy fixture");
         fs::write(output.join("obsolete.txt"), b"stale file").unwrap();
         fs::create_dir(output.join("old-docs")).unwrap();
@@ -772,42 +646,6 @@ mod tests {
             fs::read(output.join(server.file_name().unwrap())).unwrap(),
             b"updated server fixture"
         );
-    }
-    fn fake_mingit(files: &[&str], unsafe_name: &str) -> Vec<u8> {
-        use std::io::Write;
-        let mut bytes = Vec::new();
-        let mut archive = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        for name in files.iter().copied().chain([unsafe_name]) {
-            archive
-                .start_file(name, zip::write::SimpleFileOptions::default())
-                .unwrap();
-            archive.write_all(b"fixture").unwrap();
-        }
-        archive.finish().unwrap();
-        bytes
-    }
-    #[test]
-    fn mingit_archives_are_verified_and_confined() {
-        let directory = tempfile::tempdir().unwrap();
-        let good = fake_mingit(&["cmd/git.exe", "usr/bin/sh.exe"], "etc/gitconfig");
-        let digest = hex::encode(Sha256::digest(&good));
-        let destination = directory.path().join("git");
-        mingit_files(&good, &digest, &destination).unwrap();
-        assert!(destination.join("usr/bin/sh.exe").is_file());
-        assert!(mingit_files(&good, &"0".repeat(64), &directory.path().join("bad-hash")).is_err());
-        for (files, extra) in [
-            (&["cmd/git.exe", "usr/bin/sh.exe"][..], "../escape.exe"),
-            (&["cmd/git.exe", "usr/bin/sh.exe"][..], "/absolute.exe"),
-            (&["cmd/git.exe"][..], "README.txt"),
-        ] {
-            let archive = fake_mingit(files, extra);
-            let digest = hex::encode(Sha256::digest(&archive));
-            assert!(
-                mingit_files(&archive, &digest, &directory.path().join("unsafe")).is_err(),
-                "{extra}"
-            );
-        }
-        assert!(!directory.path().join("escape.exe").exists());
     }
     #[test]
     fn bundle_publish_failure_restores_previous_directory() {

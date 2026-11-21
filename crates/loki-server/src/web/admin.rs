@@ -204,12 +204,17 @@ pub(super) async fn resource_access(state: &State, id: &str, input: Access) -> R
             "Sync requires a LOKI account. Choose Members or Restricted.",
         ));
     }
-    if matches!(kind.as_deref(), Some("git-create" | "git-repo"))
+    if matches!(kind.as_deref(), Some("git-create" | "git-repo")) {
+        return Err(Error::not_found());
+    }
+    if matches!(kind.as_deref(), Some("vcs-create" | "vcs-repo"))
         && input.visibility != Visibility::Restricted
     {
-        return Err(Error::bad("Grant Git access to selected users or groups."));
+        return Err(Error::bad(
+            "Grant repository access to selected users or groups.",
+        ));
     }
-    if kind.as_deref() == Some("git-repo") {
+    if kind.as_deref() == Some("vcs-repo") {
         return Err(Error::bad(
             "Manage repository access from the Repositories tab.",
         ));
@@ -611,16 +616,9 @@ pub(super) async fn settings(state: &State, input: SettingsChange) -> Result<Val
         || settings.name.len() > 80
         || !(1..=100_000_000).contains(&settings.sync_quota_mb)
         || !(1..=1_048_576).contains(&settings.sync_max_file_mb)
-        || [
-            settings.git_push_mib,
-            settings.git_repo_mib,
-            settings.git_total_mib,
-            settings.git_lfs_object_mib,
-            settings.git_lfs_repo_mib,
-            settings.git_lfs_total_mib,
-        ]
-        .iter()
-        .any(|limit| !(1..=1_048_576).contains(limit))
+        || [settings.vcs_repo_mib, settings.vcs_total_mib]
+            .iter()
+            .any(|limit| !(1..=1_048_576).contains(limit))
     {
         return Err(Error::bad("Invalid settings."));
     }
