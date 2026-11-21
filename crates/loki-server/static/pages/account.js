@@ -2,7 +2,7 @@
 import { ago, api, date, enc, modal, store } from "../lib/core.js";
 import { attrs, html } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
-import { Badge, Button, ButtonGroup, Card, Checkbox, Field, FieldRow, FileInput, Form, FormFooter, Help, IconLink, LinkButton, List, Notice, PageHeader, Row, Select, Split, Submit, TextArea } from "../lib/ui.js";
+import { Badge, Button, ButtonGroup, Card, Checkbox, Field, FieldRow, Form, FormFooter, Help, IconButton, IconLink, LinkButton, List, Notice, PageHeader, Row, Select, Submit, Tabs, TextArea } from "../lib/ui.js";
 import { startupControl } from "./auth.js";
 import { avatar } from "./people.js";
 
@@ -10,7 +10,7 @@ export function passwordProof() {
   return html`${Field({ name: "current_password", label: "Current password", type: "password", required: true, autocomplete: "current-password" })}${store.state.mfa ? Field({ name: "code", label: "Authentication or recovery code", required: true, autocomplete: "one-time-code", inputmode: "numeric" }) : ""}`;
 }
 
-const BIO_CHARS = 300;
+export const BIO_CHARS = 300;
 
 export async function exportPage() {
   const { folders, saves } = await api("/api/personal");
@@ -18,37 +18,62 @@ export async function exportPage() {
   return html`${PageHeader({ title: "Export my data", description: "Choose the data to include in your ZIP file.", actions: LinkButton({ label: "My account", href: "/account", icon: "left" }), realm: "archive" })}${Card({ className: "narrow", body: html`<form action="/api/personal/export" method="get">${folders.length ? html`<fieldset><legend>Personal app files</legend><div class="check-list">${folders.map(id => option("app", id, id))}</div></fieldset>` : ""}${saves.length ? html`<fieldset><legend>Current Save sync files</legend><div class="check-list">${saves.map(([id, name]) => option("save", id, name))}</div></fieldset>` : ""}<fieldset><legend>Account</legend><div class="check-list">${option("profile", "1", "Account profile")}</div></fieldset>${FormFooter(Submit({ label: "Download ZIP", icon: "download" }))}</form>` })}`;
 }
 
-function bioForm(bio) {
-  const left = BIO_CHARS - [...bio].length;
-  return Form({ name: "bio", body: html`${TextArea({ name: "bio", label: "Bio", value: bio, rows: 4, maxlength: BIO_CHARS, placeholder: "A few words about yourself", attrs: { "data-count": "bio-count" } })}<p class="help"><span id="bio-count">${left}</span> characters left. Shown on your profile to this server’s owner.</p>${FormFooter(Submit({ label: "Save bio", kind: "secondary" }))}` });
-}
-
-export async function vcsCredentialsPage() {
-  const tokens = await api("/api/account/vcs-tokens");
-  const rows = tokens.map(token => Row({ key: token.id, icon: "key", title: token.label, badges: Badge(token.write ? "Read and write" : "Read", "neutral"), meta: `Expires ${date(token.expires)}`, actions: Button({ label: "Revoke", action: "vcs-revoke-token", id: token.id, kind: "danger", size: "sm" }) }));
-  return html`${PageHeader({ title: "Skald tokens", description: "Tokens let the skald command line reach repositories on this server.", actions: [LinkButton({ label: "Repositories", href: "/repositories", icon: "repo" }), Button({ label: "Create token", action: "vcs-new-token", kind: "primary", icon: "plus" })], realm: "repos" })}${Card({ className: "narrow", flush: true, title: "Your tokens", description: "Set SKALD_TOKEN in the terminal where you run skald. Use a separate token for each computer.", body: List(rows, { empty: "No tokens yet." }) })}`;
-}
+/** The Skald tokens page used to live on its own; it is now a tab of the account page. */
+export const vcsCredentialsPage = () => accountPage("tokens");
 
 export function vcsTokenDialog() {
   modal("Create Skald token", Form({ name: "vcs-token", body: html`${Field({ name: "label", label: "Name", required: true, maxlength: 80, placeholder: "Development PC" })}${Select({ name: "scope", label: "Access", options: [["write", "Read and write"], ["read", "Read"]] })}${passwordProof()}${Help("This token expires after 90 days.")}${FormFooter(Submit({ label: "Create token" }))}` }));
 }
 
-export function accountPage() {
+// The account page: a summary of who you are, then one tab per kind of setting.
+const TABS = [["profile", "Profile", "user"], ["security", "Security", "shield"], ["devices", "Devices", "server"], ["tokens", "Skald tokens", "key"]];
+export const accountUrl = tab => tab && tab !== "profile" ? `/account?tab=${tab}` : "/account";
+
+export function accountPage(forced) {
+  const requested = forced || new URLSearchParams(location.search).get("tab");
+  const tab = TABS.some(([id]) => id === requested) ? requested : "profile";
   const u = store.session.user, state = store.state;
+  const counts = { devices: (state.devices || []).length };
+  const header = html`<header class="profile-hero">${avatar(u, "xl")}<div class="profile-hero-text"><h1>${u.display_name || u.username}</h1><p class="muted">@${u.username}${u.owner ? html` ${Badge("Owner")}` : ""}</p>${u.bio ? html`<p class="bio">${u.bio}</p>` : ""}</div><div class="page-actions">${LinkButton({ label: "Export my data", href: "/account/export", icon: "download" })}</div></header>`;
+  const tabs = Tabs(TABS.map(([id, label, iconName]) => ({ label, href: accountUrl(id), active: tab === id, icon: iconName, count: counts[id] })), "Account");
+  const body = tab === "security" ? securityTab(state) : tab === "devices" ? devicesTab(state) : tab === "tokens" ? tokensTab() : profileTab(u);
+  return body instanceof Promise ? body.then(b => html`${header}${tabs}${b}`) : html`${header}${tabs}${body}`;
+}
+
+function profileTab(u) {
+  const bio = u.bio || "";
+  const picture = html`<div class="avatar-editor">${avatar(u, "xl")}<div><label class="btn btn-secondary btn-sm file-button">${icon("upload")}<span>Upload a new picture</span><input type="file" name="file" accept="image/png,image/jpeg,image/webp" data-avatar class="visually-hidden"></label><p class="help">PNG, JPEG or WebP up to 4 MiB. It's resized and saved as a safe PNG.</p></div></div>`;
+  const form = Form({ name: "profile", body: html`${FieldRow(Field({ name: "display_name", label: "Display name", value: u.display_name, maxlength: 80 }), Field({ name: "username", label: "Username", value: u.username, required: true, minlength: 3, maxlength: 32 }))}${Field({ name: "email", label: "Email (optional, unverified)", value: u.email, type: "email", autocomplete: "email" })}${TextArea({ name: "bio", label: "Bio", value: bio, rows: 3, maxlength: BIO_CHARS, placeholder: "A few words about yourself", attrs: { "data-count": "bio-count" } })}<p class="help"><span id="bio-count">${BIO_CHARS - [...bio].length}</span> characters left. Your bio is shown to this server’s owner.</p>${FormFooter([html`<span class="help footer-note">${icon("lock")}Changing your name, username or email asks for your password.</span>`, Submit({ label: "Save profile" })], { align: "between" })}` });
+  return html`<div class="settings-stack">${Card({ title: "Profile picture", body: picture })}${Card({ title: "Profile", body: form })}</div>`;
+}
+
+function securityTab(state) {
   const sessions = state.sessions.map(s => Row({ key: s.id, icon: "globe", title: s.label, badges: s.current ? Badge("This browser") : "", meta: html`Signed in ${ago(s.created)}`, actions: s.current ? "" : Button({ label: "Revoke", action: "session-revoke", id: s.id, kind: "ghost", size: "sm" }) }));
+  const password = Card({ title: "Password", description: "Changing it signs you out everywhere, including apps.", body: Form({ name: "password", body: html`${passwordProof()}${FieldRow(Field({ name: "password", label: "New password", type: "password", required: true, minlength: 10, maxlength: 128, autocomplete: "new-password" }), Field({ name: "password_repeat", label: "Repeat new password", type: "password", required: true, minlength: 10, maxlength: 128, autocomplete: "new-password" }))}${FormFooter(Submit({ label: "Change password" }))}` }) });
+  const mfa = Card({ title: "Two-factor authentication", description: state.mfa ? "Your account is protected by an authenticator app." : "Add an authenticator app and recovery codes to protect your account.", actions: state.mfa ? Button({ label: "Turn off", action: "mfa-disable", size: "sm", kind: "danger" }) : Button({ label: "Set up", action: "mfa-start", kind: "primary", icon: "shield", size: "sm" }), body: html`<p class="status-line">${state.mfa ? html`${icon("check")}On` : html`${icon("alert")}Off`}</p>` });
+  const browsers = Card({ flush: true, title: "Browser sessions", description: "Where you're signed in to LOKI on the web.", actions: Button({ label: "Sign out everywhere", action: "revoke-all", kind: "danger", size: "sm" }), body: List(sessions) });
+  return html`<div class="settings-stack">${password}${mfa}${browsers}</div>`;
+}
+
+function devicesTab(state) {
   const devices = (state.devices || []).map(d => Row({
     key: d.id, icon: "server", title: d.name,
     badges: [d.platform ? Badge(d.platform, "neutral") : "", d.scope ? Badge(d.scope === "owner" ? "Owner API" : "Repository API", "info") : ""],
-    meta: html`Last seen ${ago(d.last_seen)} · signed in ${ago(d.created)}${d.expires ? ` · expires ${date(d.expires)}` : ""}`,
-    actions: [Button({ label: "Rename", action: "device-rename", id: d.id, kind: "ghost", icon: "edit", size: "sm" }), Button({ label: "Sign out", action: "device-revoke", id: d.id, kind: "ghost", icon: "logout", size: "sm" })],
+    meta: html`<span>Last seen ${ago(d.last_seen)}</span><span>signed in ${ago(d.created)}</span>${d.expires ? html`<span>expires ${date(d.expires)}</span>` : ""}`,
+    actions: [IconButton({ icon: "edit", label: `Rename ${d.name}`, action: "device-rename", id: d.id, size: "sm" }), IconButton({ icon: "logout", label: `Sign out ${d.name}`, action: "device-revoke", id: d.id, size: "sm" })],
   }));
-  const profile = Card({ body: html`<div class="profile-head">${avatar(u, "xl")}<div><h2>${u.display_name || u.username}</h2><small class="muted">@${u.username}${u.owner ? " · Owner" : ""}</small></div></div>${u.bio ? html`<p class="bio">${u.bio}</p>` : ""}${Form({ name: "profile", body: html`${Field({ name: "username", label: "Username", value: u.username, required: true, minlength: 3, maxlength: 32 })}${Field({ name: "display_name", label: "Display name", value: u.display_name })}${Field({ name: "email", label: "Email (optional, unverified)", value: u.email, type: "email" })}${passwordProof()}${FormFooter(Submit({ label: "Save profile" }))}` })}<hr class="divider">${bioForm(u.bio || "")}<hr class="divider">${Form({ name: "avatar", body: html`${FileInput({ name: "file", label: "Profile picture", accept: "image/png,image/jpeg,image/webp", help: "Up to 4 MiB. Your image is resized and saved as a safe PNG." })}${FormFooter(Submit({ label: "Update picture", kind: "secondary", icon: "upload" }))}` })}` });
-  const password = Card({ title: "Change password", body: Form({ name: "password", body: html`${passwordProof()}${Field({ name: "password", label: "New password", type: "password", required: true, minlength: 10, maxlength: 128, autocomplete: "new-password" })}${FormFooter(Submit({ label: "Change password & sign out everywhere" }))}` }) });
-  const mfa = Card({ title: "Two-factor authentication", actions: state.mfa ? Badge("On") : Badge("Off", "neutral"), body: html`<p>${state.mfa ? "Your account is protected by an authenticator app." : "Add an authenticator app and recovery codes to protect your account."}</p>${Button({ label: state.mfa ? "Turn off two-factor authentication" : "Set up two-factor authentication", action: state.mfa ? "mfa-disable" : "mfa-start", kind: state.mfa ? "secondary" : "primary", icon: "shield", size: "sm" })}` });
-  const deviceCard = Card({ id: "devices", flush: true, title: "Devices", description: "Save sync, shared-file, and API sign-ins. Each follows your account’s permissions.", actions: Button({ label: "Pair a device", action: "device-pair", icon: "plus", size: "sm" }), body: html`${List(devices, { empty: "No devices are signed in yet." })}<p class="card-foot help">Server address for clients: <span class="mono">${store.session.public_url}</span></p>` });
-  const skald = Card({ title: "Skald tokens", body: html`<p>Tokens let the skald command line reach your repositories from your computer.</p>${LinkButton({ label: "Manage tokens", href: "/account/vcs-credentials", icon: "key", size: "sm" })}` });
-  const browsers = Card({ flush: true, title: "Browser sessions", body: html`${List(sessions)}<div class="card-foot">${ButtonGroup(Button({ label: "Sign out", action: "logout", icon: "logout", size: "sm" }), Button({ label: "Sign out everywhere, including apps", action: "revoke-all", kind: "danger", size: "sm" }))}</div>` });
-  return html`${PageHeader({ title: "Your LOKI account", description: "One identity, across your services.", actions: LinkButton({ label: "Export my data", href: "/account/export", icon: "download" }), realm: "account" })}${Split([profile, password], [mfa, deviceCard, skald, browsers])}`;
+  return html`<div class="settings-stack" id="devices">${Card({ flush: true, title: "Signed-in devices", description: "Save sync, shared-file and API sign-ins. Each follows your account’s permissions.", actions: Button({ label: "Pair a device", action: "device-pair", icon: "plus", size: "sm", kind: "primary" }), body: html`${List(devices, { empty: "No devices are signed in yet." })}<p class="card-foot help">Server address for clients: <span class="mono">${store.session.public_url}</span></p>` })}</div>`;
+}
+
+async function tokensTab() {
+  const tokens = await api("/api/account/vcs-tokens");
+  const rows = tokens.map(token => Row({ key: token.id, icon: "key", title: token.label, badges: Badge(token.write ? "Read and write" : "Read", "neutral"), meta: `Expires ${date(token.expires)}`, actions: Button({ label: "Revoke", action: "vcs-revoke-token", id: token.id, kind: "danger", size: "sm" }) }));
+  return html`<div class="settings-stack">${Card({ flush: true, title: "Skald tokens", description: html`Set <code>SKALD_TOKEN</code> in the terminal where you run skald. Use a separate token for each computer.`, actions: Button({ label: "Create token", action: "vcs-new-token", kind: "primary", icon: "plus", size: "sm" }), body: List(rows, { empty: "No tokens yet." }) })}</div>`;
+}
+
+/** Asks for the password before saving name, username or email changes. */
+export function profileConfirm() {
+  modal("Confirm it’s you", Form({ name: "profile-confirm", body: html`<p class="lead">Enter your password to change your name, username or email.</p>${passwordProof()}${FormFooter(Submit({ label: "Save profile" }))}` }));
 }
 
 // One labelled group of settings: what it is on the left, the controls on the right.

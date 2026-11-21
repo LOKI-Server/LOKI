@@ -7,7 +7,7 @@ import { submitSetup, submitStartupAware } from "../pages/auth.js";
 import { appManage, folderPicker, vcsManage, vcsLimits, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
 import { newItem, newRepo } from "../pages/vcs.js";
 import { userManage } from "../pages/people.js";
-import { passwordProof, deviceRename, pairDialog, vcsTokenDialog } from "../pages/account.js";
+import { accountUrl, deviceRename, pairDialog, passwordProof, profileConfirm, vcsTokenDialog } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
 import { conflictsDialog, folderForm, folderManage, historyDialog } from "../pages/sync.js";
 import { panelAction, panelDialog } from "../pages/panel.js";
@@ -15,6 +15,8 @@ import { previewPackage } from "./package.js";
 import { forget, installDialog, registry, search } from "../pages/marketplace.js";
 
 let busy = false;
+// Profile changes that wait for the password dialog.
+let pendingProfile = null;
 
 export function formData(form) {
   const values = Object.fromEntries(new FormData(form));
@@ -58,9 +60,33 @@ export async function onSubmit(event) {
     let session = false;
     if (kind === "import") { await api("/api/apps/import", new FormData(form)); toast("Application imported."); close(); }
     else if (kind === "backup-import") { await api("/api/backups/import", new FormData(form)); close(); toast("Backup imported. Use Restore a backup to review and restore it."); }
-    else if (kind === "avatar") { await api("/api/avatar", new FormData(form)); store.avatarVersion = Date.now(); form.reset(); session = true; toast("Profile picture updated."); }
-    else if (kind === "bio") { await act("bio", "", data); session = true; toast("Bio saved."); }
-    else if (["profile", "password", "mfa-start", "mfa-disable"].includes(kind)) {
+    else if (kind === "profile") {
+      // The bio saves on its own; name, username and email need the password first.
+      const u = store.session.user;
+      const identity = { username: data.username, display_name: data.display_name, email: data.email };
+      const identityChanged = Object.keys(identity).some(key => (identity[key] ?? "") !== (u[key] ?? ""));
+      const bio = (data.bio ?? "") !== (u.bio ?? "") ? data.bio : null;
+      if (!identityChanged && bio === null) { toast("Nothing has changed."); return; }
+      if (identityChanged) { pendingProfile = { identity, bio }; profileConfirm(); return; }
+      await act("bio", "", { bio });
+      session = true;
+      toast("Profile saved.");
+    }
+    else if (kind === "profile-confirm") {
+      if (!pendingProfile) { close(); return; }
+      const { identity, bio } = pendingProfile;
+      await act("profile", "", { ...identity, ...data });
+      if (bio !== null) await act("bio", "", { bio });
+      pendingProfile = null;
+      close();
+      session = true;
+      toast("Profile saved.");
+    }
+    else if (["password", "mfa-start", "mfa-disable"].includes(kind)) {
+      if (kind === "password") {
+        if (data.password !== data.password_repeat) throw new Error("The new passwords don’t match.");
+        delete data.password_repeat;
+      }
       const result = await act(kind, "", data);
       if (kind === "password") { location.href = "/login"; return; }
       if (kind === "mfa-start") {
@@ -168,7 +194,7 @@ export async function onSubmit(event) {
       await act("device-approve", "", { code: form.dataset.code, proof: data });
       close();
       toast("Owner API access approved.");
-      return await navigate("/account");
+      return await navigate(accountUrl("devices"));
     }
     else if (kind === "device-code") { pairDialog(await act("device-lookup", "", data)); return; }
     else if (kind === "panel-upload") {
@@ -371,7 +397,7 @@ export async function onClick(event) {
       close();
       toast(action === "device-approve" ? "Device approved. It will finish signing in by itself." : "Sign-in declined.");
       await refresh();
-      return await navigate("/account");
+      return await navigate(accountUrl("devices"));
     }
     else if (action === "sync-restore" || action === "sync-conflict-resolve") {
       await act(action, id, { history_id: Number(b.dataset.history), keep: b.dataset.keep });
@@ -406,6 +432,25 @@ export function onInput(event) {
 
 export async function onChange(event) {
   const e = event.target;
+  // A new profile picture uploads as soon as it is chosen.
+  if (e.matches("input[data-avatar]") && e.files?.length) {
+    const label = e.closest("label");
+    label?.setAttribute("aria-busy", "true");
+    try {
+      const body = new FormData();
+      body.append("file", e.files[0]);
+      await api("/api/avatar", body);
+      store.avatarVersion = Date.now();
+      await refresh({ session: true });
+      toast("Profile picture updated.");
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      e.value = "";
+      label?.removeAttribute("aria-busy");
+    }
+    return;
+  }
   if (e.matches("[data-membership]")) {
     try {
       await act("membership", e.dataset.membership, { group: e.dataset.group, enabled: e.checked });

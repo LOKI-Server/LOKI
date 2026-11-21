@@ -11,7 +11,9 @@ test('device pairing and management belong to Account even without sync access',
   globalThis.location = {search: '?code=BCDF-GHJK'};
   store.session = {user: {id:'u',username:'reader',display_name:'Reader',bio:'',email:''},public_url:'https://loki.test'};
   store.state = {sessions:[],mfa:false,devices:[{id:'d',name:'Reader device',platform:'test',created:1,last_seen:1}]};
+  globalThis.location = {search: '?tab=devices'};
   const account = String(accountPage());
+  globalThis.location = {search: '?code=BCDF-GHJK'};
   assert.match(account,/id="devices"/);
   assert.match(account,/data-action="device-pair"/);
   assert.match(account,/data-action="device-rename"/);
@@ -29,7 +31,7 @@ test('sync links to account device management instead of owning the pairing cont
   const {syncPage} = await modules('pages/sync.js');
   store.state = {sync:{folders:[],quota:1024,usage:0,max_file_bytes:1024}};
   const page = String(syncPage());
-  assert.match(page,/href="\/account(#devices)?"/);
+  assert.match(page,/href="\/account\?tab=devices"/);
   assert.doesNotMatch(page,/data-action="sync-pair"|data-action="sync-device-/);
 });
 

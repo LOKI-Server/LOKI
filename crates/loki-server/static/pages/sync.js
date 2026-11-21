@@ -39,7 +39,7 @@ export function syncPage() {
   });
   const side = [
     Card({ title: "Storage", body: html`${Meter({ value: sync.usage, max: sync.quota, label: "Storage used" })}<p class="meter-caption"><strong>${fmt(sync.usage)}</strong> of ${fmt(sync.quota)} used, including version history.</p><p class="help">Files up to ${fmt(sync.max_file_bytes)} each.</p>` }),
-    Card({ title: "Devices", body: html`<p>Pair a device with a code, then choose a local folder for each sync folder on it. Rename or sign out devices from your account.</p>${LinkButton({ label: "Your devices", href: "/account#devices", icon: "server", size: "sm" })}` }),
+    Card({ title: "Devices", body: html`<p>Pair a device with a code, then choose a local folder for each sync folder on it. Rename or sign out devices from your account.</p>${LinkButton({ label: "Your devices", href: "/account?tab=devices", icon: "server", size: "sm" })}` }),
   ];
   return html`${header(owned ? Button({ label: "Manage", action: "sync-manage", id: owned.id, icon: "settings" }) : "")}${conflicts ? Notice({ tone: "warn", body: `${conflicts} conflicting version${conflicts === 1 ? "" : "s"} need${conflicts === 1 ? "s" : ""} a decision. Open the folder to choose.` }) : ""}${Split(main, side)}`;
 }

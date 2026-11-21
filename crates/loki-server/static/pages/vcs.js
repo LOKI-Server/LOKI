@@ -1,6 +1,7 @@
 // Skald repositories: the list, and a page for each one laid out like a code host:
 // Code, Commits, Issues & pull requests, and Settings for people who manage it.
 import { ago, api, enc, modal, store } from "../lib/core.js";
+import { accountUrl } from "./account.js";
 import { attrs, escape, html, plural, raw } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
 import { Badge, Button, Checkbox, CopyBlock, CopyField, EmptyState, Field, Form, FormFooter, Help, IconButton, IconLink, LinkButton, List, Menu, MenuList, Notice, PageHeader, Pager, Row, Select, Submit, Tabs, TextArea, initial } from "../lib/ui.js";
@@ -66,7 +67,7 @@ export async function vcsPage() {
   const names = Object.fromEntries(repositories.map(r => [r.id, r.name]));
   const actions = [
     store.session.user.owner ? Button({ label: "Manage", action: "vcs-manage", icon: "settings" }) : "",
-    LinkButton({ label: "Skald tokens", href: "/account/vcs-credentials", icon: "key" }),
+    LinkButton({ label: "Skald tokens", href: accountUrl("tokens"), icon: "key" }),
     create ? Button({ label: "New repository", action: "vcs-new", kind: "primary", icon: "plus" }) : "",
   ];
   const rows = repositories.map(repo => Row({
@@ -119,7 +120,7 @@ export async function vcsRepo(id) {
 }
 
 const cloneCommand = repo => `skald clone ${repo.remote_url} ${repo.name}`;
-const tokenHelp = html`<p class="help">Set <code>SKALD_TOKEN</code> to one of <a href="/account/vcs-credentials">your Skald tokens</a> first.</p>`;
+const tokenHelp = html`<p class="help">Set <code>SKALD_TOKEN</code> to one of <a href="${accountUrl("tokens")}">your Skald tokens</a> first.</p>`;
 
 function repoTitle(id, name, extra = "") {
   return html`<div class="repo-title">${icon("repo")}<a href="/repositories">Repositories</a><span class="slash">/</span><a class="repo-name" href="${repoUrl(id)}">${name}</a>${extra}</div>`;
