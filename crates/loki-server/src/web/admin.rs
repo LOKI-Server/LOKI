@@ -129,6 +129,21 @@ pub(super) async fn group_delete(state: &State, id: &str) -> Result<Value> {
     if id == "members" {
         return Err(Error::bad("The default Members group cannot be removed."));
     }
+    let repos: i64 = sqlx::query_scalar("SELECT count(*) FROM skald_repos WHERE group_id=?")
+        .bind(id)
+        .fetch_one(&state.0.db)
+        .await?;
+    if repos > 0 {
+        return Err(Error::bad(
+            "This group owns repositories. Transfer or delete them before removing the group.",
+        ));
+    }
+    sqlx::query("DELETE FROM skald_transfers WHERE to_kind='group' AND to_id=?")
+        .bind(id)
+        .execute(&state.0.db)
+        .await?;
+    let _ =
+        tokio::fs::remove_file(state.0.data.join("avatars").join(format!("group-{id}.png"))).await;
     sqlx::query("DELETE FROM grants WHERE subject_kind='group' AND subject=?")
         .bind(id)
         .execute(&state.0.db)
@@ -207,8 +222,10 @@ pub(super) async fn resource_access(state: &State, id: &str, input: Access) -> R
     if matches!(kind.as_deref(), Some("git-create" | "git-repo")) {
         return Err(Error::not_found());
     }
-    if matches!(kind.as_deref(), Some("vcs-create" | "vcs-repo"))
-        && input.visibility != Visibility::Restricted
+    if matches!(
+        kind.as_deref(),
+        Some("vcs-create" | "vcs-group-create" | "vcs-repo")
+    ) && input.visibility != Visibility::Restricted
     {
         return Err(Error::bad(
             "Grant repository access to selected users or groups.",

@@ -67,7 +67,7 @@ export function nav() {
   if (user && user.status === "approved") {
     const conflicts = state?.sync ? state.sync.folders.reduce((n, f) => n + f.conflicts, 0) : 0;
     const pending = state?.users?.filter(u => u.status === "pending").length || 0;
-    links = html`${section("Your universe", [link("/", "Overview", "home"), link("/apps", "Applications", "apps"), link("/shares", "File shares", "folder"), link("/repositories", "Repositories", "repo"), state?.sync ? link("/sync", "Save sync", "sync", conflicts) : ""])}${user.owner ? section("Server", [link("/routes", "Routes & services", "route"), link("/accounts", "People & groups", "people", pending), link("/activity", "Activity", "activity"), link("/settings", "Server settings", "settings")]) : ""}${section("You", link("/account", "My account", "user"))}`;
+    links = html`${section("Your universe", [link("/", "Overview", "home"), link("/apps", "Applications", "apps"), link("/shares", "File shares", "folder"), link("/repositories", "Repositories", "repo", state?.transfers_waiting || 0), state?.sync ? link("/sync", "Save sync", "sync", conflicts) : ""])}${user.owner ? section("Server", [link("/routes", "Routes & services", "route"), link("/accounts", "People & groups", "people", pending), link("/activity", "Activity", "activity"), link("/settings", "Server settings", "settings")]) : ""}${section("You", link("/account", "My account", "user"))}`;
   }
   morph($("#navigation"), links);
   $("#server-name").innerHTML = String(html`<span class="status-dot"></span>${session.name || "LOKI Server"}`);

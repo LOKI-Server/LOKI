@@ -1075,3 +1075,215 @@ async fn native_repository_push_clone_review_and_backup() {
     );
     hosted.verify().unwrap();
 }
+
+#[tokio::test]
+async fn group_repositories_and_transfers_pause_changes_until_accepted() {
+    async fn json_body(response: axum::response::Response) -> Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap()
+    }
+    let (_folder, state) = fixture().await;
+    let owner = Browser::new(&state, "owner").await;
+    let alice = Browser::new(&state, "alice").await;
+    let bob = Browser::new(&state, "bob").await;
+    let team = "0f9a3b5e-2c4d-4e6f-8a1b-3c5d7e9f1a2b";
+    sqlx::query("INSERT INTO groups(id,name) VALUES(?,'Team')")
+        .bind(team)
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO memberships(user_id,group_id) VALUES('alice',?)")
+        .bind(team)
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+
+    // Members need the server's permission before creating repositories in their group.
+    let in_group = json!({"name":"game","group":team});
+    assert_eq!(
+        alice
+            .request("POST", "/api/repos", in_group.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    sqlx::query("INSERT INTO grants(resource,subject_kind,subject,role) VALUES('vcs-group-create','user','alice','access')")
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    let game = json_body(alice.request("POST", "/api/repos", in_group).await).await;
+    let game = game["id"].as_str().unwrap().to_owned();
+    let game_url = format!("/api/repos/{game}");
+
+    // Group members write; outsiders see nothing; only the server owner gives it away.
+    let detail = json_body(alice.request("GET", &game_url, Value::Null).await).await;
+    assert_eq!(detail["role"], "write");
+    assert_eq!(detail["owner"]["kind"], "group");
+    assert_eq!(detail["can_transfer"], false);
+    assert_eq!(
+        bob.request("GET", &game_url, Value::Null).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        alice.request("DELETE", &game_url, json!({})).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let start = |kind: &str, target: &str| json!({"action":"start","kind":kind,"target":target});
+    assert_eq!(
+        alice
+            .request(
+                "POST",
+                &format!("{game_url}/transfer"),
+                start("user", "alice")
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    // A group that owns repositories can't be removed.
+    let removed = owner
+        .request(
+            "POST",
+            "/api/action",
+            json!({"action":"group-delete","id":team,"data":{}}),
+        )
+        .await;
+    assert_eq!(removed.status(), StatusCode::BAD_REQUEST);
+
+    // Giving a repository to someone else waits for them, and pauses pushes meanwhile.
+    sqlx::query("INSERT INTO grants(resource,subject_kind,subject,role) VALUES('vcs-create','user','alice','access')")
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    let solo = json_body(
+        alice
+            .request("POST", "/api/repos", json!({"name":"solo"}))
+            .await,
+    )
+    .await;
+    let solo = solo["id"].as_str().unwrap().to_owned();
+    let solo_url = format!("/api/repos/{solo}");
+    let requested = json_body(
+        alice
+            .request(
+                "POST",
+                &format!("{solo_url}/transfer"),
+                start("user", "bob"),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(requested["transferred"], false);
+    let token = json_body(
+        alice
+            .request(
+                "POST",
+                "/api/account/vcs-tokens",
+                json!({"label":"pc","write":true,"current_password":"test password for LOKI"}),
+            )
+            .await,
+    )
+    .await;
+    let push = |token: String| {
+        let app = web::router(state.clone());
+        let solo = solo.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/skald/v1/repos/{solo}/missing"))
+                    .header(header::HOST, "127.0.0.1:7070")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"ids":[]}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        }
+    };
+    let token = token["token"].as_str().unwrap().to_owned();
+    assert_eq!(push(token.clone()).await, StatusCode::LOCKED);
+    assert_eq!(
+        alice.request("DELETE", &solo_url, json!({})).await.status(),
+        StatusCode::CONFLICT
+    );
+    let waiting = json_body(bob.request("GET", "/api/repos", Value::Null).await).await;
+    assert_eq!(waiting["transfers"][0]["can_decide"], true);
+    assert_eq!(waiting["transfers"][0]["repo_name"], "solo");
+    // Only the recipient decides.
+    assert_eq!(
+        alice
+            .request(
+                "POST",
+                &format!("{solo_url}/transfer"),
+                json!({"action":"accept"})
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert!(
+        bob.request(
+            "POST",
+            &format!("{solo_url}/transfer"),
+            json!({"action":"accept"})
+        )
+        .await
+        .status()
+        .is_success()
+    );
+    let mine = json_body(bob.request("GET", &solo_url, Value::Null).await).await;
+    assert_eq!(mine["owner"]["id"], "bob");
+    assert_eq!(mine["role"], "manage");
+    assert_eq!(
+        alice.request("GET", &solo_url, Value::Null).await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // A declined transfer resumes changes for the current owner.
+    let again = json_body(
+        alice
+            .request("POST", "/api/repos", json!({"name":"again"}))
+            .await,
+    )
+    .await;
+    let again_url = format!("/api/repos/{}", again["id"].as_str().unwrap());
+    alice
+        .request(
+            "POST",
+            &format!("{again_url}/transfer"),
+            start("group", team),
+        )
+        .await;
+    assert!(
+        owner
+            .request(
+                "POST",
+                &format!("{again_url}/transfer"),
+                json!({"action":"decline"})
+            )
+            .await
+            .status()
+            .is_success()
+    );
+    let kept = json_body(alice.request("GET", &again_url, Value::Null).await).await;
+    assert!(kept["transfer"].is_null());
+    assert_eq!(kept["owner"]["id"], "alice");
+
+    // The server owner moves repositories into groups without waiting.
+    let moved = json_body(
+        owner
+            .request(
+                "POST",
+                &format!("{again_url}/transfer"),
+                start("group", team),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(moved["transferred"], true);
+    let now = json_body(alice.request("GET", &again_url, Value::Null).await).await;
+    assert_eq!(now["owner"]["kind"], "group");
+    assert_eq!(now["role"], "write");
+}

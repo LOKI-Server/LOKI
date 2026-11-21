@@ -2,6 +2,7 @@
 // Code, Commits, Issues & pull requests, and Settings for people who manage it.
 import { ago, api, enc, modal, store } from "../lib/core.js";
 import { accountUrl } from "./account.js";
+import { ownerIcon } from "./people.js";
 import { attrs, escape, html, plural, raw } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
 import { Badge, Button, Checkbox, CopyBlock, CopyField, EmptyState, Field, Form, FormFooter, Help, IconButton, IconLink, LinkButton, List, Menu, MenuList, Notice, PageHeader, Pager, Row, Select, Submit, Tabs, TextArea, initial } from "../lib/ui.js";
@@ -63,23 +64,52 @@ export function markdown(source) {
 
 // The repository list.
 export async function vcsPage() {
-  const { repositories, create } = await api("/api/repos");
-  const names = Object.fromEntries(repositories.map(r => [r.id, r.name]));
+  const { repositories, create, groups = [], transfers = [] } = await api("/api/repos");
+  const names = Object.fromEntries(repositories.map(r => [r.id, `${r.owner?.name ?? ""} / ${r.name}`]));
+  const canCreate = create || groups.length > 0;
   const actions = [
     store.session.user.owner ? Button({ label: "Manage", action: "vcs-manage", icon: "settings" }) : "",
     LinkButton({ label: "Skald tokens", href: accountUrl("tokens"), icon: "key" }),
-    create ? Button({ label: "New repository", action: "vcs-new", kind: "primary", icon: "plus" }) : "",
+    canCreate ? Button({ label: "New repository", action: "vcs-new", kind: "primary", icon: "plus" }) : "",
   ];
   const rows = repositories.map(repo => Row({
-    key: repo.id, icon: "repo", tone: "info", title: repo.name, href: repoUrl(repo.id),
-    badges: [Badge("Private", "neutral"), Badge(roles[repo.role] || repo.role, "neutral")],
+    key: repo.id, lead: repo.owner ? html`<span class="row-lead">${ownerIcon(repo.owner, "md")}</span>` : "", href: repoUrl(repo.id),
+    title: html`<span class="owner-prefix">${repo.owner?.name} /</span> ${repo.name}`,
+    badges: [repo.owner?.kind === "group" ? Badge("Group", "info") : "", Badge(roles[repo.role] || repo.role, "neutral")],
     meta: repo.upstream ? html`${icon("branch")}Forked from ${names[repo.upstream] ? html`<a href="${repoUrl(repo.upstream)}">${names[repo.upstream]}</a>` : "another repository"}` : "",
   }));
-  return html`${PageHeader({ title: "Repositories", description: "Private version control for your projects, hosted by Skald.", actions, realm: "repos" })}${rows.length ? List(rows, { className: "list-boxed" }) : EmptyState({ title: "No repositories yet", text: create ? "Create a repository, then clone it with skald and push your first commit." : "Repositories shared with you appear here.", action: create ? Button({ label: "New repository", action: "vcs-new", kind: "primary", icon: "plus" }) : "", rune: "ᚨ" })}`;
+  return html`${PageHeader({ title: "Repositories", description: "Private version control for your projects, hosted by Skald.", actions, realm: "repos" })}${transfers.map(t => transferNotice(t, true))}${rows.length ? List(rows, { className: "list-boxed" }) : EmptyState({ title: "No repositories yet", text: canCreate ? "Create a repository, then clone it with skald and push your first commit." : "Repositories shared with you appear here.", action: canCreate ? Button({ label: "New repository", action: "vcs-new", kind: "primary", icon: "plus" }) : "", rune: "ᚨ" })}`;
 }
 
-export function newRepo(upstream = "") {
-  modal(upstream ? "Fork repository" : "New repository", Form({ name: "vcs-create", id: upstream, body: html`${Field({ name: "name", label: "Repository name", required: true, maxlength: 64, pattern: "[a-z0-9-]+", placeholder: "my-project", autocomplete: "off", help: "Lowercase letters, numbers, and dashes." })}${upstream ? html`<p>The fork copies the history and starts with its own access list.</p>` : Field({ name: "default_branch", label: "Default branch", value: "main", required: true, maxlength: 160 })}${FormFooter(Submit({ label: upstream ? "Create fork" : "Create repository" }))}` }));
+/**
+ * A waiting transfer: who it goes to, that code changes are paused, and the buttons
+ * this person may use. `named` adds the repository's name, for the list page.
+ */
+function transferNotice(t, named = false) {
+  // The recipient may not be able to open the repository until they accept it.
+  const label = `${t.from.name} / ${t.repo_name}`;
+  const what = !named ? "this repository" : t.can_decide && t.to.kind === "user" ? html`<strong>${label}</strong>` : html`<a href="${repoUrl(t.repo_id)}">${label}</a>`;
+  const group = html`the group <strong>${t.to.name}</strong>`;
+  const body = t.can_decide
+    ? html`<strong>${t.requested_by}</strong> wants to give ${what} to ${t.to.kind === "group" ? group : "you"}. Code changes are paused until you accept or decline.`
+    : t.to.kind === "group"
+      ? html`Waiting for the server owner to accept ${what} into ${group}. Code changes are paused until then.`
+      : html`Waiting for <strong>${t.to.name}</strong> to accept ${what}. Code changes are paused until then.`;
+  const decide = (label, change, kind = "secondary") => Button({ label, action: "vcs-transfer-decide", id: t.repo_id, data: { change }, kind, size: "sm" });
+  const buttons = [t.can_decide ? decide("Accept", "accept", "primary") : "", t.can_decide ? decide("Decline", "decline", "ghost") : "", t.can_cancel && !t.can_decide ? decide("Cancel transfer", "cancel", "ghost") : ""];
+  return Notice({ tone: t.can_decide ? "warn" : "info", icon: "repo", body, action: html`<div class="notice-buttons">${buttons}</div>` });
+}
+
+/** The owners a new repository can have: yourself, and groups you may create in. */
+function ownerChoice(create, groups) {
+  const options = [...(create ? [["", `You (@${store.session.user.username})`]] : []), ...groups.map(g => [g.id, `Group: ${g.name}`])];
+  if (options.length < 2) return options.length ? html`<input type="hidden" name="group" value="${options[0][0]}">` : "";
+  return Select({ name: "group", label: "Owner", options, help: "Members of a group can push to its repositories. The server owner manages groups." });
+}
+
+export async function newRepo(upstream = "") {
+  const { create, groups = [] } = await api("/api/repos");
+  modal(upstream ? "Fork repository" : "New repository", Form({ name: "vcs-create", id: upstream, body: html`${ownerChoice(create, groups)}${Field({ name: "name", label: "Repository name", required: true, maxlength: 64, pattern: "[a-z0-9-]+", placeholder: "my-project", autocomplete: "off", help: "Lowercase letters, numbers, and dashes." })}${upstream ? html`<p>The fork copies the history and starts with its own access list.</p>` : Field({ name: "default_branch", label: "Default branch", value: "main", required: true, maxlength: 160 })}${FormFooter(Submit({ label: upstream ? "Create fork" : "Create repository" }))}` }));
 }
 
 // One repository.
@@ -111,7 +141,7 @@ export async function vcsRepo(id) {
     : view.tab === "issues" ? issuesTab(id, discussions, before)
     : view.tab === "settings" ? await settingsTab(id, repo)
     : await codeTab(id, repo, view);
-  return html`${repoHeader(repo)}${Tabs([
+  return html`${repoHeader(repo)}${repo.transfer ? transferNotice(repo.transfer) : ""}${Tabs([
     { label: "Code", href: repoUrl(id, view.at), active: view.tab === "code", icon: "code" },
     { label: "Commits", href: repoUrl(id, { ...view.at, tab: "commits" }), active: view.tab === "commits", icon: "history" },
     { label: "Issues & pull requests", href: repoUrl(id, { tab: "issues" }), active: view.tab === "issues", count: open ? `${open}${discussions.next ? "+" : ""}` : 0, icon: "issue" },
@@ -122,13 +152,14 @@ export async function vcsRepo(id) {
 const cloneCommand = repo => `skald clone ${repo.remote_url} ${repo.name}`;
 const tokenHelp = html`<p class="help">Set <code>SKALD_TOKEN</code> to one of <a href="${accountUrl("tokens")}">your Skald tokens</a> first.</p>`;
 
-function repoTitle(id, name, extra = "") {
-  return html`<div class="repo-title">${icon("repo")}<a href="/repositories">Repositories</a><span class="slash">/</span><a class="repo-name" href="${repoUrl(id)}">${name}</a>${extra}</div>`;
+function repoTitle(id, name, extra = "", owner = null) {
+  const by = owner ? html`<span class="repo-owner">${ownerIcon(owner, "xs")}${owner.name}</span><span class="slash">/</span>` : "";
+  return html`<div class="repo-title">${icon("repo")}<a href="/repositories">Repositories</a><span class="slash">/</span>${by}<a class="repo-name" href="${repoUrl(id)}">${name}</a>${extra}</div>`;
 }
 
 function repoHeader(repo) {
   const panel = html`<h4 class="menu-title">Clone with Skald</h4>${CopyField(cloneCommand(repo), "Copy clone command")}${tokenHelp}`;
-  return html`<header class="repo-header"><div>${repoTitle(repo.id, repo.name, Badge("Private", "neutral"))}${repo.upstream ? html`<p class="repo-fork">${icon("branch")}Forked from <a href="${repoUrl(repo.upstream.id)}">${repo.upstream.name}</a></p>` : ""}</div><div class="repo-actions">${repo.can_fork ? Button({ label: "Fork", action: "vcs-fork", id: repo.id, icon: "branch", size: "sm" }) : ""}${Menu({ trigger: html`${icon("code")}<span>Code</span>`, body: panel, kind: "primary", size: "sm", align: "right", label: "Clone this repository" })}</div></header>`;
+  return html`<header class="repo-header"><div>${repoTitle(repo.id, repo.name, Badge("Private", "neutral"), repo.owner)}${repo.upstream ? html`<p class="repo-fork">${icon("branch")}Forked from <a href="${repoUrl(repo.upstream.id)}">${repo.upstream.name}</a></p>` : ""}</div><div class="repo-actions">${repo.can_fork ? Button({ label: "Fork", action: "vcs-fork", id: repo.id, icon: "branch", size: "sm" }) : ""}${Menu({ trigger: html`${icon("code")}<span>Code</span>`, body: panel, kind: "primary", size: "sm", align: "right", label: "Clone this repository" })}</div></header>`;
 }
 
 /** The branch and tag picker. Choosing one keeps the current tab and folder. */
@@ -244,8 +275,9 @@ const block = (title, text, body, danger = false) => html`<section class="${dang
 async function settingsTab(id, repo) {
   const branches = [...new Set([repo.default_branch, ...repo.branches])];
   const blocks = [block("General", "", Form({ name: "vcs-settings", id, body: html`${Select({ name: "default_branch", label: "Default branch", options: branches, value: repo.default_branch, help: "Shown first, and what clones check out." })}${Checkbox({ name: "protect_default", label: "Require an approved pull request to update the default branch", checked: repo.protect_default })}${FormFooter(Submit({ label: "Save" }))}` }))];
-  if (repo.role === "manage") {
-    const { users, groups, grants } = await api(`${repoApi(id)}/permissions`);
+  const permissions = repo.role === "manage" ? await api(`${repoApi(id)}/permissions`) : null;
+  if (permissions) {
+    const { users, groups, grants } = permissions;
     const options = [...users.map(([key, name]) => [`user:${key}`, name, "user"]), ...groups.map(([key, name]) => [`group:${key}`, name, "people"])];
     const labels = new Map(options.map(([key, name, kind]) => [key, [name, kind]]));
     const rows = grants.map(([kind, subject, role]) => {
@@ -259,8 +291,18 @@ async function settingsTab(id, repo) {
       Row({ title: "Collect old objects", meta: "Free space held by data that no branch, tag, or open pull request needs.", actions: Button({ label: "Collect", action: "vcs-gc", id, icon: "archive", size: "sm" }) }),
     ], { className: "list-boxed" })));
   }
+  if (repo.can_transfer && permissions) blocks.push(block("Transfer ownership", "Give this repository to a person or a group. Its history, discussions and access list go with it.", repo.transfer
+    ? Notice({ tone: "info", body: "A transfer is already waiting. Cancel it from the banner above to choose someone else." })
+    : transferForm(id, repo, permissions)));
   if (repo.can_delete) blocks.push(block("Danger zone", "", List(Row({ title: "Delete this repository", meta: "Removes every revision, file, and discussion. This can't be undone.", actions: Button({ label: "Delete repository", action: "vcs-delete", id, data: { name: repo.name }, kind: "danger", icon: "trash", size: "sm" }) }), { className: "list-boxed danger-zone" }), true));
   return html`<div class="settings-stack">${blocks}</div>`;
+}
+
+function transferForm(id, repo, { users, groups }) {
+  const mine = repo.owner.kind === "user" ? `user:${repo.owner.id}` : `group:${repo.owner.id}`;
+  const options = [...groups.map(([key, name]) => [`group:${key}`, `Group: ${name}`]), ...users.map(([key, name]) => [`user:${key}`, `@${name}`])].filter(([key]) => key !== mine);
+  if (!options.length) return Help("There's nobody else to transfer it to yet.");
+  return html`${Form({ name: "vcs-transfer", id, className: "inline-form transfer-form", body: html`${Select({ name: "target", label: "New owner", hiddenLabel: true, options })}${Submit({ label: "Transfer…", kind: "secondary", icon: "repo" })}` })}${Help("Anyone other than you, and groups unless you're the server owner, must accept first. Pushes and merges pause until they decide.")}`;
 }
 
 export async function newItem(id, kind) {
@@ -285,7 +327,8 @@ function diffView(diff) {
 
 export async function vcsItem(id, itemId) {
   const [{ item, role, comments, diff }, list] = await Promise.all([api(`${repoApi(id)}/items/${enc(itemId)}`), api("/api/repos").catch(() => ({ repositories: [] }))]);
-  const repoName = list.repositories.find(r => r.id === id)?.name || "Repository";
+  const listed = list.repositories.find(r => r.id === id);
+  const repoName = listed?.name || "Repository";
   const mine = item.author_id === store.session.user.id;
   const change = (label, action, kind = "secondary", iconName = "") => Button({ label, action: "vcs-item-action", id, data: { item: item.id, change: action, head: item.head || "", base: item.base || "" }, kind, icon: iconName, block: true });
   const buttons = [];
@@ -300,5 +343,5 @@ export async function vcsItem(id, itemId) {
   const pill = html`<span class="${`state-pill state-${state}`}">${icon(iconName)}${state[0].toUpperCase() + state.slice(1)}</span>`;
   const comment = (who, when, body, first = false) => html`<article class="comment"><span class="avatar" aria-hidden="true">${initial(who)}</span><div class="box"><div class="box-head"><strong>${who}</strong><span class="muted">${first ? "opened this" : "commented"} ${ago(when)}</span></div><div class="box-body">${body.trim() ? markdown(body) : html`<p class="muted">No description provided.</p>`}</div></div></article>`;
   const reply = Form({ name: "vcs-comment", id, data: { item: item.id }, className: "comment", body: html`<span class="avatar" aria-hidden="true">${initial(store.session.user.username)}</span><div class="box"><div class="box-body">${TextArea({ name: "body", label: "Comment", hiddenLabel: true, rows: 4, maxlength: 6000, required: true, placeholder: "Leave a comment. Markdown is supported." })}${FormFooter(Submit({ label: "Comment" }), { divider: false })}</div></div>` });
-  return html`<header class="repo-header">${repoTitle(id, repoName, html`<span class="slash">/</span><a href="${repoUrl(id, { tab: "issues" })}">Issues &amp; pull requests</a>`)}</header><div class="item-head"><h1>${item.title}</h1><p>${pill}<span><strong>${item.username}</strong> opened this ${noun} ${ago(item.created)}${branches}</span></p></div><div class="repo-layout"><div class="repo-main timeline">${comment(item.username, item.created, item.body, true)}${diff === null || diff === undefined ? "" : html`<div class="box"><div class="box-head">${icon("code")}<strong>Changes</strong>${item.approved_head ? Badge("Approved") : ""}</div>${diffView(diff)}</div>`}${comments.map(c => comment(c.username, c.created, c.body))}${reply}</div><aside class="repo-aside"><h3>Status</h3><p>${pill}${item.approved_head ? Badge("Approved") : ""}</p>${buttons.length ? html`<div class="stack-buttons">${buttons}</div>` : ""}</aside></div>`;
+  return html`<header class="repo-header">${repoTitle(id, repoName, html`<span class="slash">/</span><a href="${repoUrl(id, { tab: "issues" })}">Issues &amp; pull requests</a>`, listed?.owner)}</header><div class="item-head"><h1>${item.title}</h1><p>${pill}<span><strong>${item.username}</strong> opened this ${noun} ${ago(item.created)}${branches}</span></p></div><div class="repo-layout"><div class="repo-main timeline">${comment(item.username, item.created, item.body, true)}${diff === null || diff === undefined ? "" : html`<div class="box"><div class="box-head">${icon("code")}<strong>Changes</strong>${item.approved_head ? Badge("Approved") : ""}</div>${diffView(diff)}</div>`}${comments.map(c => comment(c.username, c.created, c.body))}${reply}</div><aside class="repo-aside"><h3>Status</h3><p>${pill}${item.approved_head ? Badge("Approved") : ""}</p>${buttons.length ? html`<div class="stack-buttons">${buttons}</div>` : ""}</aside></div>`;
 }

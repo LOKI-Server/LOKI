@@ -10,7 +10,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS sole_owner ON users(owner) WHERE owner=1;
 CREATE UNIQUE INDEX IF NOT EXISTS unique_email ON users(email COLLATE NOCASE) WHERE email!='';
 CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id) ON DELETE CASCADE, csrf TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL, label TEXT NOT NULL, auth_version INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
-CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, icon INTEGER NOT NULL DEFAULT 0);
 INSERT OR IGNORE INTO groups(id,name) VALUES('members','Members');
 CREATE TABLE IF NOT EXISTS memberships(user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, PRIMARY KEY(user_id,group_id));
 CREATE TABLE IF NOT EXISTS resources(id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, visibility TEXT NOT NULL DEFAULT 'restricted' CHECK(visibility IN('public','members','restricted')));
@@ -50,7 +50,10 @@ CREATE TABLE IF NOT EXISTS personal_apps(app_id TEXT PRIMARY KEY REFERENCES apps
 CREATE TABLE IF NOT EXISTS personal_files(user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, app_id TEXT NOT NULL, path TEXT NOT NULL, blob TEXT NOT NULL UNIQUE, size INTEGER NOT NULL CHECK(size>=0), PRIMARY KEY(user_id,app_id,path));
 
 INSERT OR IGNORE INTO resources(id,kind,name,visibility) VALUES('vcs-create','vcs-create','Create Skald repositories','restricted');
-CREATE TABLE IF NOT EXISTS skald_repos(id TEXT PRIMARY KEY REFERENCES resources(id),owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,created INTEGER NOT NULL,protect_default INTEGER NOT NULL DEFAULT 0,upstream TEXT REFERENCES skald_repos(id) ON DELETE SET NULL,bytes INTEGER NOT NULL DEFAULT 0,object_count INTEGER NOT NULL DEFAULT 0,UNIQUE(owner_id,name));
+INSERT OR IGNORE INTO resources(id,kind,name,visibility) VALUES('vcs-group-create','vcs-group-create','Create Skald repositories in groups','restricted');
+CREATE TABLE IF NOT EXISTS skald_repos(id TEXT PRIMARY KEY REFERENCES resources(id),owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,created INTEGER NOT NULL,protect_default INTEGER NOT NULL DEFAULT 0,upstream TEXT REFERENCES skald_repos(id) ON DELETE SET NULL,bytes INTEGER NOT NULL DEFAULT 0,object_count INTEGER NOT NULL DEFAULT 0,group_id TEXT REFERENCES groups(id),UNIQUE(owner_id,name));
+-- A pending change of owner. While one exists, code changes to the repository are paused.
+CREATE TABLE IF NOT EXISTS skald_transfers(repo_id TEXT PRIMARY KEY REFERENCES skald_repos(id) ON DELETE CASCADE,to_kind TEXT NOT NULL CHECK(to_kind IN('user','group')),to_id TEXT NOT NULL,requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS skald_objects(repo_id TEXT NOT NULL REFERENCES skald_repos(id) ON DELETE CASCADE,object TEXT NOT NULL,size INTEGER NOT NULL CHECK(size>0),created INTEGER NOT NULL,PRIMARY KEY(repo_id,object));
 CREATE TABLE IF NOT EXISTS vcs_tokens(id TEXT PRIMARY KEY,digest TEXT NOT NULL UNIQUE,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,label TEXT NOT NULL,write INTEGER NOT NULL,created INTEGER NOT NULL,expires INTEGER NOT NULL,auth_version INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS vcs_tokens_user ON vcs_tokens(user_id);

@@ -58,6 +58,13 @@ pub fn router(state: State) -> Router {
             post(avatar).layer(DefaultBodyLimit::max(5242880)),
         )
         .route("/avatars/{id}", get(serve_avatar))
+        .route("/avatars/groups/{id}", get(serve_group_icon))
+        .route(
+            "/api/groups/{id}/icon",
+            post(group_icon)
+                .delete(remove_group_icon)
+                .layer(DefaultBodyLimit::max(5242880)),
+        )
         .route("/api/folders", get(files::folders))
         .route(
             "/api/apps/{id}/panel",
@@ -111,7 +118,11 @@ async fn shell(ExtractState(state): ExtractState<State>, headers: HeaderMap) -> 
     };
     let name = state.0.settings.read().await.name.clone();
     let page = Shell {
-        name: if name.trim().is_empty() { "LOKI".into() } else { name },
+        name: if name.trim().is_empty() {
+            "LOKI".into()
+        } else {
+            name
+        },
         version: env!("CARGO_PKG_VERSION"),
         assets: crate::assets::base(),
         modules: crate::assets::modules(),
@@ -372,6 +383,7 @@ async fn dashboard(
     let sessions=sqlx::query("SELECT id,label,created,expires FROM sessions WHERE user_id=? AND expires>? ORDER BY created DESC").bind(&user.id).bind(auth::now()).fetch_all(&state.0.db).await?.into_iter().map(|r|json!({"id":r.get::<String,_>("id"),"label":r.get::<String,_>("label"),"created":r.get::<i64,_>("created"),"current":r.get::<String,_>("id")==ctx.session.id})).collect::<Vec<_>>();
     let mut output = json!({"resources":resources,"sessions":sessions,"mfa":user.totp.is_some(),"data_dir":state.0.data.to_string_lossy(),"target":apps::target(),"loki_version":env!("CARGO_PKG_VERSION"),"oldest_sdk":apps::OLDEST_SDK.to_string()});
     output["devices"] = crate::devices::list(&state, user).await?;
+    output["transfers_waiting"] = json!(crate::vcs::transfers_waiting(&state.0.db, user).await?);
     if let Some(sync) = crate::sync::summary(&state, user).await? {
         output["sync"] = sync;
     }
@@ -396,7 +408,7 @@ async fn dashboard(
                 .fetch_all(&state.0.db)
                 .await?
                 .into_iter()
-                .map(|r| json!({"id":r.get::<String,_>("id"),"name":r.get::<String,_>("name")}))
+                .map(|r| json!({"id":r.get::<String,_>("id"),"name":r.get::<String,_>("name"),"icon":r.get::<bool,_>("icon")}))
                 .collect::<Vec<_>>()
         );
         output["memberships"] = json!(
@@ -573,14 +585,27 @@ async fn avatar(
         .await?
         .ok_or_else(|| Error::bad("Select an image."))?;
     let bytes = field.bytes().await?;
+    save_picture(
+        bytes,
+        state
+            .0
+            .data
+            .join("avatars")
+            .join(format!("{}.png", user.id)),
+    )
+    .await?;
+    sqlx::query("UPDATE users SET avatar=1 WHERE id=?")
+        .bind(&user.id)
+        .execute(&state.0.db)
+        .await?;
+    Ok(Json(json!({"ok":true})))
+}
+
+/// Decodes an uploaded image and stores it as a PNG of at most 256 × 256.
+async fn save_picture(bytes: axum::body::Bytes, path: std::path::PathBuf) -> Result<()> {
     if bytes.len() > 4194304 {
-        return Err(Error::bad("Avatar exceeds 4 MiB."));
+        return Err(Error::bad("The image is larger than 4 MiB."));
     }
-    let path = state
-        .0
-        .data
-        .join("avatars")
-        .join(format!("{}.png", user.id));
     tokio::task::spawn_blocking(move || -> Result<()> {
         let mut reader =
             image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
@@ -597,12 +622,75 @@ async fn avatar(
             .save_with_format(path, image::ImageFormat::Png)?;
         Ok(())
     })
-    .await??;
-    sqlx::query("UPDATE users SET avatar=1 WHERE id=?")
-        .bind(&user.id)
+    .await?
+}
+
+/// Group icons live beside people's pictures, so backups already include them.
+fn group_icon_path(state: &State, id: &str) -> Result<std::path::PathBuf> {
+    if id != "members" && uuid::Uuid::parse_str(id).is_err() {
+        return Err(Error::not_found());
+    }
+    Ok(state.0.data.join("avatars").join(format!("group-{id}.png")))
+}
+
+async fn group_icon(
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Json<Value>> {
+    let ctx = auth::context(&state, &headers).await?;
+    ctx.owner()?;
+    let path = group_icon_path(&state, &id)?;
+    let field = multipart
+        .next_field()
+        .await?
+        .ok_or_else(|| Error::bad("Select an image."))?;
+    save_picture(field.bytes().await?, path).await?;
+    let updated = sqlx::query("UPDATE groups SET icon=1 WHERE id=?")
+        .bind(&id)
         .execute(&state.0.db)
         .await?;
+    if updated.rows_affected() == 0 {
+        return Err(Error::not_found());
+    }
     Ok(Json(json!({"ok":true})))
+}
+
+async fn remove_group_icon(
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    auth::context(&state, &headers).await?.owner()?;
+    let path = group_icon_path(&state, &id)?;
+    sqlx::query("UPDATE groups SET icon=0 WHERE id=?")
+        .bind(&id)
+        .execute(&state.0.db)
+        .await?;
+    if let Err(error) = tokio::fs::remove_file(path).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(error.into());
+    }
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn serve_group_icon(
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<String>,
+) -> Result<Response> {
+    let bytes = tokio::fs::read(group_icon_path(&state, &id)?)
+        .await
+        .map_err(|_| Error::not_found())?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 async fn serve_avatar(
     ExtractState(state): ExtractState<State>,

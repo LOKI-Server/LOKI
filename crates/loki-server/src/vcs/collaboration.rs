@@ -295,6 +295,9 @@ async fn change(
             if input.head != item.head || input.base != item.base {
                 return Err(changed());
             }
+            if input.action == "merge" {
+                super::ensure_unpaused(&state.0.db, &id).await?;
+            }
             let host = host(&state, &id)?;
             let refs = host.refs()?;
             let base = item.base.as_deref().ok_or_else(changed)?.parse::<Id>()?;

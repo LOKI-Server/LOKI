@@ -14,7 +14,8 @@ export const roles = r => [...new Set(["access", ...(r.kind === "app" ? ["admin"
 /** Who can reach a resource: an audience, and permissions for people and groups. */
 export function accessPanel(r) {
   const grants = store.state.grants.filter(g => g.resource === r.id);
-  const audiences = { restricted: "Selected people and groups", ...(r.kind === "vcs-create" ? {} : { members: "All approved members" }), ...(["sync", "vcs-create"].includes(r.kind) ? {} : { public: "Public" }) };
+  const creation = ["vcs-create", "vcs-group-create"].includes(r.kind);
+  const audiences = { restricted: "Selected people and groups", ...(creation ? {} : { members: "All approved members" }), ...(["sync", "vcs-create", "vcs-group-create"].includes(r.kind) ? {} : { public: "Public" }) };
   const note = r.kind === "app" ? "Public makes the service discoverable, but the app may still ask for a LOKI sign-in."
     : r.kind === "route" && !r.gated ? "Without the sign-in gate, these permissions control who sees the service in LOKI. The service itself controls sign-in." : "";
   return Form({ name: "access", id: r.id, body: html`${Select({ name: "visibility", label: "Audience", options: Object.entries(audiences), value: r.visibility, help: note })}<div class="field"><span class="field-label">Permissions</span><div id="grants" class="grant-list">${grants.map(g => grantRow(subjects(), roles(r), `${g.subject_kind}:${g.subject}`, g.role))}</div>${Button({ label: "Add permission", action: "grant-add", id: r.id, icon: "plus", size: "sm", kind: "ghost" })}</div>${FormFooter(Submit({ label: "Save access" }))}` });
@@ -35,7 +36,7 @@ export const vcsLimits = { vcs_repo_mib: "Storage per repository (MiB)", vcs_tot
 
 export function vcsManage() {
   const s = store.state.settings;
-  modal("Repositories", html`<p class="lead">Repositories are hosted by Skald. Each one keeps its own access list; these settings apply to all of them.</p>${DialogSection("Storage", Form({ name: "settings", body: html`${FieldRow(...Object.entries(vcsLimits).map(([key, label]) => Field({ name: key, label, value: s[key], type: "number", required: true, min: 1, max: 1048576 })))}${FormFooter(Submit({ label: "Save storage" }))}` }))}${DialogSection("Who can create repositories", accessPanel(resource("vcs-create")))}`);
+  modal("Repositories", html`<p class="lead">Repositories are hosted by Skald. Each one keeps its own access list; these settings apply to all of them.</p>${DialogSection("Storage", Form({ name: "settings", body: html`${FieldRow(...Object.entries(vcsLimits).map(([key, label]) => Field({ name: key, label, value: s[key], type: "number", required: true, min: 1, max: 1048576 })))}${FormFooter(Submit({ label: "Save storage" }))}` }))}${DialogSection("Who can create repositories", accessPanel(resource("vcs-create")))}${resource("vcs-group-create") ? DialogSection("Who can create repositories in their groups", html`<p class="help">People chosen here can create repositories owned by groups they belong to. You can always create them in any group.</p>${accessPanel(resource("vcs-group-create"))}`) : ""}`);
 }
 
 // Apps that keep files can be given more room, or less, than they ask for.

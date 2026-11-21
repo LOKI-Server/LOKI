@@ -1,4 +1,6 @@
-use super::{Access, Repo, access, credentials, directory, host, invalid, require};
+use super::{
+    Access, Repo, access, can_give_away, credentials, directory, host, invalid, ownership, require,
+};
 use crate::{Error, Result, State, auth};
 use axum::{
     Extension, Json, Router,
@@ -21,6 +23,7 @@ pub(crate) fn router() -> Router<State> {
         .route("/api/repos/{id}/settings", post(settings))
         .route("/api/repos/{id}/permissions", get(permissions).post(grant))
         .route("/api/repos/{id}/maintenance", post(maintenance))
+        .route("/api/repos/{id}/transfer", post(ownership::transfer))
         .route(
             "/api/account/vcs-tokens",
             get(credentials::list).post(credentials::issue),
@@ -44,7 +47,8 @@ pub(crate) fn api_router() -> Router<State> {
             get(permissions).post(grant),
         )
         .route("/api/v1/repos/{id}/settings", post(settings))
-        .route("/api/v1/repos/{id}/maintenance", post(maintenance));
+        .route("/api/v1/repos/{id}/maintenance", post(maintenance))
+        .route("/api/v1/repos/{id}/transfer", post(ownership::transfer));
     super::collaboration::routes(router, "/api/v1/repos")
 }
 
@@ -67,13 +71,15 @@ async fn index(
     let user = actor(&state, &headers, native).await?;
     Ok(Json(json!({
         "repositories": listings(&state, &user.id).await?,
-        "create": auth::allowed(&state, Some(&user), "vcs-create", "access").await?
+        "create": auth::allowed(&state, Some(&user), "vcs-create", "access").await?,
+        "groups": ownership::creatable_groups(&state, &user).await?,
+        "transfers": ownership::involving(&state, &user).await?
     })))
 }
 
 pub(super) async fn listings(state: &State, user: &str) -> Result<Vec<Value>> {
     let repos: Vec<Repo> = sqlx::query_as(
-        "SELECT id,owner_id,name,created,protect_default,upstream FROM skald_repos ORDER BY name,created",
+        "SELECT id,owner_id,name,created,protect_default,upstream,group_id FROM skald_repos ORDER BY name,created",
     )
     .fetch_all(&state.0.db)
     .await?;
@@ -91,6 +97,7 @@ pub(super) async fn listings(state: &State, user: &str) -> Result<Vec<Value>> {
             };
             visible.push(
                 json!({"id":repo.id,"name":repo.name,"role":role,"owner_id":repo.owner_id,"upstream":upstream,
+                "owner":ownership::owner(&state.0.db, &repo).await?,
                 "remote_url":remote_url(&public, &repo.id)}),
             );
         }
@@ -112,6 +119,8 @@ struct NewRepo {
     name: String,
     default_branch: Option<String>,
     upstream: Option<String>,
+    /// A group to own the repository instead of the person creating it.
+    group: Option<String>,
 }
 
 async fn create(
@@ -122,7 +131,12 @@ async fn create(
 ) -> Result<Json<Value>> {
     let user = actor(&state, &headers, native).await?;
     let _guard = state.0.vcs_files.write().await;
-    if !auth::allowed(&state, Some(&user), "vcs-create", "access").await? {
+    let group = input.group.as_deref().filter(|group| !group.is_empty());
+    let allowed = match group {
+        Some(group) => ownership::may_create_in(&state, &user, group).await?,
+        None => auth::allowed(&state, Some(&user), "vcs-create", "access").await?,
+    };
+    if !allowed {
         return Err(Error::forbidden());
     }
     let name = input.name.trim();
@@ -158,15 +172,17 @@ async fn create(
     .bind(name)
     .execute(&mut *tx)
     .await?;
-    let result =
-        sqlx::query("INSERT INTO skald_repos(id,owner_id,name,created,upstream) VALUES(?,?,?,?,?)")
-            .bind(&id)
-            .bind(&user.id)
-            .bind(name)
-            .bind(auth::now())
-            .bind(&input.upstream)
-            .execute(&mut *tx)
-            .await;
+    let result = sqlx::query(
+        "INSERT INTO skald_repos(id,owner_id,name,created,upstream,group_id) VALUES(?,?,?,?,?,?)",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .bind(name)
+    .bind(auth::now())
+    .bind(&input.upstream)
+    .bind(group)
+    .execute(&mut *tx)
+    .await;
     if result.as_ref().is_err_and(|error| {
         error
             .as_database_error()
@@ -174,7 +190,11 @@ async fn create(
     }) {
         return Err(Error::new(
             StatusCode::CONFLICT,
-            "You already have a repository with this name.",
+            if group.is_some() {
+                "This group already has a repository with this name."
+            } else {
+                "You already have a repository with this name."
+            },
         ));
     }
     result?;
@@ -262,8 +282,14 @@ async fn delete_repo(
     let user = actor(&state, &headers, native).await?;
     let _guard = state.0.vcs_files.write().await;
     let (repo, _) = require(&state, &id, &user.id, Access::Manage).await?;
-    if !user.owner && repo.owner_id != user.id {
+    if !can_give_away(&repo, &user) {
         return Err(Error::forbidden());
+    }
+    if super::transfer_pending(&state.0.db, &id).await? {
+        return Err(Error::new(
+            StatusCode::CONFLICT,
+            "Cancel the waiting transfer before deleting this repository.",
+        ));
     }
     let mut tx = state.0.db.begin().await?;
     sqlx::query("DELETE FROM skald_repos WHERE id=?")
@@ -360,10 +386,14 @@ async fn detail(
     };
     let can_fork = auth::allowed(&state, Some(&user), "vcs-create", "access").await?;
     let public = state.0.settings.read().await.public_url.clone();
+    let owner = ownership::owner(&state.0.db, &repo).await?;
+    let transfer = ownership::pending(&state, &repo, &user).await?;
+    let can_transfer = can_give_away(&repo, &user);
     Ok(Json(
         json!({"id":id,"name":repo.name,"role":role,"remote_url":remote_url(&public, &id),
         "branches":refs.branches.keys().collect::<Vec<_>>(),"branch":selected,"default_branch":refs.default_branch,
-        "protect_default":repo.protect_default,"upstream":upstream,"can_fork":can_fork,"tags":refs.tags,"tree":tree,"next_offset":next_offset,"revision":revision,"commits":commits,"can_delete":user.owner || repo.owner_id==user.id}),
+        "protect_default":repo.protect_default,"upstream":upstream,"can_fork":can_fork,"tags":refs.tags,"tree":tree,"next_offset":next_offset,"revision":revision,"commits":commits,"owner":owner,"transfer":transfer,
+        "can_transfer":can_transfer,"can_delete":can_transfer}),
     ))
 }
 

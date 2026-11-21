@@ -84,6 +84,9 @@ pub(super) async fn authenticate(
         return Err(Error::forbidden());
     }
     let (repo, access) = require(state, id, &user, minimum).await?;
+    if minimum >= Access::Write {
+        super::ensure_unpaused(&state.0.db, id).await?;
+    }
     let access = if write { access } else { Access::Read };
     Ok((repo, access, user))
 }

@@ -6,7 +6,7 @@ import { navigate, refresh, routable } from "./router.js";
 import { submitSetup, submitStartupAware } from "../pages/auth.js";
 import { appManage, folderPicker, vcsManage, vcsLimits, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
 import { newItem, newRepo } from "../pages/vcs.js";
-import { userManage } from "../pages/people.js";
+import { groupManage, userManage } from "../pages/people.js";
 import { accountUrl, deviceRename, pairDialog, passwordProof, profileConfirm, vcsTokenDialog } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
 import { conflictsDialog, folderForm, folderManage, historyDialog } from "../pages/sync.js";
@@ -162,9 +162,16 @@ export async function onSubmit(event) {
     else if (kind === "sync-quota") { await act(kind, id, { mb: data.mb === "" ? null : Number(data.mb) }); toast("Quota saved."); }
     else if (kind === "personal-enable") { await api(`/api/personal/settings/apps/${enc(id)}`, { enabled: data.enabled }); close(); toast("Personal storage permission saved."); }
     else if (kind === "vcs-create") {
-      const repo = await api("/api/repos", { name: data.name, upstream: id || null, default_branch: data.default_branch || null });
+      const repo = await api("/api/repos", { name: data.name, upstream: id || null, default_branch: data.default_branch || null, group: data.group || null });
       close();
       return await navigate(`/repositories/${enc(repo.id)}`);
+    }
+    else if (kind === "vcs-transfer") {
+      const [targetKind, ...rest] = data.target.split(":"), target = rest.join(":");
+      const label = form.querySelector("select[name=target] option:checked")?.textContent || "the new owner";
+      if (!(await ask(["Transfer this repository?", `Ownership moves to ${label}. If they need to accept, pushes and merges pause until they decide. You may lose access you only had as the owner.`, "Transfer"]))) return;
+      const result = await api(`/api/repos/${enc(id)}/transfer`, { action: "start", kind: targetKind, target });
+      toast(result.transferred ? `Transferred to ${result.to}.` : `Transfer requested. ${result.to} needs to accept it; changes are paused until then.`);
     }
     else if (kind === "vcs-grant") {
       const [subject_kind, subject] = data.subject.split(":");
@@ -281,8 +288,22 @@ export async function onClick(event) {
     if (dialogs[action]) return dialogs[action](id);
     if (action === "vcs-manage") return vcsManage();
     if (action === "vcs-new-item") return await newItem(id, b.dataset.kind);
-    if (action === "vcs-new") return newRepo();
-    if (action === "vcs-fork") return newRepo(id);
+    if (action === "vcs-new") return await newRepo();
+    if (action === "vcs-fork") return await newRepo(id);
+    if (action === "vcs-transfer-decide") {
+      const change = b.dataset.change;
+      if (change === "decline" && !(await ask(["Decline this transfer?", "The repository stays with its current owner, and code changes resume.", "Decline"]))) return;
+      await api(`/api/repos/${enc(id)}/transfer`, { action: change });
+      toast({ accept: "Transfer accepted. The repository is now yours to manage.", decline: "Transfer declined.", cancel: "Transfer cancelled." }[change] || "Updated.");
+      return await refresh();
+    }
+    if (action === "group-manage") return groupManage(id);
+    if (action === "group-icon-remove") {
+      await api(`/api/groups/${enc(id)}/icon`, {}, "DELETE");
+      store.avatarVersion = Date.now();
+      await refresh();
+      return groupManage(id);
+    }
     if (action === "vcs-delete") {
       if (!(await ask(["Delete this repository?", `This removes ${b.dataset.name}, including its revisions, files, and discussions.`, "Delete repository"]))) return;
       await api(`/api/repos/${enc(id)}`, {}, "DELETE");
@@ -388,7 +409,7 @@ export async function onClick(event) {
       const result = await act(action, id);
       return secret("One-time password reset link", "Give this link to the member. It expires in 24 hours. Existing sessions are revoked when the new password is set; two-factor authentication remains enabled.", result.url);
     }
-    else if (action === "group-delete") await act(action, id);
+    else if (action === "group-delete") { await act(action, id); close(); }
     else if (action === "share-delete") { await act("resource-delete", id); close(); }
     else if (action === "session-revoke") await act(action, id);
     else if (action === "device-revoke" || action === "sync-device-revoke") await act(action, id);
@@ -432,6 +453,26 @@ export function onInput(event) {
 
 export async function onChange(event) {
   const e = event.target;
+  // A group icon, like a profile picture, uploads as soon as it is chosen.
+  if (e.matches("input[data-group-icon]") && e.files?.length) {
+    const group = e.dataset.groupIcon, label = e.closest("label");
+    label?.setAttribute("aria-busy", "true");
+    try {
+      const body = new FormData();
+      body.append("file", e.files[0]);
+      await api(`/api/groups/${enc(group)}/icon`, body);
+      store.avatarVersion = Date.now();
+      await refresh();
+      groupManage(group);
+      toast("Group icon updated.");
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      e.value = "";
+      label?.removeAttribute("aria-busy");
+    }
+    return;
+  }
   // A new profile picture uploads as soon as it is chosen.
   if (e.matches("input[data-avatar]") && e.files?.length) {
     const label = e.closest("label");

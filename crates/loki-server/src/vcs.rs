@@ -1,6 +1,7 @@
 mod collaboration;
 
 mod credentials;
+mod ownership;
 mod protocol;
 mod web;
 
@@ -10,6 +11,7 @@ use serde::Serialize;
 use skald_vcs_server::{Conflict, Hosted};
 use std::path::{Path, PathBuf};
 
+pub(crate) use ownership::waiting_count as transfers_waiting;
 pub(crate) use web::{api_router, router};
 
 pub(crate) const PROTOCOL_PATH: &str = "/skald/v1";
@@ -22,6 +24,8 @@ struct Repo {
     created: i64,
     protect_default: bool,
     upstream: Option<String>,
+    /// Set when a group owns the repository; `owner_id` then only records who created it.
+    group_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -45,7 +49,7 @@ async fn find(state: &State, id: &str) -> Result<Repo> {
         return Err(Error::not_found());
     }
     sqlx::query_as(
-        "SELECT id,owner_id,name,created,protect_default,upstream FROM skald_repos WHERE id=?",
+        "SELECT id,owner_id,name,created,protect_default,upstream,group_id FROM skald_repos WHERE id=?",
     )
     .bind(id)
     .fetch_optional(&state.0.db)
@@ -53,9 +57,14 @@ async fn find(state: &State, id: &str) -> Result<Repo> {
     .ok_or_else(Error::not_found)
 }
 
+/// The server owner manages every repository. A person who owns a repository manages
+/// it; members of a group that owns one can write to it. Grants add to either.
 async fn access(db: &sqlx::SqlitePool, repo: &Repo, user: &str) -> Result<Option<Access>> {
-    let level: i64 = sqlx::query_scalar("SELECT coalesce((SELECT CASE WHEN owner OR id=?2 THEN 3 ELSE coalesce((SELECT max(CASE role WHEN 'manage' THEN 3 WHEN 'write' THEN 2 WHEN 'read' THEN 1 END) FROM grants WHERE resource=?3 AND ((subject_kind='user' AND subject=?1) OR (subject_kind='group' AND subject IN(SELECT group_id FROM memberships WHERE user_id=?1)))),0) END FROM users WHERE id=?1 AND status='approved'),0)")
-        .bind(user).bind(&repo.owner_id).bind(&repo.id).fetch_one(db).await?;
+    let level: i64 = sqlx::query_scalar("SELECT coalesce((SELECT CASE WHEN owner OR (?4 IS NULL AND id=?2) THEN 3 ELSE max(
+            CASE WHEN ?4 IS NOT NULL AND EXISTS(SELECT 1 FROM memberships WHERE user_id=?1 AND group_id=?4) THEN 2 ELSE 0 END,
+            coalesce((SELECT max(CASE role WHEN 'manage' THEN 3 WHEN 'write' THEN 2 WHEN 'read' THEN 1 END) FROM grants WHERE resource=?3 AND ((subject_kind='user' AND subject=?1) OR (subject_kind='group' AND subject IN(SELECT group_id FROM memberships WHERE user_id=?1)))),0)
+        ) END FROM users WHERE id=?1 AND status='approved'),0)")
+        .bind(user).bind(&repo.owner_id).bind(&repo.id).bind(&repo.group_id).fetch_one(db).await?;
     Ok(match level {
         3 => Some(Access::Manage),
         2 => Some(Access::Write),
@@ -73,6 +82,32 @@ async fn require(state: &State, id: &str, user: &str, minimum: Access) -> Result
         return Err(Error::forbidden());
     }
     Ok((repo, role))
+}
+
+/// Whether the repository is waiting for someone to accept or decline a transfer.
+async fn transfer_pending(db: &sqlx::SqlitePool, id: &str) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM skald_transfers WHERE repo_id=?)")
+            .bind(id)
+            .fetch_one(db)
+            .await?,
+    )
+}
+
+/// Refuses code changes while a transfer waits for a decision.
+async fn ensure_unpaused(db: &sqlx::SqlitePool, id: &str) -> Result<()> {
+    if transfer_pending(db, id).await? {
+        return Err(Error::new(
+            StatusCode::LOCKED,
+            "This repository is waiting for a transfer to be accepted or declined. Changes are paused until then.",
+        ));
+    }
+    Ok(())
+}
+
+/// Who may give a repository away or delete it: the server owner, or the person who owns it.
+fn can_give_away(repo: &Repo, user: &crate::auth::User) -> bool {
+    user.owner || (repo.group_id.is_none() && repo.owner_id == user.id)
 }
 
 fn host(state: &State, id: &str) -> Result<Hosted> {

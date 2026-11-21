@@ -148,7 +148,7 @@ export const KeyValue = rows => html`<dl class="kv">${rows.filter(Boolean).map((
 /** A callout. Tones: info, warn, danger, ok. `action` sits at the end. */
 export function Notice({ tone = "info", icon: iconName, title, body, action, className = "" }) {
   const glyph = iconName ?? { warn: "alert", danger: "alert", ok: "check", info: "" }[tone];
-  return html`<div class="${cx("notice", `notice-${tone}`, className)}"${attrs({ role: tone === "danger" ? "alert" : null })}>${glyph ? icon(glyph) : ""}<div class="notice-body">${title ? html`<strong>${title}</strong>` : ""}${body}</div>${action ? html`<div class="notice-action">${action}</div>` : ""}</div>`;
+  return html`<div class="${cx("notice", `notice-${tone}`, className)}"${attrs({ role: tone === "danger" ? "alert" : null })}>${glyph ? icon(glyph) : ""}<div class="notice-body">${title ? html`<strong class="notice-title">${title}</strong>` : ""}${body}</div>${action ? html`<div class="notice-action">${action}</div>` : ""}</div>`;
 }
 
 /** What a page or box shows when there is nothing in it. */

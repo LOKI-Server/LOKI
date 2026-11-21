@@ -113,6 +113,11 @@ const MIGRATIONS: &[Migration] = &[
         UPDATE skald_repos SET bytes=bytes+new.size,object_count=object_count+1 WHERE id=new.repo_id; END"),
     Sql("CREATE TRIGGER IF NOT EXISTS skald_object_delete AFTER DELETE ON skald_objects BEGIN
         UPDATE skald_repos SET bytes=bytes-old.size,object_count=object_count-1 WHERE id=old.repo_id; END"),
+    // Groups can own repositories and carry an icon. A group's repositories need
+    // unique names within the group; a person's are unique through UNIQUE(owner_id,name).
+    Column("groups", "icon", "INTEGER NOT NULL DEFAULT 0"),
+    Column("skald_repos", "group_id", "TEXT REFERENCES groups(id)"),
+    Sql("CREATE UNIQUE INDEX IF NOT EXISTS skald_repos_group_name ON skald_repos(group_id,name) WHERE group_id IS NOT NULL"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
