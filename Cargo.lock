@@ -2035,9 +2035,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
- "skald-vcs-client",
  "skald-vcs-core",
- "skald-vcs-server",
  "sqlx",
  "subtle",
  "tempfile",
@@ -3217,48 +3215,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "skald-vcs-client"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4d4a8d8aa3a216f02f57bb66056ec54849aacc0470cf74ab4ffc32ebea8cfdf"
-dependencies = [
- "anyhow",
- "ignore",
- "reqwest",
- "serde",
- "serde_json",
- "similar",
- "skald-vcs-core",
- "tempfile",
-]
-
-[[package]]
 name = "skald-vcs-core"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a56d913ef5ae71cd5625d8f1868afb208cd5b8e0c13238067ff1ce70948cc8c"
+checksum = "409727bda6b12a22c37c63dfc3f6ffac215d839ef97f1c799301929335ebc4dc"
 dependencies = [
  "anyhow",
  "blake3",
  "fs2",
+ "ignore",
+ "reqwest",
  "serde",
  "serde_json",
  "similar",
  "tempfile",
  "unicode-normalization",
  "zstd",
-]
-
-[[package]]
-name = "skald-vcs-server"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c921a49e69815f2e787fa9fc268bd7bb4fbb2c8bcdb3ddfedccf4a06f050966"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "skald-vcs-core",
 ]
 
 [[package]]

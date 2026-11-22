@@ -624,7 +624,7 @@ async fn app_repositories_respect_access_and_keep_their_creation_type() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires real loopback TCP"]
 async fn native_repository_push_clone_review_and_backup() {
-    use skald_vcs_client::{Repository, WorkspaceChange};
+    use skald_vcs_core::client::{Repository, WorkspaceChange};
     use skald_vcs_core::{Id, Kind, Settings, Store};
     async fn json_body(response: axum::response::Response) -> Value {
         let status = response.status();
@@ -1068,7 +1068,7 @@ async fn native_repository_push_clone_review_and_backup() {
         asset_bytes
     );
     let hosted =
-        skald_vcs_server::Hosted::open(&restore.path().join("skald-repos").join(id)).unwrap();
+        skald_vcs_core::server::Hosted::open(&restore.path().join("skald-repos").join(id)).unwrap();
     assert_eq!(
         hosted.refs().unwrap().branches["main"].to_string(),
         detail["item"]["head"]

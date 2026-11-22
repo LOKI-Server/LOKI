@@ -8,7 +8,7 @@ mod web;
 use crate::{Error, Result, State};
 use axum::http::StatusCode;
 use serde::Serialize;
-use skald_vcs_server::{Conflict, Hosted};
+use skald_vcs_core::server::{Conflict, Hosted};
 use std::path::{Path, PathBuf};
 
 pub(crate) use ownership::waiting_count as transfers_waiting;

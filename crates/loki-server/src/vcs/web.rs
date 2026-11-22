@@ -13,7 +13,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use skald_vcs_core::{Id, Kind, reference, valid_path};
-use skald_vcs_server::Hosted;
+use skald_vcs_core::server::Hosted;
 
 pub(crate) fn router() -> Router<State> {
     let router = Router::new()
