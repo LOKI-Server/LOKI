@@ -131,7 +131,10 @@ pub(super) async fn owner_action(
         }
         "app-config" => admin::app_config(state, id, args(data)?).await?,
         "settings" => admin::settings(state, args(data)?).await?,
-        "vcs-quota" => crate::vcs::set_quota(state, id, args(data)?).await?,
+        "vcs-quota" => crate::vcs::set_quota(state, crate::vcs::QuotaSubject::User, id, args(data)?).await?,
+        "vcs-group-quota" => {
+            crate::vcs::set_quota(state, crate::vcs::QuotaSubject::Group, id, args(data)?).await?
+        }
         "caddy-preview" => {
             let _guard = state.0.operations.lock().await;
             crate::caddy::preview(state, &args(data)?).await?

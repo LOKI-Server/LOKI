@@ -3,7 +3,7 @@
 import { ago, api, enc, fmt, modal, store } from "../lib/core.js";
 import { html, plural } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
-import { Badge, Breadcrumbs, Button, Card, DialogSection, EmptyState, Field, Form, FormFooter, IconButton, IconLink, LinkButton, List, Meter, Notice, PageHeader, Pager, Row, Select, SizeField, Split, Submit, Table, Toolbar, formatSize } from "../lib/ui.js";
+import { Badge, Breadcrumbs, Button, Card, DialogSection, EmptyState, Field, Form, FormFooter, IconButton, IconLink, LinkButton, List, Meter, Notice, PageHeader, Pager, Row, Select, Split, Submit, Table, Toolbar } from "../lib/ui.js";
 
 const kinds = { generic: "General files", "retroarch-saves": "RetroArch saves", "retroarch-states": "RetroArch save states", "emulator-saves": "Other emulator saves", "pc-game-saves": "PC game saves", documents: "Documents" };
 const kindLabel = kind => kinds[kind] || kind;
@@ -112,9 +112,4 @@ export function folderManage(id) {
   const f = store.state.sync.folders.find(f => f.id === id);
   modal(f.name, html`${folderForm(f)}${DialogSection("Delete this folder", html`<p>Removes the folder, its files, and their history from the server. Files already on your devices stay there, but stop syncing.</p>${Form({ name: "sync-folder-delete", id, body: html`${Field({ name: "confirm", label: `Type “${f.name}” to confirm`, required: true, autocomplete: "off" })}${FormFooter(Submit({ label: "Delete folder", kind: "danger", icon: "trash" }))}` })}`)}`);
 }
-export function quotaSection(userId) {
-  const sync = store.state.sync;
-  if (!sync) return "";
-  const custom = sync.quotas?.[userId];
-  return DialogSection("Save sync storage", Form({ name: "sync-quota", id: userId, body: html`${SizeField({ name: "mb", label: "Storage", mib: custom === undefined ? null : Math.round(custom / 1048576), max: 100000000, placeholder: `Default, ${formatSize(store.state.settings?.sync_quota_mb ?? 0)}`, help: "Leave blank to use the server default." })}${FormFooter(Submit({ label: "Save quota" }))}` }));
-}
+

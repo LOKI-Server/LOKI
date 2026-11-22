@@ -2,11 +2,16 @@
 import { ago, modal, store } from "../lib/core.js";
 import { attrs, html, plural } from "../lib/html.js";
 import { Badge, Button, ButtonGroup, DialogSection, EmptyState, Help, IconButton, List, Notice, PageHeader, Row, SectionHead, Status, Table, initial } from "../lib/ui.js";
-import { quotaSection } from "./sync.js";
-import { vcsQuotaSection } from "./manage.js";
 
 const statusTone = { approved: "ok", pending: "live", suspended: "danger", rejected: "danger" };
 const statusLabel = s => s[0].toUpperCase() + s.slice(1);
+/** For a rejected account, when it will be removed. */
+const removal = id => {
+  const at = store.state.removals?.[id];
+  if (!at) return "";
+  const days = Math.max(0, Math.ceil((at - Date.now() / 1000) / 86400));
+  return days > 1 ? `Removed in ${days} days` : days === 1 ? "Removed within a day" : "Being removed";
+};
 const groupName = id => store.state.groups.find(g => g.id === id)?.name || id;
 
 export function avatar(user, size = "") {
@@ -29,7 +34,7 @@ export function accountsPage() {
     key: u.id,
     cells: [
       person(u),
-      Status(statusLabel(u.status), statusTone[u.status] ?? "neutral"),
+      u.status === "rejected" && removal(u.id) ? html`${Status(statusLabel(u.status), statusTone[u.status])}<small class="muted status-note">${removal(u.id)}</small>` : Status(statusLabel(u.status), statusTone[u.status] ?? "neutral"),
       html`<div class="badge-row">${state.memberships.filter(([uid]) => uid === u.id).map(([, gid]) => Badge(groupName(gid), "neutral"))}</div>`,
       Button({ label: u.status === "pending" ? "Review" : "Manage", action: "user-manage", id: u.id, kind: u.status === "pending" ? "primary" : "secondary", size: "sm" }),
     ],
@@ -47,7 +52,7 @@ export function groupManage(id) {
   const g = state.groups.find(g => g.id === id);
   if (!g) return;
   const members = state.users.filter(u => state.memberships.some(([uid, gid]) => uid === u.id && gid === id));
-  const icon = html`<div class="avatar-editor">${groupIcon(g, "xl")}<div><div class="btn-group"><label class="btn btn-secondary btn-sm file-button"><span>Upload icon</span><input type="file" accept="image/png,image/jpeg,image/webp" class="visually-hidden" data-group-icon="${id}"></label>${g.icon ? Button({ label: "Remove", action: "group-icon-remove", id, kind: "ghost", size: "sm" }) : ""}</div><p class="help">Shown on the group and on repositories it owns. PNG, JPEG or WebP up to 4 MiB.</p></div></div>`;
+  const icon = html`<div class="avatar-editor">${groupIcon(g, "xl")}<div><div class="btn-group"><label class="btn btn-secondary btn-sm file-button"><span>Upload icon</span><input type="file" accept="image/png,image/jpeg,image/webp" class="visually-hidden" data-group-icon="${id}"></label>${g.icon ? Button({ label: "Remove", action: "group-icon-remove", id, kind: "ghost", size: "sm" }) : ""}</div><p class="help">Shown on the group and on repositories it owns. PNG, JPEG or WebP; you'll choose a square part of it.</p></div></div>`;
   const list = members.length ? List(members.map(u => Row({ key: u.id, lead: avatar(u, "sm"), title: u.display_name || u.username, meta: `@${u.username}` })), { className: "list-boxed" }) : Help("Nobody is in this group yet. Add people from their page in the table above.");
   modal(g.name, [DialogSection("Icon", icon), DialogSection(`Members (${members.length})`, list),
     g.id === "members" ? "" : DialogSection("Delete group", html`<div class="danger-row"><p>Removes the group and its permissions. Its members keep their accounts. A group that owns repositories can't be removed until they're transferred.</p>${Button({ label: "Delete group", action: "group-delete", id, kind: "danger", icon: "trash", size: "sm" })}</div>`)]);
@@ -59,7 +64,7 @@ export function userManage(id) {
   const labels = { approved: "Approve", suspended: "Suspend", rejected: "Reject" };
   const statusButtons = u.owner ? [] : Object.keys(labels).filter(s => s !== u.status).map(s => Button({ label: labels[s], action: "user-status", id, data: { status: s }, kind: s === "approved" ? "primary" : "danger", icon: s === "approved" ? "check" : "close", size: "sm" }));
   const membership = html`<div class="check-list">${state.groups.map(g => html`<label class="check"><input${attrs({ type: "checkbox", "data-membership": id, "data-group": g.id, checked: state.memberships.some(([uid, gid]) => uid === id && gid === g.id) })}><span>${g.name}</span></label>`)}</div>`;
-  modal(u.display_name || u.username, html`<div class="person person-lg">${avatar(u, "lg")}<div><strong>@${u.username}</strong>${Status(statusLabel(u.status), statusTone[u.status] ?? "neutral")}</div></div>${u.bio ? html`<p class="bio">${u.bio}</p>` : ""}${ButtonGroup(...statusButtons, Button({ label: "Issue password reset link", action: "reset-issue", id, icon: "key", size: "sm" }))}${DialogSection("Group membership", membership)}${quotaSection(id)}${vcsQuotaSection(id)}`);
+  modal(u.display_name || u.username, html`<div class="person person-lg">${avatar(u, "lg")}<div><strong>@${u.username}</strong>${Status(statusLabel(u.status), statusTone[u.status] ?? "neutral")}</div></div>${u.status === "rejected" ? Help(`${removal(id) || "Removed soon"}. Rejected accounts are deleted three days after rejection, which frees their username and email. Approve it to keep it.`) : ""}${u.bio ? html`<p class="bio">${u.bio}</p>` : ""}${ButtonGroup(...statusButtons, Button({ label: "Issue password reset link", action: "reset-issue", id, icon: "key", size: "sm" }))}${DialogSection("Group membership", membership)}`);
 }
 
 export function activityPage() {

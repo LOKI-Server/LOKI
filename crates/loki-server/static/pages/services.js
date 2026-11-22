@@ -1,10 +1,17 @@
 // The overview, and the three kinds of resource: applications, file shares, and routes.
-import { api, enc, fmt, store } from "../lib/core.js";
-import { html } from "../lib/html.js";
+import { ago, api, enc, fmt, store } from "../lib/core.js";
+import { attrs, html } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
 import { Badge, Button, EmptyState, Hint, IconButton, LinkButton, Meter, Notice, PageHeader, SectionHead, Status } from "../lib/ui.js";
 
 const kinds = { app: "apps", share: "folder", route: "route", sync: "sync" };
+
+/** A route's or share's own icon when it has one, or the icon for its kind. */
+export function resourceIcon(r) {
+  return r.icon && (r.kind === "route" || r.kind === "share")
+    ? html`<img class="resource-picture" src="${`/avatars/services/${encodeURIComponent(r.id)}?v=${store.avatarVersion}`}" alt="" decoding="async" loading="lazy">`
+    : icon(kinds[r.kind]);
+}
 const audiences = { public: "Public", members: "All members", restricted: "Restricted" };
 
 export function resourceStatus(r) {
@@ -32,7 +39,7 @@ export function resourceCard(r) {
     : open.action ? Button({ label: "Open panel", action: open.action, id: r.id, icon: "apps", size: "sm" }) : "";
   const panel = r.kind === "app" && open.href && r.manifest?.panel ? Button({ label: "Panel", action: "app-panel", id: r.id, icon: "apps", size: "sm", kind: "ghost" }) : "";
   const update = r.update ? Button({ label: `Update to v${r.update}`, action: "registry-install", id: r.id, icon: "refresh", size: "sm", kind: "primary" }) : "";
-  return html`<article class="${`resource-card kind-${r.kind}`}" data-key="${r.id}"><header class="resource-head"><span class="resource-icon" aria-hidden="true">${icon(kinds[r.kind])}</span><div class="resource-title"><h3>${r.name}</h3><div class="resource-tags">${r.kind === "share" ? Badge(r.share_type === "apps" ? "App repository" : "File server", "neutral") : ""}${r.kind === "app" ? Badge(`v${r.manifest.version}`, "neutral") : ""}${r.update ? Badge("Update available", "info") : ""}</div></div><div class="resource-end">${resourceStatus(r)}${manage(r)}</div></header><p class="resource-text">${description}</p>${r.error ? Notice({ tone: "danger", body: r.error }) : ""}<footer class="resource-actions">${update}${primary}${panel}</footer></article>`;
+  return html`<article class="${`resource-card kind-${r.kind}`}" data-key="${r.id}"><header class="resource-head"><span class="${r.icon ? "resource-icon has-picture" : "resource-icon"}" aria-hidden="true">${resourceIcon(r)}</span><div class="resource-title"><h3>${r.name}</h3><div class="resource-tags">${r.kind === "share" ? Badge(r.share_type === "apps" ? "App repository" : "File server", "neutral") : ""}${r.kind === "app" ? Badge(`v${r.manifest.version}`, "neutral") : ""}${r.update ? Badge("Update available", "info") : ""}</div></div><div class="resource-end">${resourceStatus(r)}${manage(r)}</div></header><p class="resource-text">${description}</p>${r.error ? Notice({ tone: "danger", body: r.error }) : ""}<footer class="resource-actions">${update}${primary}${panel}</footer></article>`;
 }
 
 export const resourceGrid = items => html`<div class="card-grid">${items.map(resourceCard)}</div>`;
@@ -44,7 +51,7 @@ function tile(r) {
   const name = open.href ? html`<a class="tile-title" href="${open.href}"${open.external ? html` target="_blank" rel="noopener noreferrer"` : ""}>${r.name}${open.external ? icon("external", "tile-external") : ""}</a>`
     : open.action ? html`<button type="button" class="tile-title link-button" data-action="${open.action}" data-id="${r.id}">${r.name}</button>`
     : html`<span class="tile-title">${r.name}</span>`;
-  return html`<article class="${`tile kind-${r.kind}`}" data-key="${r.id}"><span class="tile-icon" aria-hidden="true">${icon(kinds[r.kind])}</span><div class="tile-body">${name}<span class="tile-sub">${r.error || subtitle}</span></div><div class="tile-end">${r.update ? Badge("Update", "info") : ""}${r.kind === "share" ? "" : resourceStatus(r)}${manage(r)}</div></article>`;
+  return html`<article class="${`tile kind-${r.kind}`}" data-key="${r.id}"><span class="${r.icon ? "tile-icon has-picture" : "tile-icon"}" aria-hidden="true">${resourceIcon(r)}</span><div class="tile-body">${name}<span class="tile-sub">${r.error || subtitle}</span></div><div class="tile-end">${r.update ? Badge("Update", "info") : ""}${r.kind === "share" ? "" : resourceStatus(r)}${manage(r)}</div></article>`;
 }
 const tiles = items => html`<div class="tiles">${items.map(tile)}</div>`;
 
@@ -74,9 +81,32 @@ function features(repos) {
 }
 const feature = f => html`<article class="${`feature kind-${f.kind}`}"><header class="feature-head"><span class="resource-icon" aria-hidden="true">${icon(f.icon)}</span><div><h3><a href="${f.href}">${f.title}</a></h3><span class="tile-sub">${f.subtitle}</span></div>${f.badge}</header>${f.body}<footer class="feature-actions">${f.actions}</footer></article>`;
 
+/**
+ * What takes up space in LOKI's data folder, for the owner. The server measures it
+ * when asked and keeps the result for a while, so opening the Overview is cheap.
+ */
+function storageSection(usage) {
+  if (!usage) return "";
+  const total = Math.max(1, usage.total);
+  // An SVG bar, so its widths are attributes rather than inline styles.
+  let x = 0;
+  const bar = html`<svg class="usage-bar" viewBox="0 0 1000 12" preserveAspectRatio="none" role="img" aria-label="${`${fmt(usage.total)} used, by kind`}">${usage.items.map((item, i) => {
+    const width = Math.max(item.bytes / total * 1000, 2);
+    const part = html`<rect${attrs({ x: x.toFixed(1), y: 0, width: width.toFixed(1), height: 12, class: `usage-${i % 11}` })}><title>${item.label}: ${fmt(item.bytes)}</title></rect>`;
+    x += width;
+    return part;
+  })}</svg>`;
+  const legend = html`<ul class="usage-legend">${usage.items.map((item, i) => html`<li><span class="${`usage-dot usage-${i % 11}`}"></span><span class="usage-label">${item.label}</span><span class="usage-size">${fmt(item.bytes)}</span><span class="usage-share">${Math.round(item.bytes / total * 100) || "<1"}%</span></li>`)}</ul>`;
+  const disk = usage.disk?.free != null && usage.disk?.total ? `${fmt(usage.disk.free)} free of ${fmt(usage.disk.total)} on this disk` : "";
+  return html`${SectionHead({ title: "Storage", count: `${fmt(usage.total)} used`, actions: Button({ label: "Measure again", action: "storage-refresh", icon: "refresh", size: "sm", kind: "ghost" }) })}<div class="card usage-card"><div class="card-body">${bar}${legend}<p class="help">Everything in LOKI's data folder. Measured ${ago(usage.measured)}${disk ? html` · ${disk}` : ""}.</p></div></div>`;
+}
+
 export async function overview() {
   const { session, state } = store, owner = session.user.owner;
-  const repos = await api("/api/repos").catch(() => null);
+  const [repos, usage] = await Promise.all([
+    api("/api/repos").catch(() => null),
+    owner ? api("/api/storage-usage").catch(() => null) : null,
+  ]);
   const by = kind => state.resources.filter(r => r.kind === kind);
   const apps = by("app"), routes = by("route"), shares = by("share");
   const pending = state.users?.filter(u => u.status === "pending").length || 0;
@@ -86,7 +116,7 @@ export async function overview() {
     (routes.length || owner) && html`${SectionHead({ title: "Connected services", count: routes.length || undefined, href: owner ? "/routes" : "", linkLabel: "Manage" })}${routes.length ? tiles(routes) : Hint({ text: "Give Jellyfin or another service you already run a place here.", action: Button({ label: "Add route", action: "route-new", size: "sm" }) })}`,
     (shares.length || owner) && html`${SectionHead({ title: "File shares", count: shares.length || undefined, href: "/shares", linkLabel: owner ? "Manage" : "View all" })}${shares.length ? tiles(shares) : Hint({ text: "Share a folder on this server.", action: Button({ label: "Share a folder", action: "share-new", size: "sm" }) })}`,
   ];
-  const body = html`${features(repos)}${groups.map(g => g ? html`<section class="page-section">${g}</section>` : "")}`;
+  const body = html`${features(repos)}${groups.map(g => g ? html`<section class="page-section">${g}</section>` : "")}${usage ? html`<section class="page-section">${storageSection(usage)}</section>` : ""}`;
   return html`${PageHeader({ title: `Welcome, ${session.user.display_name || session.user.username}.`, description: "A place for everything you bring to life.", realm: "overview" })}${pending ? Notice({ tone: "warn", icon: "people", body: `${pending} account request${pending === 1 ? "" : "s"} waiting.`, action: html`<a href="/accounts">Review requests${icon("chevron")}</a>` }) : ""}${String(body).trim() ? body : EmptyState({ title: "Every universe starts somewhere.", text: "Your server owner can give you access to apps and file shares.", rune: "ᛟ" })}`;
 }
 

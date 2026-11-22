@@ -655,6 +655,52 @@ pub async fn register(
     Ok(Json(serde_json::json!({"ok":true,"status":status})))
 }
 
+/// How long a rejected account stays before it is removed, freeing its username and email.
+pub const REJECTED_FOR: i64 = 3 * 86400;
+
+/// Removes accounts rejected more than [`REJECTED_FOR`] ago. Accounts that still own
+/// repositories or wrote issues and comments stay, so nothing else loses its author.
+pub async fn remove_rejected(state: &State) -> Result<u64> {
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM users u WHERE status='rejected' AND owner=0 AND rejected_at IS NOT NULL AND rejected_at<=?
+         AND NOT EXISTS(SELECT 1 FROM skald_repos WHERE owner_id=u.id)
+         AND NOT EXISTS(SELECT 1 FROM skald_items WHERE author_id=u.id OR reviewer_id=u.id)
+         AND NOT EXISTS(SELECT 1 FROM skald_comments WHERE author_id=u.id)",
+    )
+    .bind(now() - REJECTED_FOR)
+    .fetch_all(&state.0.db)
+    .await?;
+    let mut removed = 0;
+    for id in ids {
+        let mut tx = state.0.db.begin().await?;
+        sqlx::query("DELETE FROM grants WHERE subject_kind='user' AND subject=?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        // Checked again here, in case the owner changed their mind meanwhile.
+        removed += sqlx::query("DELETE FROM users WHERE id=? AND status='rejected' AND owner=0")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        let _ = tokio::fs::remove_file(state.0.data.join("avatars").join(format!("{id}.png"))).await;
+        state.audit("", "rejected-account-removed", &id).await?;
+    }
+    Ok(removed)
+}
+
+/// Hourly: removes accounts that were rejected long enough ago.
+pub async fn maintain(state: State) {
+    let mut hourly = tokio::time::interval(std::time::Duration::from_secs(3600));
+    loop {
+        hourly.tick().await;
+        if let Err(error) = remove_rejected(&state).await {
+            tracing::warn!(error = %error.message, "could not remove rejected accounts");
+        }
+    }
+}
+
 pub async fn allowed(
     state: &State,
     user: Option<&User>,

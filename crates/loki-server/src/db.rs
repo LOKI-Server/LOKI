@@ -118,6 +118,11 @@ const MIGRATIONS: &[Migration] = &[
     Column("groups", "icon", "INTEGER NOT NULL DEFAULT 0"),
     Column("skald_repos", "group_id", "TEXT REFERENCES groups(id)"),
     Sql("CREATE UNIQUE INDEX IF NOT EXISTS skald_repos_group_name ON skald_repos(group_id,name) WHERE group_id IS NOT NULL"),
+    // Connected services and file shares can have an icon of their own.
+    Column("resources", "icon", "INTEGER NOT NULL DEFAULT 0"),
+    // Rejected accounts are removed a few days after rejection; older ones start counting now.
+    Column("users", "rejected_at", "INTEGER"),
+    Sql("UPDATE users SET rejected_at=CAST(strftime('%s','now') AS INTEGER) WHERE status='rejected' AND rejected_at IS NULL"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;

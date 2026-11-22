@@ -536,6 +536,12 @@ pub fn validate_config(manifest: &Manifest, value: &Value) -> Result<()> {
         if value.is_null() && !field.required {
             continue;
         }
+        if field.required && (value.is_null() || value.as_str() == Some("")) {
+            return Err(Error::bad(format!(
+                "Enter {} in the app's settings before enabling it.",
+                field.label
+            )));
+        }
         let valid = match field.kind.as_str() {
             "text" | "secret" => value
                 .as_str()
@@ -665,6 +671,22 @@ pub async fn monitor(state: State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn empty_required_settings_say_what_to_enter() {
+        let manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "protocol": 1, "runtime": "wasi", "target": "wasm32-wasip2", "id": "demo", "name": "Demo",
+            "version": "1.0.0", "entry": "demo.wasm", "health": "/health", "files": {},
+            "fields": [{"key": "token", "label": "Bot token", "kind": "secret", "required": true}]
+        }))
+        .unwrap();
+        for config in [serde_json::json!({}), serde_json::json!({"token": ""})] {
+            let error = validate_config(&manifest, &config).unwrap_err();
+            assert_eq!(error.message, "Enter Bot token in the app's settings before enabling it.");
+        }
+        assert!(validate_config(&manifest, &serde_json::json!({"token": "abc"})).is_ok());
+        let wrong = validate_config(&manifest, &serde_json::json!({"token": 5})).unwrap_err();
+        assert_eq!(wrong.message, "Invalid value for Bot token.");
+    }
     #[test]
     fn package_paths() {
         for s in ["../evil", "/root", "C:/x", "a\\b", "a/../b", "./x", "a//b"] {

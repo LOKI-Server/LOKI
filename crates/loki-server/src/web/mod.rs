@@ -44,6 +44,7 @@ pub fn router(state: State) -> Router {
         .route("/api/logout", post(auth::logout))
         .route("/api/register", post(auth::register))
         .route("/api/state", get(dashboard))
+        .route("/api/storage-usage", get(storage_usage))
         .route("/api/action", post(actions::action))
         .route("/api/reset", post(reset))
         .route(
@@ -59,6 +60,13 @@ pub fn router(state: State) -> Router {
         )
         .route("/avatars/{id}", get(serve_avatar))
         .route("/avatars/groups/{id}", get(serve_group_icon))
+        .route("/avatars/services/{id}", get(serve_resource_icon))
+        .route(
+            "/api/resources/{id}/icon",
+            post(resource_icon)
+                .delete(remove_resource_icon)
+                .layer(DefaultBodyLimit::max(5242880)),
+        )
         .route(
             "/api/groups/{id}/icon",
             post(group_icon)
@@ -280,6 +288,22 @@ async fn guard(
     response
 }
 
+#[derive(Deserialize)]
+struct UsageQuery {
+    #[serde(default)]
+    refresh: bool,
+}
+
+/// What takes up space in the data directory. Owners only; measured on demand.
+async fn storage_usage(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<UsageQuery>,
+) -> Result<Json<Value>> {
+    auth::context(&state, &headers).await?.owner()?;
+    Ok(Json(crate::usage::report(&state, query.refresh).await?))
+}
+
 async fn dashboard(
     ExtractState(state): ExtractState<State>,
     headers: HeaderMap,
@@ -301,7 +325,7 @@ async fn dashboard(
         if !auth::allowed(&state, Some(user), &id, "access").await? {
             continue;
         }
-        let mut resource = json!({"id":id,"kind":row.get::<String,_>("kind"),"name":row.get::<String,_>("name"),"visibility":row.get::<String,_>("visibility")});
+        let mut resource = json!({"id":id,"kind":row.get::<String,_>("kind"),"name":row.get::<String,_>("name"),"visibility":row.get::<String,_>("visibility"),"icon":row.get::<bool,_>("icon")});
         match resource["kind"].as_str().unwrap_or("") {
             "app" => {
                 let app = apps::get(&state, &id).await?;
@@ -389,7 +413,10 @@ async fn dashboard(
     }
     if user.owner {
         output["settings"] = json!(*state.0.settings.read().await);
-        output["vcs_quotas"] = crate::vcs::quota_overrides(&state.0.db).await?;
+        output["vcs_quotas"] =
+            crate::vcs::quota_overrides(&state.0.db, crate::vcs::QuotaSubject::User).await?;
+        output["vcs_group_quotas"] =
+            crate::vcs::quota_overrides(&state.0.db, crate::vcs::QuotaSubject::Group).await?;
         #[cfg(windows)]
         {
             output["startup"] = match state.0.startup.status() {
@@ -403,6 +430,15 @@ async fn dashboard(
             sqlx::query_as::<_, auth::User>("SELECT * FROM users ORDER BY owner DESC,username")
                 .fetch_all(&state.0.db)
                 .await?
+        );
+        // When each rejected account will be removed.
+        output["removals"] = Value::Object(
+            sqlx::query_as::<_, (String, i64)>("SELECT id,rejected_at FROM users WHERE status='rejected' AND rejected_at IS NOT NULL")
+                .fetch_all(&state.0.db)
+                .await?
+                .into_iter()
+                .map(|(id, at)| (id, json!(at + auth::REJECTED_FOR)))
+                .collect(),
         );
         output["groups"] = json!(
             sqlx::query("SELECT * FROM groups ORDER BY name")
@@ -618,8 +654,12 @@ async fn save_picture(bytes: axum::body::Bytes, path: std::path::PathBuf) -> Res
         let image = reader
             .decode()
             .map_err(|_| Error::bad("Choose a PNG, JPEG, or WebP image up to 4096 × 4096."))?;
+        // The dashboard crops pictures to a square first; anything else is cut to
+        // its centre square here, so every picture is square.
+        let side = image.width().min(image.height());
         image
-            .thumbnail(256, 256)
+            .crop_imm((image.width() - side) / 2, (image.height() - side) / 2, side, side)
+            .thumbnail_exact(256.min(side), 256.min(side))
             .save_with_format(path, image::ImageFormat::Png)?;
         Ok(())
     })
@@ -693,6 +733,84 @@ async fn serve_group_icon(
     )
         .into_response())
 }
+/// Connected services and file shares may have an icon, kept beside people's pictures.
+pub(crate) fn resource_icon_path(state: &State, id: &str) -> Result<std::path::PathBuf> {
+    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(Error::not_found());
+    }
+    Ok(state.0.data.join("avatars").join(format!("service-{id}.png")))
+}
+
+/// The kinds of resource that take an icon: routes to connected services, and shares.
+async fn iconable(state: &State, id: &str) -> Result<()> {
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM resources WHERE id=?")
+        .bind(id)
+        .fetch_optional(&state.0.db)
+        .await?;
+    match kind.as_deref() {
+        Some("route" | "share") => Ok(()),
+        _ => Err(Error::not_found()),
+    }
+}
+
+async fn resource_icon(
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Json<Value>> {
+    auth::context(&state, &headers).await?.owner()?;
+    let path = resource_icon_path(&state, &id)?;
+    iconable(&state, &id).await?;
+    let field = multipart
+        .next_field()
+        .await?
+        .ok_or_else(|| Error::bad("Select an image."))?;
+    save_picture(field.bytes().await?, path).await?;
+    sqlx::query("UPDATE resources SET icon=1 WHERE id=?")
+        .bind(&id)
+        .execute(&state.0.db)
+        .await?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn remove_resource_icon(
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    auth::context(&state, &headers).await?.owner()?;
+    let path = resource_icon_path(&state, &id)?;
+    iconable(&state, &id).await?;
+    sqlx::query("UPDATE resources SET icon=0 WHERE id=?")
+        .bind(&id)
+        .execute(&state.0.db)
+        .await?;
+    if let Err(error) = tokio::fs::remove_file(path).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(error.into());
+    }
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn serve_resource_icon(
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<String>,
+) -> Result<Response> {
+    let bytes = tokio::fs::read(resource_icon_path(&state, &id)?)
+        .await
+        .map_err(|_| Error::not_found())?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
 async fn serve_avatar(
     ExtractState(state): ExtractState<State>,
     Path(id): Path<String>,

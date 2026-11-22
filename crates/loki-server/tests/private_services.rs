@@ -1289,7 +1289,7 @@ async fn group_repositories_and_transfers_pause_changes_until_accepted() {
 }
 
 #[tokio::test]
-async fn owners_set_and_clear_per_person_repository_limits() {
+async fn owners_set_and_clear_repository_limits_for_people_and_groups() {
     async fn json_body(response: axum::response::Response) -> Value {
         serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap()
     }
@@ -1323,4 +1323,77 @@ async fn owners_set_and_clear_per_person_repository_limits() {
     let dashboard = json_body(owner.request("GET", "/api/state", Value::Null).await).await;
     assert_eq!(dashboard["vcs_quotas"], json!({}));
     assert!(json_body(alice.request("GET", "/api/state", Value::Null).await).await.get("vcs_quotas").is_none());
+
+    // Groups get limits of their own, for the repositories they own.
+    let team = "0f9a3b5e-2c4d-4e6f-8a1b-3c5d7e9f1a2b";
+    sqlx::query("INSERT INTO groups(id,name) VALUES(?,'Team')")
+        .bind(team)
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    let group = |id: &str, data: Value| json!({"action":"vcs-group-quota","id":id,"data":data});
+    let only_total = json!({"repo_mib":null,"total_mib":4096});
+    assert_eq!(
+        alice.request("POST", "/api/action", group(team, only_total.clone())).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        owner.request("POST", "/api/action", group("no-such-group", only_total.clone())).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(owner.request("POST", "/api/action", group(team, only_total.clone())).await.status().is_success());
+    let dashboard = json_body(owner.request("GET", "/api/state", Value::Null).await).await;
+    assert_eq!(dashboard["vcs_group_quotas"][team], only_total);
+    assert_eq!(dashboard["vcs_quotas"], json!({}));
+}
+
+#[tokio::test]
+async fn rejected_accounts_are_removed_three_days_later_unless_they_own_work() {
+    async fn json_body(response: axum::response::Response) -> Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap()
+    }
+    let (_folder, state) = fixture().await;
+    let owner = Browser::new(&state, "owner").await;
+    let alice = Browser::new(&state, "alice").await;
+    sqlx::query("INSERT INTO users(id,username,display_name,password,status,created) VALUES('carol','carol','carol','x','pending',1)")
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    // Alice owns a repository, so she keeps her account even once rejected.
+    sqlx::query("INSERT INTO grants(resource,subject_kind,subject,role) VALUES('vcs-create','user','alice','access')")
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    assert!(alice.request("POST", "/api/repos", json!({"name":"keep"})).await.status().is_success());
+    for id in ["alice", "bob", "carol"] {
+        let reject = json!({"action":"user-status","id":id,"data":{"status":"rejected"}});
+        assert!(owner.request("POST", "/api/action", reject).await.status().is_success());
+    }
+    let dashboard = json_body(owner.request("GET", "/api/state", Value::Null).await).await;
+    let due = dashboard["removals"]["bob"].as_i64().unwrap();
+    assert!((due - loki_server::auth::now() - loki_server::auth::REJECTED_FOR).abs() < 60);
+
+    // Nothing goes before three days have passed.
+    assert_eq!(loki_server::auth::remove_rejected(&state).await.unwrap(), 0);
+    let long_ago = loki_server::auth::now() - loki_server::auth::REJECTED_FOR - 1;
+    sqlx::query("UPDATE users SET rejected_at=? WHERE id IN('alice','bob')")
+        .bind(long_ago)
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    assert_eq!(loki_server::auth::remove_rejected(&state).await.unwrap(), 1);
+    let left: Vec<String> = sqlx::query_scalar("SELECT id FROM users WHERE id IN('alice','bob','carol') ORDER BY id")
+        .fetch_all(&state.0.db)
+        .await
+        .unwrap();
+    assert_eq!(left, ["alice", "carol"]);
+
+    // Approving again stops the countdown.
+    let approve = json!({"action":"user-status","id":"carol","data":{"status":"approved"}});
+    assert!(owner.request("POST", "/api/action", approve).await.status().is_success());
+    let rejected: Option<i64> = sqlx::query_scalar("SELECT rejected_at FROM users WHERE id='carol'")
+        .fetch_one(&state.0.db)
+        .await
+        .unwrap();
+    assert_eq!(rejected, None);
 }

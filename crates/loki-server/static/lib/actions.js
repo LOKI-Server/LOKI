@@ -4,7 +4,7 @@ import { html } from "./html.js";
 import { Button, Field, FileInput, Form, FormFooter, LinkButton, Notice, Select, Submit, jsonView } from "./ui.js";
 import { navigate, refresh, routable } from "./router.js";
 import { submitSetup, submitStartupAware } from "../pages/auth.js";
-import { appManage, folderPicker, vcsManage, vcsLimits, vcsQuotaDialog, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
+import { appManage, folderPicker, vcsManage, vcsLimits, vcsQuotaDialog, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage, syncQuotaDialog } from "../pages/manage.js";
 import { newItem, newRepo } from "../pages/vcs.js";
 import { groupManage, userManage } from "../pages/people.js";
 import { accountUrl, deviceRename, pairDialog, passwordProof, profileConfirm, vcsTokenDialog } from "../pages/account.js";
@@ -12,6 +12,7 @@ import { browseUrl, preview } from "../pages/files.js";
 import { conflictsDialog, folderForm, folderManage, historyDialog } from "../pages/sync.js";
 import { panelAction, panelDialog } from "../pages/panel.js";
 import { previewPackage } from "./package.js";
+import { cropSquare } from "./crop.js";
 import { forget, installDialog, registry, search } from "../pages/marketplace.js";
 
 let busy = false;
@@ -165,14 +166,22 @@ export async function onSubmit(event) {
     }
     else if (kind === "device-rename" || kind === "sync-device-rename") { await act(kind, id, data); close(); toast("Device renamed."); }
     else if (kind === "vcs-quota") {
-      const user = id || data.user, size = value => value === "" || value === undefined ? null : Number(value);
-      if (!user) return toast("Choose a person first.", true);
-      await act(kind, user, { repo_mib: size(data.repo_mib), total_mib: size(data.total_mib) });
+      const key = id || data.subject, size = value => value === "" || value === undefined ? null : Number(value);
+      if (!key) return toast("Choose a person or group first.", true);
+      const [subject, ...rest] = key.split(":"), target = rest.join(":");
+      await act(subject === "group" ? "vcs-group-quota" : "vcs-quota", target, { repo_mib: size(data.repo_mib), total_mib: size(data.total_mib) });
       await refresh();
       toast("Repository limits saved.");
-      return form.dataset.back === "person" ? userManage(user) : vcsManage("storage");
+      return vcsManage("storage");
     }
-    else if (kind === "sync-quota") { await act(kind, id, { mb: data.mb === "" ? null : Number(data.mb) }); toast("Quota saved."); }
+    else if (kind === "sync-quota") {
+      const user = id || data.user;
+      if (!user) return toast("Choose a person first.", true);
+      await act(kind, user, { mb: data.mb === "" ? null : Number(data.mb) });
+      await refresh();
+      toast("Save sync storage saved.");
+      return syncManage(undefined, "storage");
+    }
     else if (kind === "personal-enable") { await api(`/api/personal/settings/apps/${enc(id)}`, { enabled: data.enabled }); close(); toast("Personal storage permission saved."); }
     else if (kind === "vcs-create") {
       const repo = await api("/api/repos", { name: data.name, upstream: id || null, default_branch: data.default_branch || null, group: data.group || null });
@@ -301,8 +310,21 @@ export async function onClick(event) {
     if (dialogs[action]) return dialogs[action](id);
     if (action === "vcs-manage") return vcsManage();
     if (action === "vcs-quota-edit") return vcsQuotaDialog(id);
+    if (action === "sync-quota-edit") return syncQuotaDialog(id);
+    if (action === "storage-refresh") {
+      b.setAttribute("aria-busy", "true");
+      await api("/api/storage-usage?refresh=true");
+      return await refresh();
+    }
+    if (action === "sync-quota-clear") {
+      await act("sync-quota", id, { mb: null });
+      await refresh();
+      toast("Storage limit removed. They use the default again.");
+      return syncManage(undefined, "storage");
+    }
     if (action === "vcs-quota-clear") {
-      await act("vcs-quota", id, { repo_mib: null, total_mib: null });
+      const [kind, ...rest] = id.split(":");
+      await act(kind === "group" ? "vcs-group-quota" : "vcs-quota", rest.join(":"), { repo_mib: null, total_mib: null });
       await refresh();
       toast("Limits removed. They use the defaults again.");
       return vcsManage("storage");
@@ -328,6 +350,13 @@ export async function onClick(event) {
       return await refresh();
     }
     if (action === "group-manage") return groupManage(id);
+    if (action === "resource-icon-remove") {
+      await api(`/api/resources/${enc(id)}/icon`, {}, "DELETE");
+      store.avatarVersion = Date.now();
+      await refresh();
+      toast("Icon removed.");
+      return resource(id)?.kind === "share" ? shareManage(id) : routeManage(id);
+    }
     if (action === "group-icon-remove") {
       await api(`/api/groups/${enc(id)}/icon`, {}, "DELETE");
       store.avatarVersion = Date.now();
@@ -472,6 +501,16 @@ export async function onClick(event) {
   }
 }
 
+/** Sends a cropped picture, showing that it is on its way. */
+async function uploadPicture(path, square) {
+  const save = $('#dialog [data-crop="save"]');
+  save?.setAttribute("aria-busy", "true");
+  const body = new FormData();
+  body.append("file", square, "picture.png");
+  await api(path, body);
+  store.avatarVersion = Date.now();
+}
+
 /** Keeps a "characters left" count beside text boxes that have one. */
 export function onInput(event) {
   const e = event.target;
@@ -495,42 +534,54 @@ export async function onChange(event) {
     e.dataset.sizeUnit = to;
     return;
   }
-  // A group icon, like a profile picture, uploads as soon as it is chosen.
+  // A group icon, like a profile picture, is cropped to a square and uploads at once.
   if (e.matches("input[data-group-icon]") && e.files?.length) {
-    const group = e.dataset.groupIcon, label = e.closest("label");
-    label?.setAttribute("aria-busy", "true");
+    const group = e.dataset.groupIcon, file = e.files[0];
+    e.value = "";
     try {
-      const body = new FormData();
-      body.append("file", e.files[0]);
-      await api(`/api/groups/${enc(group)}/icon`, body);
-      store.avatarVersion = Date.now();
-      await refresh();
-      groupManage(group);
-      toast("Group icon updated.");
+      const square = await cropSquare(file, { title: "Crop the group icon" });
+      if (square) {
+        await uploadPicture(`/api/groups/${enc(group)}/icon`, square);
+        await refresh();
+        toast("Group icon updated.");
+      }
     } catch (error) {
       toast(error.message, true);
-    } finally {
-      e.value = "";
-      label?.removeAttribute("aria-busy");
     }
+    groupManage(group);
     return;
   }
-  // A new profile picture uploads as soon as it is chosen.
-  if (e.matches("input[data-avatar]") && e.files?.length) {
-    const label = e.closest("label");
-    label?.setAttribute("aria-busy", "true");
+  // A connected service's or file share's icon, cropped and uploaded the same way.
+  if (e.matches("input[data-resource-icon]") && e.files?.length) {
+    const id = e.dataset.resourceIcon, file = e.files[0], kind = resource(id)?.kind;
+    e.value = "";
     try {
-      const body = new FormData();
-      body.append("file", e.files[0]);
-      await api("/api/avatar", body);
-      store.avatarVersion = Date.now();
-      await refresh({ session: true });
-      toast("Profile picture updated.");
+      const square = await cropSquare(file, { title: kind === "share" ? "Crop the share's icon" : "Crop the service's icon" });
+      if (square) {
+        await uploadPicture(`/api/resources/${enc(id)}/icon`, square);
+        await refresh();
+        toast("Icon updated.");
+      }
     } catch (error) {
       toast(error.message, true);
-    } finally {
-      e.value = "";
-      label?.removeAttribute("aria-busy");
+    }
+    return kind === "share" ? shareManage(id) : routeManage(id);
+  }
+  // A new profile picture is cropped to a square, then uploads at once.
+  if (e.matches("input[data-avatar]") && e.files?.length) {
+    const file = e.files[0];
+    e.value = "";
+    try {
+      const square = await cropSquare(file);
+      if (square) {
+        await uploadPicture("/api/avatar", square);
+        close();
+        await refresh({ session: true });
+        toast("Profile picture updated.");
+      }
+    } catch (error) {
+      if ($("#dialog").open) close();
+      toast(error.message, true);
     }
     return;
   }

@@ -4,7 +4,8 @@ CREATE TABLE IF NOT EXISTS users(
  display_name TEXT NOT NULL, email TEXT NOT NULL DEFAULT '', password TEXT NOT NULL,
  owner INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL CHECK(status IN('pending','approved','rejected','suspended')),
  avatar INTEGER NOT NULL DEFAULT 0, totp TEXT, totp_pending TEXT, totp_step INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL,
- bio TEXT NOT NULL DEFAULT '', auth_version INTEGER NOT NULL DEFAULT 0
+ bio TEXT NOT NULL DEFAULT '', auth_version INTEGER NOT NULL DEFAULT 0,
+ rejected_at INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS sole_owner ON users(owner) WHERE owner=1;
 CREATE UNIQUE INDEX IF NOT EXISTS unique_email ON users(email COLLATE NOCASE) WHERE email!='';
@@ -13,7 +14,7 @@ CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, icon INTEGER NOT NULL DEFAULT 0);
 INSERT OR IGNORE INTO groups(id,name) VALUES('members','Members');
 CREATE TABLE IF NOT EXISTS memberships(user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE, PRIMARY KEY(user_id,group_id));
-CREATE TABLE IF NOT EXISTS resources(id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, visibility TEXT NOT NULL DEFAULT 'restricted' CHECK(visibility IN('public','members','restricted')));
+CREATE TABLE IF NOT EXISTS resources(id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, visibility TEXT NOT NULL DEFAULT 'restricted' CHECK(visibility IN('public','members','restricted')), icon INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS grants(resource TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE, subject TEXT NOT NULL, subject_kind TEXT NOT NULL CHECK(subject_kind IN('user','group')), role TEXT NOT NULL DEFAULT 'access', PRIMARY KEY(resource,subject,subject_kind,role));
 CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY REFERENCES resources(id) ON DELETE CASCADE, root TEXT NOT NULL, excluded_extensions TEXT NOT NULL DEFAULT '[]', share_type TEXT NOT NULL DEFAULT 'files' CHECK(share_type IN ('files','apps')));
 CREATE TABLE IF NOT EXISTS routes(id TEXT PRIMARY KEY REFERENCES resources(id) ON DELETE CASCADE, hostname TEXT NOT NULL UNIQUE, upstream TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, gated INTEGER NOT NULL DEFAULT 0, service TEXT NOT NULL DEFAULT '', service_kind TEXT NOT NULL DEFAULT 'none');
@@ -53,6 +54,7 @@ INSERT OR IGNORE INTO resources(id,kind,name,visibility) VALUES('vcs-create','vc
 INSERT OR IGNORE INTO resources(id,kind,name,visibility) VALUES('vcs-group-create','vcs-group-create','Create Skald repositories in groups','restricted');
 CREATE TABLE IF NOT EXISTS skald_repos(id TEXT PRIMARY KEY REFERENCES resources(id),owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,created INTEGER NOT NULL,protect_default INTEGER NOT NULL DEFAULT 0,upstream TEXT REFERENCES skald_repos(id) ON DELETE SET NULL,bytes INTEGER NOT NULL DEFAULT 0,object_count INTEGER NOT NULL DEFAULT 0,group_id TEXT REFERENCES groups(id),UNIQUE(owner_id,name));
 -- A pending change of owner. While one exists, code changes to the repository are paused.
+CREATE TABLE IF NOT EXISTS vcs_group_quotas(group_id TEXT PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,repo_bytes INTEGER CHECK(repo_bytes IS NULL OR repo_bytes>0),total_bytes INTEGER CHECK(total_bytes IS NULL OR total_bytes>0));
 CREATE TABLE IF NOT EXISTS vcs_quotas(user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,repo_bytes INTEGER CHECK(repo_bytes IS NULL OR repo_bytes>0),total_bytes INTEGER CHECK(total_bytes IS NULL OR total_bytes>0));
 CREATE TABLE IF NOT EXISTS skald_transfers(repo_id TEXT PRIMARY KEY REFERENCES skald_repos(id) ON DELETE CASCADE,to_kind TEXT NOT NULL CHECK(to_kind IN('user','group')),to_id TEXT NOT NULL,requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS skald_objects(repo_id TEXT NOT NULL REFERENCES skald_repos(id) ON DELETE CASCADE,object TEXT NOT NULL,size INTEGER NOT NULL CHECK(size>0),created INTEGER NOT NULL,PRIMARY KEY(repo_id,object));

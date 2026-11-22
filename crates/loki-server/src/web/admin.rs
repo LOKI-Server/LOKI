@@ -46,13 +46,15 @@ pub(super) struct StatusChange {
 }
 pub(super) async fn user_status(state: &State, id: &str, input: StatusChange) -> Result<Value> {
     let mut tx = state.0.db.begin().await?;
-    let n =
-        sqlx::query("UPDATE users SET status=?,auth_version=auth_version+1 WHERE id=? AND owner=0")
-            .bind(input.status.as_str())
-            .bind(id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+    // A rejection starts the countdown to the account's removal; any other status stops it.
+    let n = sqlx::query("UPDATE users SET status=?,auth_version=auth_version+1,rejected_at=CASE WHEN ?='rejected' THEN coalesce(rejected_at,?) END WHERE id=? AND owner=0")
+        .bind(input.status.as_str())
+        .bind(input.status.as_str())
+        .bind(auth::now())
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
     if n == 0 {
         return Err(Error::bad("The owner cannot be suspended or removed."));
     }
@@ -385,7 +387,15 @@ pub(super) async fn resource_delete(state: &State, id: &str) -> Result<Value> {
         .bind(id)
         .execute(&state.0.db)
         .await?;
+    forget_icon(state, id).await;
     Ok(ok())
+}
+
+/// Removes a deleted route's or share's icon, if it had one.
+async fn forget_icon(state: &State, id: &str) {
+    if let Ok(path) = super::resource_icon_path(state, id) {
+        let _ = tokio::fs::remove_file(path).await;
+    }
 }
 
 async fn unique_host(state: &State, id: &str, host: &str) -> Result<()> {
@@ -500,6 +510,7 @@ pub(super) async fn route_action(
             .bind(id)
             .execute(&state.0.db)
             .await?;
+        forget_icon(state, id).await;
     }
     Ok(ok())
 }

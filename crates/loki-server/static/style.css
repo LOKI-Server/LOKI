@@ -202,6 +202,20 @@ a.badge:hover { text-decoration: none; filter: brightness(1.15); }
 .eyebrow { display: inline-flex; align-items: center; gap: 9px; text-transform: uppercase; letter-spacing: .22em; color: var(--gold); font-size: .68rem; font-weight: 600; margin-bottom: 12px; cursor: default; }
 .eyebrow-rune { display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid #5b5133; border-radius: 6px; background: #1f1c11; font-size: .95rem; letter-spacing: 0; color: var(--gold); text-shadow: 0 0 10px #d2bd7e55; }
 .page-section { margin-top: var(--space-8); }
+/* The owner's storage breakdown on the Overview. */
+.usage-bar { display: block; width: 100%; height: 12px; border-radius: 6px; overflow: hidden; background: var(--well); }
+.usage-bar rect { stroke: var(--surface); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.usage-legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-2) var(--space-6); margin: var(--space-4) 0 0; padding: 0; list-style: none; }
+.usage-legend li { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: var(--space-2); font-size: .86rem; padding: 4px 0; border-bottom: 1px solid var(--border-soft); }
+.usage-label { color: var(--ink-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-size { font-variant-numeric: tabular-nums; }
+.usage-share { color: var(--muted); font-size: .78rem; min-width: 3ch; text-align: right; font-variant-numeric: tabular-nums; }
+.usage-dot { width: 10px; height: 10px; border-radius: 3px; }
+.usage-card .help { margin-top: var(--space-4); }
+.usage-0 { fill: #7de7a7; background: #7de7a7; } .usage-1 { fill: #5fb8e8; background: #5fb8e8; } .usage-2 { fill: #e8c15f; background: #e8c15f; }
+.usage-3 { fill: #c58df0; background: #c58df0; } .usage-4 { fill: #f08d8d; background: #f08d8d; } .usage-5 { fill: #4fd1c5; background: #4fd1c5; }
+.usage-6 { fill: #f0a35f; background: #f0a35f; } .usage-7 { fill: #9fb4a6; background: #9fb4a6; } .usage-8 { fill: #8da2f0; background: #8da2f0; }
+.usage-9 { fill: #d6e86f; background: #d6e86f; } .usage-10 { fill: #6c8577; background: #6c8577; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
 .section-head h2 { display: flex; align-items: center; gap: 10px; margin: 0; }
 .section-tools { display: flex; align-items: center; gap: var(--space-3); }
@@ -536,6 +550,37 @@ dialog.confirm h2 { font-size: 1.15rem; }
 .profile-hero-text p { margin: 0; display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .profile-hero-text .bio { margin-top: var(--space-2); max-width: 70ch; }
 .avatar-editor { display: flex; align-items: center; gap: var(--space-5); }
+.status-note { display: block; margin-top: 2px; font-size: .74rem; }
+/* A route's or share's own icon fills its icon tile. */
+.has-picture { overflow: hidden; padding: 0; background: var(--well); }
+.resource-picture { display: block; width: 100%; height: 100%; object-fit: cover; }
+.resource-icon-lg { width: 64px; height: 64px; flex: none; }
+.resource-icon-lg .icon { width: 28px; height: 28px; }
+/* The square crop for pictures: the image, a square with a rule-of-thirds grid, and
+   everything outside it dimmed. */
+.cropper { display: flex; gap: var(--space-5); align-items: flex-start; margin-top: var(--space-4); }
+/* The stage is exactly as big as the image it shows, so the square maps onto it. */
+.cropper-stage { position: relative; flex: 0 1 auto; min-width: 0; max-width: 440px; line-height: 0; overflow: hidden; border-radius: var(--radius-s); background: var(--well); user-select: none; touch-action: none; }
+.cropper-image { display: block; width: auto; height: auto; max-width: 100%; max-height: 60vh; pointer-events: none; }
+.cropper-box { position: absolute; box-sizing: border-box; border: 2px solid #fff; box-shadow: 0 0 0 9999px #000000a6; cursor: move; touch-action: none; }
+.cropper-box:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.cropper-grid { position: absolute; inset: 0; pointer-events: none; background:
+  linear-gradient(to right, transparent calc(33.333% - .5px), #ffffff73 calc(33.333% - .5px), #ffffff73 calc(33.333% + .5px), transparent calc(33.333% + .5px), transparent calc(66.666% - .5px), #ffffff73 calc(66.666% - .5px), #ffffff73 calc(66.666% + .5px), transparent calc(66.666% + .5px)),
+  linear-gradient(to bottom, transparent calc(33.333% - .5px), #ffffff73 calc(33.333% - .5px), #ffffff73 calc(33.333% + .5px), transparent calc(33.333% + .5px), transparent calc(66.666% - .5px), #ffffff73 calc(66.666% - .5px), #ffffff73 calc(66.666% + .5px), transparent calc(66.666% + .5px)); }
+/* Corner handles sit inside the square, so the image's edge never clips them. */
+.cropper-handle { position: absolute; width: 22px; height: 22px; }
+.cropper-handle::after { content: ""; position: absolute; width: 12px; height: 12px; border: 0 solid #fff; filter: drop-shadow(0 1px 2px #000a); }
+.cropper-handle[data-corner="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+.cropper-handle[data-corner="nw"]::after { left: 2px; top: 2px; border-left-width: 4px; border-top-width: 4px; }
+.cropper-handle[data-corner="ne"] { right: 0; top: 0; cursor: nesw-resize; }
+.cropper-handle[data-corner="ne"]::after { right: 2px; top: 2px; border-right-width: 4px; border-top-width: 4px; }
+.cropper-handle[data-corner="sw"] { left: 0; bottom: 0; cursor: nesw-resize; }
+.cropper-handle[data-corner="sw"]::after { left: 2px; bottom: 2px; border-left-width: 4px; border-bottom-width: 4px; }
+.cropper-handle[data-corner="se"] { right: 0; bottom: 0; cursor: nwse-resize; }
+.cropper-handle[data-corner="se"]::after { right: 2px; bottom: 2px; border-right-width: 4px; border-bottom-width: 4px; }
+.cropper-preview { display: grid; justify-items: center; gap: var(--space-2); flex: none; }
+.cropper-preview canvas { width: 96px; height: 96px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--well); }
+@media (max-width: 560px) { .cropper { flex-direction: column; align-items: stretch; } .cropper-preview { justify-items: start; } }
 .avatar-editor .avatar-xl { width: 64px; height: 64px; font-size: 1.6rem; }
 .avatar-editor .help { margin-top: var(--space-2); }
 .file-button { position: relative; }

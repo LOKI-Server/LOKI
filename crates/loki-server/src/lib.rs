@@ -16,6 +16,7 @@ pub mod registry;
 pub mod startup;
 pub mod storage;
 pub mod sync;
+mod usage;
 mod vcs;
 pub mod web;
 
