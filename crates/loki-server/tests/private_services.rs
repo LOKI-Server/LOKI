@@ -1287,3 +1287,40 @@ async fn group_repositories_and_transfers_pause_changes_until_accepted() {
     assert_eq!(now["owner"]["kind"], "group");
     assert_eq!(now["role"], "write");
 }
+
+#[tokio::test]
+async fn owners_set_and_clear_per_person_repository_limits() {
+    async fn json_body(response: axum::response::Response) -> Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap()
+    }
+    let (_folder, state) = fixture().await;
+    let owner = Browser::new(&state, "owner").await;
+    let alice = Browser::new(&state, "alice").await;
+    let set = |data: Value| json!({"action":"vcs-quota","id":"alice","data":data});
+
+    let limits = json!({"repo_mib":2048,"total_mib":10240});
+    assert_eq!(
+        alice.request("POST", "/api/action", set(limits.clone())).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        owner.request("POST", "/api/action", set(json!({"repo_mib":0,"total_mib":null}))).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert!(owner.request("POST", "/api/action", set(limits.clone())).await.status().is_success());
+    let dashboard = json_body(owner.request("GET", "/api/state", Value::Null).await).await;
+    assert_eq!(dashboard["vcs_quotas"]["alice"], limits);
+    let bytes: (Option<i64>, Option<i64>) =
+        sqlx::query_as("SELECT repo_bytes,total_bytes FROM vcs_quotas WHERE user_id='alice'")
+            .fetch_one(&state.0.db)
+            .await
+            .unwrap();
+    assert_eq!(bytes, (Some(2048 << 20), Some(10240 << 20)));
+
+    // Clearing both limits returns alice to the server defaults.
+    let clear = json!({"repo_mib":null,"total_mib":null});
+    assert!(owner.request("POST", "/api/action", set(clear)).await.status().is_success());
+    let dashboard = json_body(owner.request("GET", "/api/state", Value::Null).await).await;
+    assert_eq!(dashboard["vcs_quotas"], json!({}));
+    assert!(json_body(alice.request("GET", "/api/state", Value::Null).await).await.get("vcs_quotas").is_none());
+}

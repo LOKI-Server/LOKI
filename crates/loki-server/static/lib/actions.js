@@ -4,7 +4,7 @@ import { html } from "./html.js";
 import { Button, Field, FileInput, Form, FormFooter, LinkButton, Notice, Select, Submit, jsonView } from "./ui.js";
 import { navigate, refresh, routable } from "./router.js";
 import { submitSetup, submitStartupAware } from "../pages/auth.js";
-import { appManage, folderPicker, vcsManage, vcsLimits, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
+import { appManage, folderPicker, vcsManage, vcsLimits, vcsQuotaDialog, grantRow, roles, routeForm, routeManage, shareForm, shareManage, subjects, syncManage } from "../pages/manage.js";
 import { newItem, newRepo } from "../pages/vcs.js";
 import { groupManage, userManage } from "../pages/people.js";
 import { accountUrl, deviceRename, pairDialog, passwordProof, profileConfirm, vcsTokenDialog } from "../pages/account.js";
@@ -21,6 +21,11 @@ let pendingProfile = null;
 export function formData(form) {
   const values = Object.fromEntries(new FormData(form));
   for (const input of form.querySelectorAll('input[type="checkbox"]')) values[input.name] = input.checked;
+  // Size boxes show MB or GB; the server always takes MiB.
+  for (const input of form.querySelectorAll("input[data-size]")) {
+    const unit = Number(input.parentElement.querySelector("[data-size-unit]").value);
+    values[input.name] = input.value === "" ? "" : String(Math.round(Number(input.value) * unit));
+  }
   return values;
 }
 
@@ -159,6 +164,14 @@ export async function onSubmit(event) {
       return;
     }
     else if (kind === "device-rename" || kind === "sync-device-rename") { await act(kind, id, data); close(); toast("Device renamed."); }
+    else if (kind === "vcs-quota") {
+      const user = id || data.user, size = value => value === "" || value === undefined ? null : Number(value);
+      if (!user) return toast("Choose a person first.", true);
+      await act(kind, user, { repo_mib: size(data.repo_mib), total_mib: size(data.total_mib) });
+      await refresh();
+      toast("Repository limits saved.");
+      return form.dataset.back === "person" ? userManage(user) : vcsManage("storage");
+    }
     else if (kind === "sync-quota") { await act(kind, id, { mb: data.mb === "" ? null : Number(data.mb) }); toast("Quota saved."); }
     else if (kind === "personal-enable") { await api(`/api/personal/settings/apps/${enc(id)}`, { enabled: data.enabled }); close(); toast("Personal storage permission saved."); }
     else if (kind === "vcs-create") {
@@ -287,6 +300,23 @@ export async function onClick(event) {
   try {
     if (dialogs[action]) return dialogs[action](id);
     if (action === "vcs-manage") return vcsManage();
+    if (action === "vcs-quota-edit") return vcsQuotaDialog(id);
+    if (action === "vcs-quota-clear") {
+      await act("vcs-quota", id, { repo_mib: null, total_mib: null });
+      await refresh();
+      toast("Limits removed. They use the defaults again.");
+      return vcsManage("storage");
+    }
+    if (action === "panel-tab") {
+      const tabs = b.closest(".panel-tabs");
+      for (const tab of tabs.querySelectorAll(":scope > .tabs > [role=tab]")) {
+        const active = tab === b;
+        tab.classList.toggle("active", active);
+        tab.setAttribute("aria-selected", String(active));
+      }
+      for (const panel of tabs.querySelectorAll(":scope > [role=tabpanel]")) panel.hidden = panel.dataset.panel !== id;
+      return;
+    }
     if (action === "vcs-new-item") return await newItem(id, b.dataset.kind);
     if (action === "vcs-new") return await newRepo();
     if (action === "vcs-fork") return await newRepo(id);
@@ -453,6 +483,18 @@ export function onInput(event) {
 
 export async function onChange(event) {
   const e = event.target;
+  // Switching a size between MB and GB converts what is typed, rounding to whole gigabytes.
+  if (e.matches("select[data-size-unit]")) {
+    const input = e.parentElement.querySelector("input[data-size]");
+    const from = Number(e.dataset.sizeUnit), to = Number(e.value);
+    if (input.value !== "") {
+      const mib = Number(input.value) * from;
+      input.value = to > from ? Math.max(1, Math.round(mib / to)) : Math.round(mib / to);
+    }
+    input.max = Math.floor(Number(input.dataset.maxMib) / to);
+    e.dataset.sizeUnit = to;
+    return;
+  }
   // A group icon, like a profile picture, uploads as soon as it is chosen.
   if (e.matches("input[data-group-icon]") && e.files?.length) {
     const group = e.dataset.groupIcon, label = e.closest("label");

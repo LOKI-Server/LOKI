@@ -297,7 +297,8 @@ async fn action(
     owner(&user, &grant)?;
     let result = match input.action.as_str() {
         "user-create" | "user-status" | "reset-issue" | "group-create" | "group-delete"
-        | "membership" | "resource-access" | "share-save" | "app-action" | "backup" => {
+        | "membership" | "resource-access" | "share-save" | "app-action" | "backup"
+        | "vcs-quota" => {
             super::actions::owner_action(&state, &user, &input.action, &input.id, input.data)
                 .await?
         }

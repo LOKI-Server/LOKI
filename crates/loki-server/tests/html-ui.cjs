@@ -36,3 +36,23 @@ test('components escape what they are given', async () => {
   assert.match(String(LinkButton({label: 'x', href: 'javascript:alert(1)'})), /href="#"/);
   assert.match(String(Button({label: 'Go', action: 'go', id: '7', data: {keepCurrent: 'yes'}})), /data-action="go" data-id="7" data-keep-current="yes"/);
 });
+
+test('size fields start in GB for whole gigabytes and mark the box for conversion', async () => {
+  const {SizeField, PanelTabs, formatSize} = await modules('lib/ui.js');
+  assert.equal(formatSize(2048), '2 GB');
+  assert.equal(formatSize(1500), '1500 MB');
+  const gb = String(SizeField({name: 'vcs_repo_mib', label: 'Each repository', mib: 2048, required: true}));
+  assert.match(gb, /value="2"/);
+  assert.match(gb, /max="1024"/);
+  assert.match(gb, /data-size data-max-mib="1048576"/);
+  assert.match(gb, /<option value="1024" selected>GB<\/option>/);
+  const mb = String(SizeField({name: 'mb', label: '"><b>', mib: 1500}));
+  assert.match(mb, /value="1500"/);
+  assert.match(mb, /<option value="1" selected>MB<\/option>/);
+  assert.ok(!mb.includes('<b>'), mb);
+  assert.match(String(SizeField({name: 'x', label: 'X', placeholder: 'Default'})), /value="" min="1" max="1048576" step="1" inputmode="numeric" placeholder="Default"/);
+  const tabs = String(PanelTabs([{id: 'a', label: 'A', body: 'one'}, {id: 'b', label: 'B', body: 'two'}], {active: 'b'}));
+  assert.match(tabs, /data-panel="a" hidden>one/);
+  assert.match(tabs, /data-panel="b">two/);
+  assert.match(tabs, /class="active" aria-selected="true" data-action="panel-tab" data-id="b"/);
+});

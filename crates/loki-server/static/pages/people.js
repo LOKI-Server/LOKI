@@ -3,6 +3,7 @@ import { ago, modal, store } from "../lib/core.js";
 import { attrs, html, plural } from "../lib/html.js";
 import { Badge, Button, ButtonGroup, DialogSection, EmptyState, Help, IconButton, List, Notice, PageHeader, Row, SectionHead, Status, Table, initial } from "../lib/ui.js";
 import { quotaSection } from "./sync.js";
+import { vcsQuotaSection } from "./manage.js";
 
 const statusTone = { approved: "ok", pending: "live", suspended: "danger", rejected: "danger" };
 const statusLabel = s => s[0].toUpperCase() + s.slice(1);
@@ -58,7 +59,7 @@ export function userManage(id) {
   const labels = { approved: "Approve", suspended: "Suspend", rejected: "Reject" };
   const statusButtons = u.owner ? [] : Object.keys(labels).filter(s => s !== u.status).map(s => Button({ label: labels[s], action: "user-status", id, data: { status: s }, kind: s === "approved" ? "primary" : "danger", icon: s === "approved" ? "check" : "close", size: "sm" }));
   const membership = html`<div class="check-list">${state.groups.map(g => html`<label class="check"><input${attrs({ type: "checkbox", "data-membership": id, "data-group": g.id, checked: state.memberships.some(([uid, gid]) => uid === id && gid === g.id) })}><span>${g.name}</span></label>`)}</div>`;
-  modal(u.display_name || u.username, html`<div class="person person-lg">${avatar(u, "lg")}<div><strong>@${u.username}</strong>${Status(statusLabel(u.status), statusTone[u.status] ?? "neutral")}</div></div>${u.bio ? html`<p class="bio">${u.bio}</p>` : ""}${ButtonGroup(...statusButtons, Button({ label: "Issue password reset link", action: "reset-issue", id, icon: "key", size: "sm" }))}${DialogSection("Group membership", membership)}${quotaSection(id)}`);
+  modal(u.display_name || u.username, html`<div class="person person-lg">${avatar(u, "lg")}<div><strong>@${u.username}</strong>${Status(statusLabel(u.status), statusTone[u.status] ?? "neutral")}</div></div>${u.bio ? html`<p class="bio">${u.bio}</p>` : ""}${ButtonGroup(...statusButtons, Button({ label: "Issue password reset link", action: "reset-issue", id, icon: "key", size: "sm" }))}${DialogSection("Group membership", membership)}${quotaSection(id)}${vcsQuotaSection(id)}`);
 }
 
 export function activityPage() {

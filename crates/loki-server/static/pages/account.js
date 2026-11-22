@@ -2,7 +2,7 @@
 import { ago, api, date, enc, modal, store } from "../lib/core.js";
 import { attrs, html } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
-import { Badge, Button, ButtonGroup, Card, Checkbox, Field, FieldRow, Form, FormFooter, Help, IconButton, IconLink, LinkButton, List, Notice, PageHeader, Row, Select, Submit, Tabs, TextArea } from "../lib/ui.js";
+import { Badge, Button, ButtonGroup, Card, Checkbox, Field, FieldRow, Form, FormFooter, Help, IconButton, IconLink, LinkButton, List, Notice, PageHeader, Row, Select, Submit, Tabs, TextArea, formatSize } from "../lib/ui.js";
 import { startupControl } from "./auth.js";
 import { avatar } from "./people.js";
 
@@ -78,7 +78,7 @@ export function profileConfirm() {
 
 // One labelled group of settings: what it is on the left, the controls on the right.
 const group = (id, title, text, body) => html`<section class="setting-group" id="${id}"><div class="setting-intro"><h2>${title}</h2><p>${text}</p></div>${Card({ body })}</section>`;
-const mib = n => n >= 1024 && n % 1024 === 0 ? `${n / 1024} GiB` : `${n} MiB`;
+const mib = formatSize;
 
 // Backups are named loki-<unix seconds>-<id>.zip.
 function backupRow(name) {

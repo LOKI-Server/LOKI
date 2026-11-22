@@ -389,6 +389,7 @@ async fn dashboard(
     }
     if user.owner {
         output["settings"] = json!(*state.0.settings.read().await);
+        output["vcs_quotas"] = crate::vcs::quota_overrides(&state.0.db).await?;
         #[cfg(windows)]
         {
             output["startup"] = match state.0.startup.status() {

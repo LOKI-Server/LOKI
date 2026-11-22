@@ -2,7 +2,8 @@
 import { api, modal, resource, store } from "../lib/core.js";
 import { html } from "../lib/html.js";
 import { icon } from "../lib/icons.js";
-import { Badge, Button, ButtonGroup, Checkbox, DialogSection, Field, FieldRow, Form, FormFooter, Help, IconButton, Notice, Select, Submit } from "../lib/ui.js";
+import { Badge, Button, ButtonGroup, Checkbox, DialogSection, Field, FieldRow, Form, FormFooter, Help, IconButton, List, Notice, PanelTabs, Row, Select, SizeField, Submit, formatSize } from "../lib/ui.js";
+import { avatar } from "./people.js";
 import { resourceStatus } from "./services.js";
 
 export const subjects = () => [
@@ -28,22 +29,60 @@ export function grantRow(subjects, roles, selected = "", role = "access") {
 export function syncManage(id) {
   const r = resource(id), s = store.state.settings;
   modal("Save sync", [html`<p class="lead">Each person only ever sees their own folders. Storage counts every file's version history.</p>`,
-    DialogSection("Storage", Form({ name: "settings", body: html`${FieldRow(Field({ name: "sync_quota_mb", label: "Storage per person (MiB)", value: s.sync_quota_mb, type: "number", required: true, min: 1 }), Field({ name: "sync_max_file_mb", label: "Largest file (MiB)", value: s.sync_max_file_mb, type: "number", required: true, min: 1, max: 1048576 }))}<p class="help">Give someone more or less room from their page in <a href="/accounts">People &amp; groups</a>.</p>${FormFooter(Submit({ label: "Save storage" }))}` })),
+    DialogSection("Storage", Form({ name: "settings", body: html`${FieldRow(SizeField({ name: "sync_quota_mb", label: "Storage per person", mib: s.sync_quota_mb, required: true, max: 100000000 }), SizeField({ name: "sync_max_file_mb", label: "Largest file", mib: s.sync_max_file_mb, required: true }))}<p class="help">Give someone more or less room from their page in <a href="/accounts">People &amp; groups</a>.</p>${FormFooter(Submit({ label: "Save storage" }))}` })),
     DialogSection("Who can use sync", accessPanel(r))]);
 }
 
-export const vcsLimits = { vcs_repo_mib: "Storage per repository (MiB)", vcs_total_mib: "Total repository storage (MiB)" };
+export const vcsLimits = { vcs_repo_mib: "Each repository", vcs_total_mib: "All repositories together" };
 
-export function vcsManage() {
-  const s = store.state.settings;
-  modal("Repositories", html`<p class="lead">Repositories are hosted by Skald. Each one keeps its own access list; these settings apply to all of them.</p>${DialogSection("Storage", Form({ name: "settings", body: html`${FieldRow(...Object.entries(vcsLimits).map(([key, label]) => Field({ name: key, label, value: s[key], type: "number", required: true, min: 1, max: 1048576 })))}${FormFooter(Submit({ label: "Save storage" }))}` }))}${DialogSection("Who can create repositories", accessPanel(resource("vcs-create")))}${resource("vcs-group-create") ? DialogSection("Who can create repositories in their groups", html`<p class="help">People chosen here can create repositories owned by groups they belong to. You can always create them in any group.</p>${accessPanel(resource("vcs-group-create"))}`) : ""}`);
+/** A person's own repository limits, described in a few words. */
+const quotaSummary = q => [q.repo_mib ? `${formatSize(q.repo_mib)} per repository` : "", q.total_mib ? `${formatSize(q.total_mib)} in total` : ""].filter(Boolean).join(" · ");
+
+/** Storage defaults and per-person limits, and who can create repositories. */
+export function vcsManage(tab = "storage") {
+  const s = store.state.settings, quotas = store.state.vcs_quotas || {};
+  const people = store.state.users.filter(u => quotas[u.id]);
+  const defaults = Form({ name: "settings", body: html`${FieldRow(
+    SizeField({ name: "vcs_repo_mib", label: vcsLimits.vcs_repo_mib, mib: s.vcs_repo_mib, required: true }),
+    SizeField({ name: "vcs_total_mib", label: vcsLimits.vcs_total_mib, mib: s.vcs_total_mib, required: true, help: "The most the whole server holds." }))}${FormFooter(Submit({ label: "Save defaults" }))}` });
+  const overrides = html`${Help("Give someone more or less room for repositories they own. Group repositories use the defaults.")}${people.length
+    ? List(people.map(u => Row({ key: u.id, lead: avatar(u, "sm"), title: u.display_name || u.username, meta: quotaSummary(quotas[u.id]),
+        actions: ButtonGroup(Button({ label: "Edit", action: "vcs-quota-edit", id: u.id, size: "sm" }), IconButton({ icon: "trash", label: `Remove ${u.username}'s limits`, action: "vcs-quota-clear", id: u.id, size: "sm" })) })), { className: "list-boxed" })
+    : ""}${Button({ label: "Set limits for someone", action: "vcs-quota-edit", icon: "plus", size: "sm", kind: people.length ? "ghost" : "secondary" })}`;
+  const creation = html`${DialogSection("Personal repositories", html`${Help("Who can create repositories of their own.")}${accessPanel(resource("vcs-create"))}`)}${resource("vcs-group-create") ? DialogSection("Group repositories", html`${Help("Who can create repositories owned by a group they're a member of. You can always create them in any group.")}${accessPanel(resource("vcs-group-create"))}`) : ""}`;
+  modal("Repositories", html`<p class="lead">Repositories are hosted by Skald. Each one keeps its own access list.</p>${PanelTabs([
+    { id: "storage", label: "Storage", icon: "database", body: html`${DialogSection("Defaults", defaults)}${DialogSection("Per-person limits", overrides)}` },
+    { id: "creation", label: "Who can create", icon: "people", body: creation },
+  ], { active: tab, label: "Repository settings" })}`);
+}
+
+/**
+ * One person's repository limits. Blank boxes use the defaults. Without `userId`
+ * it starts with a choice of person. `back` names the dialog to return to.
+ */
+export function vcsQuotaForm(userId, back = "vcs") {
+  const s = store.state.settings, q = store.state.vcs_quotas?.[userId] || {};
+  const choose = userId ? "" : Select({ name: "user", label: "Person", options: store.state.users.filter(u => u.status === "approved" && !store.state.vcs_quotas?.[u.id]).map(u => [u.id, u.display_name ? `${u.display_name} (@${u.username})` : `@${u.username}`]) });
+  return Form({ name: "vcs-quota", id: userId || "", data: { back }, body: html`${choose}${FieldRow(
+    SizeField({ name: "repo_mib", label: "Each repository", mib: q.repo_mib, placeholder: `Default, ${formatSize(s.vcs_repo_mib)}` }),
+    SizeField({ name: "total_mib", label: "All their repositories", mib: q.total_mib, max: 100 * 1048576, placeholder: "No limit of their own" }))}${Help("Leave a box blank to use the default. The server-wide total still applies.")}${back === "vcs"
+    ? FormFooter([Button({ label: "Back", action: "vcs-manage", icon: "left", kind: "ghost" }), Submit({ label: "Save limits" })], { align: "between" })
+    : FormFooter(Submit({ label: "Save limits" }))}` });
+}
+
+/** The repository storage part of a person's page in People & groups. */
+export const vcsQuotaSection = userId => DialogSection("Repository storage", vcsQuotaForm(userId, "person"));
+
+export function vcsQuotaDialog(userId) {
+  const u = store.state.users.find(u => u.id === userId);
+  modal(u ? `Repository storage for ${u.display_name || u.username}` : "Set repository limits", vcsQuotaForm(userId));
 }
 
 // Apps that keep files can be given more room, or less, than they ask for.
 function storageSettings(r) {
   if (!r.manifest.capabilities?.includes("storage")) return "";
   const asked = r.manifest.limits?.storage_mib ?? 64;
-  return Field({ name: "storage_mib", label: "Storage quota (MiB)", value: r.storage_mib ?? "", type: "number", min: 1, max: 1048576, placeholder: asked, help: `Leave blank for the ${asked} MiB the app asks for.` });
+  return SizeField({ name: "storage_mib", label: "Storage quota", mib: r.storage_mib, placeholder: `Default, ${formatSize(asked)}`, help: `Leave blank for the ${formatSize(asked)} the app asks for.` });
 }
 
 // Apps with live connections, such as game servers, can also listen on the LAN.

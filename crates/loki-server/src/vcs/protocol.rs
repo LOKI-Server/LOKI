@@ -259,13 +259,13 @@ async fn upload(
     .fetch_one(&mut *tx)
     .await?;
     if !accounted {
-        let (local, count, total): (i64, i64, i64) = sqlx::query_as(
-            "SELECT bytes,object_count,(SELECT coalesce(sum(bytes),0) FROM skald_repos) FROM skald_repos WHERE id=?"
+        let (local, count, total, owner, group): (i64, i64, i64, String, Option<String>) = sqlx::query_as(
+            "SELECT bytes,object_count,(SELECT coalesce(sum(bytes),0) FROM skald_repos),owner_id,group_id FROM skald_repos WHERE id=?"
         ).bind(&id).fetch_one(&mut *tx).await?;
-        if count >= skald_vcs_core::MAX_GRAPH as i64
-            || local.saturating_add(size) > (limits.vcs_repo_mib * 1_048_576) as i64
-            || total.saturating_add(size) > (limits.vcs_total_mib * 1_048_576) as i64
-        {
+        let room = super::quota::limits(&mut tx, &limits, &owner, group.as_deref())
+            .await?
+            .room(local, total);
+        if count >= skald_vcs_core::MAX_GRAPH as i64 || size > room {
             return Err(Error::new(
                 StatusCode::INSUFFICIENT_STORAGE,
                 "Repository storage quota reached.",

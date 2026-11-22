@@ -204,8 +204,9 @@ async fn create(
         let current: i64 = sqlx::query_scalar("SELECT coalesce(sum(bytes),0) FROM skald_repos")
             .fetch_one(&mut *tx)
             .await?;
-        let budget = (limits.vcs_repo_mib * 1_048_576)
-            .min((limits.vcs_total_mib * 1_048_576).saturating_sub(current as u64));
+        let budget = super::quota::limits(&mut tx, &limits, &user.id, group)
+            .await?
+            .room(0, current) as u64;
         let data = state.0.data.clone();
         let default = input.default_branch;
         let stage = tempfile::Builder::new()

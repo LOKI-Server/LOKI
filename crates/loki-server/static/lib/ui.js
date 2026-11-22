@@ -173,6 +173,21 @@ export function Field({ name, label, value = "", type = "text", help, required, 
   return html`<div class="field"><label${attrs({ for: id, class: hiddenLabel ? "visually-hidden" : null })}>${label}</label><input${attrs({ id, name, type, value: value ?? "", required, placeholder, min, max, minlength, maxlength, pattern, autocomplete, inputmode, readonly, ...more })}>${helpText(help)}</div>`;
 }
 
+/** A size in MiB as people read it: whole gigabytes as GB, anything else as MB. */
+export const formatSize = mib => mib >= 1024 && mib % 1024 === 0 ? `${mib / 1024} GB` : `${mib} MB`;
+
+const SIZE_UNITS = [[1, "MB"], [1024, "GB"]];
+/**
+ * A size typed in MB or GB, with the unit picked beside the box. Whole gigabytes
+ * start in GB. The form still submits MiB: formData() in actions.js converts it.
+ * Leave `mib` empty for a blank box, such as "use the default".
+ */
+export function SizeField({ name, label, mib, help, required = false, max = 1048576, placeholder }) {
+  const id = fieldId(name);
+  const unit = mib && mib >= 1024 && mib % 1024 === 0 ? 1024 : 1;
+  return html`<div class="field"><label for="${id}">${label}</label><div class="size-input"><input${attrs({ id, name, type: "number", value: mib ? mib / unit : "", required, min: 1, max: Math.floor(max / unit), step: 1, inputmode: "numeric", placeholder, "data-size": true, "data-max-mib": max })}><select${attrs({ "aria-label": `Unit for ${label}`, "data-size-unit": unit })}>${SIZE_UNITS.map(([value, text]) => html`<option${attrs({ value, selected: value === unit })}>${text}</option>`)}</select></div>${helpText(help)}</div>`;
+}
+
 /** A labelled select. Options are [value, label] pairs or plain strings. */
 export function Select({ name, label, options, value, help, id, hiddenLabel = false, attrs: more = {} }) {
   const fid = id || fieldId(name);
@@ -219,6 +234,14 @@ export const DialogSection = (title, body) => html`<section class="dialog-sectio
 /** Underlined tabs. Each item is {label, href, active, count, icon}. */
 export function Tabs(items, label = "Sections") {
   return html`<nav class="tabs" aria-label="${label}">${items.filter(Boolean).map(t => html`<a${attrs({ href: safeUrl(t.href), class: t.active ? "active" : null, "aria-current": t.active ? "page" : null })}>${t.icon ? icon(t.icon) : ""}<span>${t.label}</span>${t.count ? Count(t.count) : ""}</a>`)}</nav>`;
+}
+
+/**
+ * Tabs that switch between panels in place, for dialogs. Items are
+ * {id, label, icon, body}; actions.js handles the "panel-tab" clicks.
+ */
+export function PanelTabs(items, { active = items[0]?.id, label = "Sections" } = {}) {
+  return html`<div class="panel-tabs"><div class="tabs" role="tablist" aria-label="${label}">${items.map(t => html`<button${attrs({ type: "button", role: "tab", class: t.id === active ? "active" : null, "aria-selected": String(t.id === active), "data-action": "panel-tab", "data-id": t.id })}>${t.icon ? icon(t.icon) : ""}<span>${t.label}</span></button>`)}</div>${items.map(t => html`<div${attrs({ role: "tabpanel", "data-panel": t.id, hidden: t.id !== active })}>${t.body}</div>`)}</div>`;
 }
 
 /** A dropdown. `trigger` is the button's content; it closes on outside clicks (actions.js). */

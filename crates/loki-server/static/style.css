@@ -424,6 +424,11 @@ label.check { display: flex; align-items: center; gap: 10px; cursor: pointer; fo
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--space-4); }
 .field-row > .field { margin-top: var(--space-4); }
 form > .field-row:first-child > .field { margin-top: 0; }
+/* A number box with its MB/GB picker attached on the right. */
+.size-input { display: flex; }
+.size-input input { flex: 1; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.size-input select { width: auto; flex: none; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; background-color: var(--raised-2); font-weight: 500; }
+.size-input input:focus, .size-input select:focus { position: relative; z-index: 1; }
 .input-with-button { display: grid; grid-template-columns: 1fr auto; gap: var(--space-2); align-items: end; margin-top: var(--space-4); }
 .input-with-button .field { margin: 0; }
 .input-with-button > .btn { height: var(--h-input); }
@@ -460,12 +465,15 @@ legend { padding: 0; margin-bottom: 6px; font-size: .8rem; font-weight: 600; col
 /* ── Tabs and menus ─────────────────────────────────────────────────────── */
 .tabs { display: flex; gap: 4px; margin: 0 0 var(--space-6); border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
 .tabs::-webkit-scrollbar { display: none; }
-.tabs a { position: relative; display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px 12px; color: var(--muted); font-size: .88rem; white-space: nowrap; border-radius: var(--radius-s) var(--radius-s) 0 0; }
-.tabs a .icon { width: 16px; height: 16px; }
-.tabs a:hover { color: var(--ink); background: var(--panel); text-decoration: none; }
-.tabs a.active { color: var(--ink); font-weight: 600; }
-.tabs a.active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--green); box-shadow: 0 0 10px #7de7a780; }
-.tabs a.active .icon { color: var(--green); }
+.tabs button { background: none; border: 0; font: inherit; cursor: pointer; }
+.tabs a, .tabs button { position: relative; display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px 12px; color: var(--muted); font-size: .88rem; white-space: nowrap; border-radius: var(--radius-s) var(--radius-s) 0 0; }
+.tabs a .icon, .tabs button .icon { width: 16px; height: 16px; }
+.tabs a:hover, .tabs button:hover { color: var(--ink); background: var(--panel); text-decoration: none; }
+.tabs a.active, .tabs button.active { color: var(--ink); font-weight: 600; }
+.tabs a.active::after, .tabs button.active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--green); box-shadow: 0 0 10px #7de7a780; }
+.tabs a.active .icon, .tabs button.active .icon { color: var(--green); }
+.panel-tabs > .tabs { margin-bottom: var(--space-5); }
+.panel-tabs .dialog-section:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
 details.menu { position: relative; display: inline-block; }
 details.menu > summary { list-style: none; }
 details.menu > summary::-webkit-details-marker { display: none; }
@@ -501,6 +509,8 @@ dialog[open]::backdrop { animation: fade .2s ease-out; }
 .dialog-section { margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--border); }
 .dialog-section > h3 { color: var(--ink-2); font-size: .72rem; letter-spacing: .14em; text-transform: uppercase; margin-bottom: var(--space-3); }
 .dialog-section .form-footer { border-top: 0; padding-top: 0; }
+.dialog-section > .help + form, .dialog-section > .help + .list-boxed { margin-top: var(--space-3); }
+.dialog-section > .list-boxed + .btn { margin-top: var(--space-3); }
 dialog.confirm { width: min(440px, calc(100vw - 32px)); }
 dialog.confirm h2 { font-size: 1.15rem; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-5); }
