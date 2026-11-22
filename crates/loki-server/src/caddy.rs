@@ -347,13 +347,12 @@ pub async fn apply_settings(state: &State, settings: &Settings) -> Result<()> {
         Some(value) => value,
         None => current_config(settings).await?,
     };
-    let backup =
-        state
-            .0
-            .data
-            .join("backups")
-            .join(format!("caddy-{}-{}.json", auth::now(), auth::id()));
+    // The config being replaced, in case it is needed again; only the newest few stay.
+    let history = state.0.data.join("caddy").join("history");
+    tokio::fs::create_dir_all(&history).await?;
+    let backup = history.join(format!("caddy-{}-{}.json", auth::now(), auth::id()));
     tokio::fs::write(backup, serde_json::to_vec(&previous)?).await?;
+    crate::tidy::prune_caddy_history(&state.0.data);
     let response = client
         .post(format!("{admin}/load"))
         .json(&value)
@@ -400,7 +399,7 @@ pub async fn adopt(state: &State) -> Result<String> {
     let value = current_config(&settings).await?;
     let json = serde_json::to_string_pretty(&value)?;
     tokio::fs::write(
-        state.0.data.join("backups/caddy-before-adoption.json"),
+        state.0.data.join("caddy/before-adoption.json"),
         &json,
     )
     .await?;

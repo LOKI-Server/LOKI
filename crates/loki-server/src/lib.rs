@@ -16,6 +16,7 @@ pub mod registry;
 pub mod startup;
 pub mod storage;
 pub mod sync;
+mod tidy;
 mod usage;
 mod vcs;
 pub mod web;
@@ -237,6 +238,7 @@ impl State {
             "avatars",
             "logs",
             "caddy",
+            "rollback-data",
             "sync/blobs",
             "sync/staging",
             "skald-repos",
@@ -264,6 +266,7 @@ impl State {
                     .await?;
             }
         }
+        tidy::at_startup(&data, &db).await;
         let settings = db::settings(&db).await?;
         let key_path = data.join("identity.pem");
         use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};

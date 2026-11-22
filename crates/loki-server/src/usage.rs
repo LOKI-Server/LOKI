@@ -27,6 +27,7 @@ const PARTS: &[(&str, &str, &[&str])] = &[
     ("pictures", "Pictures and icons", &["avatars"]),
     ("database", "Database", &["loki.db", "loki.db-wal", "loki.db-shm"]),
     ("backups", "Backups", &["backups"]),
+    ("rollbacks", "App rollback copies", &["rollback-data"]),
     ("logs", "Logs", &["logs"]),
     ("temporary", "Temporary files", &["staging"]),
 ];

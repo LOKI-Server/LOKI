@@ -239,10 +239,11 @@ pub async fn import(
         }
         quiesce(state, &m.id).await?;
         stop_inner(state, &m.id).await?;
+        // One copy per app to roll back to; the one it replaces goes below.
         let snapshot = state
             .0
             .data
-            .join("backups")
+            .join("rollback-data")
             .join(format!("app-{}-{}", m.id, auth::id()));
         let source = state.0.data.join("app-data").join(&m.id);
         let output = snapshot.clone();
@@ -252,6 +253,9 @@ pub async fn import(
             .bind(&m.id)
             .execute(&state.0.db)
             .await?;
+        if let Some(older) = &app.previous {
+            crate::tidy::remove_copy(&state.0.data, older).await;
+        }
     }
     let install = state.0.data.join("apps").join(&m.id);
     let previous = state.0.data.join("apps").join(format!("{}.previous", m.id));
@@ -466,6 +470,11 @@ pub async fn action(state: &State, id: &str, action: &str) -> Result<()> {
                     .execute(&state.0.db)
                     .await?;
                 tokio::fs::remove_dir_all(state.0.data.join("apps").join(id)).await?;
+                // Nothing can roll back an uninstalled app; its own data stays.
+                let _ = tokio::fs::remove_dir_all(state.0.data.join("apps").join(format!("{id}.previous"))).await;
+                if let Some(copy) = &app.previous {
+                    crate::tidy::remove_copy(&state.0.data, copy).await;
+                }
             }
         }
         "rollback" => {
@@ -480,6 +489,7 @@ async fn rollback_inner(state: &State, id: &str) -> Result<()> {
     let app = get(state, id).await?;
     let snapshot = app
         .previous
+        .clone()
         .ok_or_else(|| Error::bad("No prior app/data snapshot is available."))?;
     let install = state.0.data.join("apps").join(id);
     let previous = state.0.data.join("apps").join(format!("{id}.previous"));
@@ -516,6 +526,10 @@ async fn rollback_inner(state: &State, id: &str) -> Result<()> {
         .bind(id)
         .execute(&state.0.db)
         .await?;
+    // The copy is back in place, and nothing can roll back to it again.
+    if let Some(copy) = &app.previous {
+        crate::tidy::remove_copy(&state.0.data, copy).await;
+    }
     if app.enabled {
         start_inner(state, id).await?;
     }

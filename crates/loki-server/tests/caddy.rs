@@ -280,7 +280,7 @@ async fn existing_caddy_can_start_fresh_without_rebinding_its_admin_listener() {
         assert_eq!(active.get("admin"), initial.get("admin"));
         assert!(active.pointer("/apps/http/servers/old-site").is_none());
         assert!(client.get(&site).send().await.is_err());
-        let backups = std::fs::read_dir(state.0.data.join("backups"))
+        let backups = std::fs::read_dir(state.0.data.join("caddy/history"))
             .unwrap()
             .collect::<std::io::Result<Vec<_>>>()
             .unwrap();
