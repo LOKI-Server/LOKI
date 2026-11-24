@@ -13,7 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 pub mod api;
-mod catalog;
+mod tree;
 
 pub fn parse_excluded_extensions(input: &str) -> Result<Vec<String>> {
     if input.len() > 4096 {
@@ -168,6 +168,7 @@ pub(crate) fn inside_data(data: &Path, path: &Path) -> bool {
     );
     path.starts_with(&data)
 }
+#[derive(Clone)]
 pub struct Share {
     pub root: String,
     pub excluded_extensions: Vec<String>,
@@ -220,13 +221,13 @@ pub async fn info(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>> {
     share(&state, &headers, &id).await?;
-    let (name, visibility, share_type): (String, String, String) =
-        sqlx::query_as("SELECT r.name,r.visibility,s.share_type FROM resources r JOIN shares s ON s.id=r.id WHERE r.id=? AND r.kind='share'")
+    let (name, visibility, supports_updates): (String, String, bool) =
+        sqlx::query_as("SELECT r.name,r.visibility,s.supports_updates FROM resources r JOIN shares s ON s.id=r.id WHERE r.id=? AND r.kind='share'")
             .bind(&id)
             .fetch_one(&state.0.db)
             .await?;
     Ok(Json(
-        serde_json::json!({"id":id,"name":name,"visibility":visibility,"kind":"share","share_type":share_type}),
+        serde_json::json!({"id":id,"name":name,"visibility":visibility,"kind":"share","supports_updates":supports_updates}),
     ))
 }
 pub async fn list(
@@ -379,6 +380,15 @@ pub async fn download(
     serve_file(share, &headers, query, false).await
 }
 
+pub async fn archive(
+    ExtractState(state): ExtractState<State>,
+    RoutePath(id): RoutePath<String>,
+    headers: HeaderMap,
+    Query(query): Query<Browse>,
+) -> Result<Response> {
+    tree::archive(share(&state, &headers, &id).await?, query.path).await
+}
+
 pub(super) async fn open_file(share: Share, path: String) -> Result<(std::fs::File, PathBuf)> {
     tokio::task::spawn_blocking(move || -> Result<_> {
         let (dir, path) = share.open(&path)?;
@@ -401,6 +411,10 @@ pub(super) async fn open_file(share: Share, path: String) -> Result<(std::fs::Fi
 fn http_date(time: std::time::SystemTime) -> Option<String> {
     let seconds = time.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
     (seconds < 253402300800).then(|| httpdate::fmt_http_date(time))
+}
+
+fn file_changed() -> Error {
+    Error::coded(StatusCode::CONFLICT, "file_changed", "The file changed during the operation. Retry.")
 }
 
 pub(super) async fn serve_file(

@@ -25,12 +25,12 @@ pub fn router() -> Router<State> {
         .route("/files/v1/devices", get(devices))
         .route("/files/v1/devices/{id}", delete(revoke))
         .route("/files/v1/shares", get(shares))
-        .route("/files/v1/app-repositories", get(app_repositories))
-        .route("/files/v1/app-repositories/{id}", get(app_catalog))
         .route("/files/v1/shares/{id}", get(info))
         .route("/files/v1/shares/{id}/entries", get(entries))
         .route("/files/v1/shares/{id}/metadata", get(metadata))
         .route("/files/v1/shares/{id}/file", get(download))
+        .route("/files/v1/shares/{id}/manifest", get(manifest))
+        .route("/files/v1/shares/{id}/chunks", get(chunks))
         // Account settings can manage download credentials without holding one.
         .route("/api/file-devices", get(browser_devices))
         .route("/api/file-devices/{id}", delete(browser_revoke))
@@ -40,7 +40,7 @@ async fn discovery(ExtractState(state): ExtractState<State>) -> Json<Value> {
     Json(json!({"protocol":1,"server":env!("CARGO_PKG_VERSION"),
         "name":state.0.settings.read().await.name,"read_only":true,
         "authentication":"bearer","checksum":"sha256","page_size":100,
-        "max_page":999,"ranges":true,"pairing":true,"auth":"/auth/v1","app_repositories":true}))
+        "max_page":999,"ranges":true,"pairing":true,"auth":"/auth/v1","folder_downloads":true}))
 }
 
 // Original Files API login stays available as an alias for account sign-in.
@@ -128,52 +128,81 @@ async fn shares(
     ExtractState(state): ExtractState<State>,
     headers: HeaderMap,
 ) -> Result<Json<Value>> {
-    share_list(&state, &headers, "files").await
-}
-
-async fn app_repositories(
-    ExtractState(state): ExtractState<State>,
-    headers: HeaderMap,
-) -> Result<Json<Value>> {
-    share_list(&state, &headers, "apps").await
-}
-
-async fn share_list(state: &State, headers: &HeaderMap, kind: &str) -> Result<Json<Value>> {
-    let (user, _) = caller(state, headers).await?;
-    let rows = sqlx::query("SELECT r.id,r.name,r.visibility FROM resources r JOIN shares s ON s.id=r.id WHERE r.kind='share' AND s.share_type=? ORDER BY r.name COLLATE NOCASE,r.id")
-        .bind(kind).fetch_all(&state.0.db).await?;
+    let (user, _) = caller(&state, &headers).await?;
+    let rows = sqlx::query("SELECT r.id,r.name,r.visibility,s.supports_updates FROM resources r JOIN shares s ON s.id=r.id WHERE r.kind='share' ORDER BY r.name COLLATE NOCASE,r.id")
+        .fetch_all(&state.0.db).await?;
     let mut shares = Vec::new();
     for row in rows {
         let id: String = row.get("id");
-        if auth::allowed(state, Some(&user), &id, "access").await? {
-            shares.push(json!({"id":id,"name":row.get::<String,_>("name"),"visibility":row.get::<String,_>("visibility"),"kind":"share","share_type":kind}));
+        if auth::allowed(&state, Some(&user), &id, "access").await? {
+            shares.push(json!({"id":id,"name":row.get::<String,_>("name"),"visibility":row.get::<String,_>("visibility"),"kind":"share","supports_updates":row.get::<bool,_>("supports_updates")}));
         }
     }
     Ok(Json(json!({"shares":shares})))
 }
 
-async fn app_catalog(
+async fn manifest(
     ExtractState(state): ExtractState<State>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<Value>> {
+    Query(query): Query<ManifestQuery>,
+) -> Result<Json<super::tree::Manifest>> {
     let share = share(&state, &headers, &id).await?;
-    let kind: String = sqlx::query_scalar("SELECT share_type FROM shares WHERE id=?")
-        .bind(&id)
-        .fetch_optional(&state.0.db)
-        .await?
-        .ok_or_else(Error::not_found)?;
-    if kind != "apps" {
-        return Err(Error::not_found());
+    if (query.update || !super::tree::is_directory(&share, &query.path).await?)
+        && !supports_updates(&state, &id).await?
+    {
+        return Err(updates_disabled());
     }
-    let _scan = super::catalog::SCANS.try_acquire().map_err(|_| {
-        Error::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "File server is busy. Try again shortly.",
-        )
-    })?;
-    let apps = tokio::task::spawn_blocking(move || super::catalog::scan(&share)).await??;
-    Ok(Json(json!({"apps":apps})))
+    Ok(Json(super::tree::manifest(share, query.path).await?))
+}
+
+#[derive(Deserialize)]
+struct ManifestQuery {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    update: bool,
+}
+
+#[derive(Deserialize)]
+struct ChunkQuery {
+    path: String,
+    sha256: String,
+    #[serde(default)]
+    offset: u64,
+}
+
+async fn chunks(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<ChunkQuery>,
+) -> Result<Json<super::tree::ChunkPage>> {
+    let share = share(&state, &headers, &id).await?;
+    if !supports_updates(&state, &id).await? {
+        return Err(updates_disabled());
+    }
+    Ok(Json(
+        super::tree::chunks(share, query.path, query.sha256, query.offset).await?,
+    ))
+}
+
+async fn supports_updates(state: &State, id: &str) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar("SELECT supports_updates FROM shares WHERE id=?")
+            .bind(id)
+            .fetch_optional(&state.0.db)
+            .await?
+            .ok_or_else(Error::not_found)?,
+    )
+}
+
+fn updates_disabled() -> Error {
+    Error::coded(
+        StatusCode::FORBIDDEN,
+        "updates_disabled",
+        "Updates are disabled for this file server.",
+    )
 }
 
 async fn share(state: &State, headers: &HeaderMap, id: &str) -> Result<Share> {
@@ -201,13 +230,13 @@ async fn info(
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
     share(&state, &headers, &id).await?;
-    let (name, visibility, share_type): (String, String, String) =
-        sqlx::query_as("SELECT r.name,r.visibility,s.share_type FROM resources r JOIN shares s ON s.id=r.id WHERE r.id=?")
+    let (name, visibility, supports_updates): (String, String, bool) =
+        sqlx::query_as("SELECT r.name,r.visibility,s.supports_updates FROM resources r JOIN shares s ON s.id=r.id WHERE r.id=?")
             .bind(&id)
             .fetch_one(&state.0.db)
             .await?;
     Ok(Json(
-        json!({"id":id,"name":name,"visibility":visibility,"kind":"share","share_type":share_type}),
+        json!({"id":id,"name":name,"visibility":visibility,"kind":"share","supports_updates":supports_updates}),
     ))
 }
 

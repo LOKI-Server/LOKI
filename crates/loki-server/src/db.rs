@@ -123,6 +123,12 @@ const MIGRATIONS: &[Migration] = &[
     // Rejected accounts are removed a few days after rejection; older ones start counting now.
     Column("users", "rejected_at", "INTEGER"),
     Sql("UPDATE users SET rejected_at=CAST(strftime('%s','now') AS INTEGER) WHERE status='rejected' AND rejected_at IS NULL"),
+    Column(
+        "shares",
+        "supports_updates",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(supports_updates IN (0,1))",
+    ),
+    Sql("UPDATE shares SET supports_updates=1,share_type='files' WHERE share_type='apps'"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
@@ -266,11 +272,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
-        let share_type: String = sqlx::query_scalar("SELECT share_type FROM shares WHERE id='old'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(share_type, "files");
+        let supports_updates: bool =
+            sqlx::query_scalar("SELECT supports_updates FROM shares WHERE id='old'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!supports_updates);
         sqlx::query("UPDATE shares SET excluded_extensions='[\"tmp\"]' WHERE id='old'")
             .execute(&pool)
             .await
@@ -284,6 +291,44 @@ mod tests {
                 .unwrap();
         assert_eq!(excluded, "[\"tmp\"]");
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn former_app_repositories_become_file_shares_with_updates() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("loki.db");
+        let pool = open(&path).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO resources(id,kind,name) VALUES('games','share','Games');
+             INSERT INTO shares(id,root,excluded_extensions,share_type) VALUES('games','game-root','[\"bak\"]','apps');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 2))
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = open(&path).await.unwrap();
+        let share: (String, String, bool) =
+            sqlx::query_as("SELECT root,excluded_extensions,supports_updates FROM shares WHERE id='games'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(share, ("game-root".into(), "[\"bak\"]".into(), true));
+        sqlx::query("UPDATE shares SET supports_updates=0 WHERE id='games'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = open(&path).await.unwrap();
+        let enabled: bool =
+            sqlx::query_scalar("SELECT supports_updates FROM shares WHERE id='games'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!enabled);
     }
 
     /// LOKI 0.3.0 databases stop at 17 steps; a development build left some at

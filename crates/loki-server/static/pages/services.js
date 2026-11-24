@@ -33,13 +33,13 @@ const manage = r => store.session.user.owner ? IconButton({ icon: "settings", la
 
 /** A full card for one resource, used on the Applications, File shares and Routes pages. */
 export function resourceCard(r) {
-  const description = r.kind === "app" ? r.manifest.description : r.kind === "share" ? (r.share_type === "apps" ? "Desktop builds people can download and update with LOKI Client." : "Browse, preview, and download shared files.") : r.hostname || r.url;
+  const description = r.kind === "app" ? r.manifest.description : r.kind === "share" ? "Browse, preview, and download shared files." : r.hostname || r.url;
   const open = opener(r);
   const primary = open.href ? LinkButton({ label: r.kind === "share" ? "Browse files" : "Open", href: open.href, external: open.external, icon: r.kind === "share" ? "folder" : "external", size: "sm" })
     : open.action ? Button({ label: "Open panel", action: open.action, id: r.id, icon: "apps", size: "sm" }) : "";
   const panel = r.kind === "app" && open.href && r.manifest?.panel ? Button({ label: "Panel", action: "app-panel", id: r.id, icon: "apps", size: "sm", kind: "ghost" }) : "";
   const update = r.update ? Button({ label: `Update to v${r.update}`, action: "registry-install", id: r.id, icon: "refresh", size: "sm", kind: "primary" }) : "";
-  return html`<article class="${`resource-card kind-${r.kind}`}" data-key="${r.id}"><header class="resource-head"><span class="${r.icon ? "resource-icon has-picture" : "resource-icon"}" aria-hidden="true">${resourceIcon(r)}</span><div class="resource-title"><h3>${r.name}</h3><div class="resource-tags">${r.kind === "share" ? Badge(r.share_type === "apps" ? "App repository" : "File server", "neutral") : ""}${r.kind === "app" ? Badge(`v${r.manifest.version}`, "neutral") : ""}${r.update ? Badge("Update available", "info") : ""}</div></div><div class="resource-end">${resourceStatus(r)}${manage(r)}</div></header><p class="resource-text">${description}</p>${r.error ? Notice({ tone: "danger", body: r.error }) : ""}<footer class="resource-actions">${update}${primary}${panel}</footer></article>`;
+  return html`<article class="${`resource-card kind-${r.kind}`}" data-key="${r.id}"><header class="resource-head"><span class="${r.icon ? "resource-icon has-picture" : "resource-icon"}" aria-hidden="true">${resourceIcon(r)}</span><div class="resource-title"><h3>${r.name}</h3><div class="resource-tags">${r.kind === "share" ? Badge("File server", "neutral") : ""}${r.kind === "app" ? Badge(`v${r.manifest.version}`, "neutral") : ""}${r.update ? Badge("Update available", "info") : ""}</div></div><div class="resource-end">${resourceStatus(r)}${manage(r)}</div></header><p class="resource-text">${description}</p>${r.error ? Notice({ tone: "danger", body: r.error }) : ""}<footer class="resource-actions">${update}${primary}${panel}</footer></article>`;
 }
 
 export const resourceGrid = items => html`<div class="card-grid">${items.map(resourceCard)}</div>`;
@@ -47,7 +47,7 @@ export const resourceGrid = items => html`<div class="card-grid">${items.map(res
 /** A compact, clickable row for one resource, used on the overview. */
 function tile(r) {
   const open = opener(r);
-  const subtitle = r.kind === "share" ? `${r.share_type === "apps" ? "App repository" : "File server"} · ${audiences[r.visibility] || r.visibility}` : r.kind === "route" ? r.hostname || r.url : r.manifest?.description || "";
+  const subtitle = r.kind === "share" ? `File server · ${audiences[r.visibility] || r.visibility}` : r.kind === "route" ? r.hostname || r.url : r.manifest?.description || "";
   const name = open.href ? html`<a class="tile-title" href="${open.href}"${open.external ? html` target="_blank" rel="noopener noreferrer"` : ""}>${r.name}${open.external ? icon("external", "tile-external") : ""}</a>`
     : open.action ? html`<button type="button" class="tile-title link-button" data-action="${open.action}" data-id="${r.id}">${r.name}</button>`
     : html`<span class="tile-title">${r.name}</span>`;

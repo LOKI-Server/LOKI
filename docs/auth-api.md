@@ -6,7 +6,7 @@ when opening the file browser; they do not sign in again or store a password.
 Browser cookies and app-scoped OIDC tokens remain separate.
 
 Use HTTPS outside loopback. Public `GET /auth/v1` returns
-`{protocol:1, server:"0.10.0", name:"LOKI", pairing:true, services:["sync","files"]}`.
+`{protocol:1, server:"0.11.0", name:"LOKI", pairing:true, services:["sync","files"]}`.
 Clients should reject unsupported protocol versions and ignore unknown fields.
 The [OpenAPI description](auth-api.yaml) covers these account endpoints.
 

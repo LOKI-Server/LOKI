@@ -102,47 +102,17 @@ language. See the [client guide](docs/sync-api.md), its [OpenAPI description](do
 for generating Kotlin, C#, or TypeScript bindings, and the standard-library
 [Python reference client](examples/sync-reference-client/README.md).
 
-## App repositories
+## File-server downloads and updates
 
-In **File shares â†’ Share a folder**, choose **App repository** when you create
-the share. The type is fixed after creation. Existing shares are ordinary
-file servers. App repositories use the same access grants as file servers.
-Desktop users browse them from **Apps** in LOKI Client.
+Use **File shares → Share a folder** to share a folder on the server. People
+with access can download individual files or entire subfolders. The web browser
+downloads folders as ZIP archives. LOKI Desktop saves them as directories.
 
-Put each app in its own directory. Use `windows`, `macos`, or `linux`
-subdirectories for builds, or put a single-platform build directly inside the
-app directory. For example:
-
-```text
-Game builds/
-  Level Editor/
-    windows/editor.zip
-    linux/editor.AppImage
-  Replay Viewer/
-    viewer.exe
-```
-
-A platform directory takes precedence over a root build for that platform.
-When a directory contains multiple recognized packages, LOKI picks the one
-with the latest modified time, using the filename to break ties. At the app
-root, `.zip` and `.7z` are treated as Windows builds. For exact selection or
-an optional display version, put an `app.json` in the app directory:
-
-```json
-{
-  "name": "Level Editor",
-  "version": "1.4",
-  "builds": {
-    "windows": "windows/editor.zip",
-    "linux": "linux/editor.AppImage"
-  }
-}
-```
-
-Publish a new build by replacing the selected file or changing the manifest
-to point to the new package. Desktop update checks compare the SHA-256 of
-the current build with the last download. LOKI delivers the package and
-verifies its bytes. The user controls installation and launch.
+Turn on **Support updates** to let Desktop track files and folders downloaded
+from that share. In **Updates**, users can check the share for changes and
+choose which download to update. Desktop verifies downloaded bytes and can
+reuse matching parts of large local files. Existing app repositories become
+file servers with updates enabled.
 
 ## Repositories and personal storage
 

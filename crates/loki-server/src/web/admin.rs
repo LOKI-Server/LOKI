@@ -286,23 +286,7 @@ pub(super) struct Share {
     name: String,
     #[serde(default)]
     excluded_extensions: String,
-    share_type: Option<ShareType>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum ShareType {
-    Files,
-    Apps,
-}
-
-impl ShareType {
-    fn value(&self) -> &'static str {
-        match self {
-            Self::Files => "files",
-            Self::Apps => "apps",
-        }
-    }
+    supports_updates: Option<bool>,
 }
 /// Creates a share when `id` is empty, otherwise changes it.
 pub(super) async fn share_save(state: &State, id: &str, input: Share) -> Result<Value> {
@@ -335,36 +319,26 @@ pub(super) async fn share_save(state: &State, id: &str, input: Share) -> Result<
             .bind(name)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO shares(id,root,excluded_extensions,share_type) VALUES(?,?,?,?)")
+        sqlx::query("INSERT INTO shares(id,root,excluded_extensions,supports_updates) VALUES(?,?,?,?)")
             .bind(&rid)
             .bind(root.to_string_lossy().as_ref())
             .bind(&excluded)
-            .bind(input.share_type.as_ref().map_or("files", ShareType::value))
+            .bind(input.supports_updates.unwrap_or(false))
             .execute(&mut *tx)
             .await?;
     } else {
-        let share_type: String = sqlx::query_scalar("SELECT share_type FROM shares WHERE id=?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(Error::not_found)?;
-        if input
-            .share_type
-            .as_ref()
-            .is_some_and(|kind| kind.value() != share_type)
-        {
-            return Err(Error::bad(
-                "Choose the file server type when creating the share.",
-            ));
-        }
-        sqlx::query("UPDATE resources SET name=? WHERE id=? AND kind='share'")
-            .bind(name)
+        let saved = sqlx::query("UPDATE shares SET root=?,excluded_extensions=?,supports_updates=coalesce(?,supports_updates) WHERE id=?")
+            .bind(root.to_string_lossy().as_ref())
+            .bind(&excluded)
+            .bind(input.supports_updates)
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE shares SET root=?,excluded_extensions=? WHERE id=?")
-            .bind(root.to_string_lossy().as_ref())
-            .bind(&excluded)
+        if saved.rows_affected() == 0 {
+            return Err(Error::not_found());
+        }
+        sqlx::query("UPDATE resources SET name=? WHERE id=? AND kind='share'")
+            .bind(name)
             .bind(id)
             .execute(&mut *tx)
             .await?;

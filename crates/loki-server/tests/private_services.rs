@@ -457,59 +457,37 @@ async fn management_pairing_keeps_browser_native_and_owner_permissions_separate(
     );
 }
 #[tokio::test]
-async fn app_repositories_respect_access_and_keep_their_creation_type() {
+async fn folder_downloads_and_updates_follow_share_access() {
+    async fn json_body(response: axum::response::Response) -> Value {
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        assert!(
+            status.is_success(),
+            "{status}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        serde_json::from_slice(&bytes).unwrap()
+    }
     let (_data, state) = fixture().await;
     let files = tempfile::tempdir().unwrap();
-    for folder in ["Launcher", "Editor/windows", "Editor/linux", "Pinned"] {
+    for folder in ["Game/bin", "Game/data/empty"] {
         std::fs::create_dir_all(files.path().join(folder)).unwrap();
     }
     for (file, body) in [
-        ("Launcher/launcher.exe", "old"),
-        ("Editor/windows/editor.zip", "windows"),
-        ("Editor/linux/editor.tar.gz", "linux"),
-        ("Editor/linux/private.bak", "hidden"),
-        ("Pinned/current.bin", "release"),
-        (
-            "Pinned/app.json",
-            r#"{"name":"Pinned release","version":"2.4","builds":{"windows":"current.bin"}}"#,
-        ),
+        ("Game/bin/game.exe", "old"),
+        ("Game/data/level.dat", "level"),
+        ("Game/data/secret.bak", "hidden"),
     ] {
         std::fs::write(files.path().join(file), body).unwrap();
     }
 
     let owner = Browser::new(&state, "owner").await;
-    let read = |response: axum::response::Response| async {
-        assert_eq!(response.status(), StatusCode::OK);
-        serde_json::from_slice::<Value>(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
-            .unwrap()
-    };
-    let save = |id: &str, name: &str, kind: Option<&str>| {
+    let save = |id: &str, enabled: Option<bool>| {
         owner.request("POST", "/api/action", json!({"action":"share-save","id":id,
-            "data":{"name":name,"root":files.path(),"share_type":kind,"excluded_extensions":"bak"}}))
+            "data":{"name":"Games","root":files.path(),"supports_updates":enabled,"excluded_extensions":"bak"}}))
     };
-    let normal = read(save("", "Files", None).await).await;
-    let app = read(save("", "Builds", Some("apps")).await).await;
-    let normal = normal["id"].as_str().unwrap();
-    let app = app["id"].as_str().unwrap();
-    assert_eq!(
-        save(normal, "Changed", Some("apps")).await.status(),
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(save(app, "Renamed", None).await.status(), StatusCode::OK);
-    assert_eq!(
-        save(app, "Changed", Some("files")).await.status(),
-        StatusCode::BAD_REQUEST
-    );
-    let web = read(owner.request("GET", "/api/state", Value::Null).await).await;
-    for (id, kind) in [(normal, "files"), (app, "apps")] {
-        let share = web["resources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|share| share["id"] == id)
-            .unwrap();
-        assert_eq!(share["share_type"], kind);
-    }
+    let created = json_body(save("", None).await).await;
+    let id = created["id"].as_str().unwrap();
     let api = |method: &str, path: &str, token: &str, body: Value| {
         owner.app.clone().oneshot(
             Request::builder()
@@ -526,98 +504,98 @@ async fn app_repositories_respect_access_and_keep_their_creation_type() {
             "POST",
             "/auth/v1/login",
             "",
-            json!({"username":username,"password":"test password for LOKI","name":"Catalog test"}),
+            json!({"username":username,
+            "password":"test password for LOKI","name":"File downloads test"}),
         )
     };
-    let owner_auth = read(token("owner").await.unwrap()).await;
-    let alice_auth = read(token("alice").await.unwrap()).await;
+    let owner_auth = json_body(token("owner").await.unwrap()).await;
+    let alice_auth = json_body(token("alice").await.unwrap()).await;
     let owner_token = owner_auth["token"].as_str().unwrap();
     let alice_token = alice_auth["token"].as_str().unwrap();
 
-    let list = read(
+    let list = json_body(
         api("GET", "/files/v1/shares", owner_token, Value::Null)
             .await
             .unwrap(),
     )
     .await;
-    assert_eq!(list["shares"][0]["id"], normal);
-    assert_eq!(list["shares"].as_array().unwrap().len(), 1);
-    let list = read(
-        api(
-            "GET",
-            "/files/v1/app-repositories",
-            owner_token,
-            Value::Null,
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    assert_eq!(list["shares"][0]["id"], app);
-    let list = read(
-        api(
-            "GET",
-            "/files/v1/app-repositories",
-            alice_token,
-            Value::Null,
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    assert!(list["shares"].as_array().unwrap().is_empty());
-    let catalog = format!("/files/v1/app-repositories/{app}");
+    assert_eq!(list["shares"][0]["id"], id);
+    assert_eq!(list["shares"][0]["supports_updates"], false);
+
+    let manifest = format!("/files/v1/shares/{id}/manifest?path=Game");
+    let check = format!("{manifest}&update=true");
     assert_eq!(
-        api("GET", &catalog, alice_token, Value::Null)
+        api("GET", &manifest, alice_token, Value::Null)
             .await
             .unwrap()
             .status(),
         StatusCode::FORBIDDEN
     );
-    let listing = read(
-        api("GET", &catalog, owner_token, Value::Null)
+    assert_eq!(
+        api("GET", &check, owner_token, Value::Null)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let before = json_body(
+        api("GET", &manifest, owner_token, Value::Null)
             .await
             .unwrap(),
     )
     .await;
-    let apps = listing["apps"].as_array().unwrap();
-    let lookup = |id: &str| apps.iter().find(|app| app["id"] == id).unwrap();
+    assert_eq!(before["directory"], true);
+    let entries = before["entries"].as_array().unwrap();
     assert_eq!(
-        lookup("Launcher")["builds"]["windows"]["path"],
-        "Launcher/launcher.exe"
-    );
-    assert_eq!(
-        lookup("Editor")["builds"]["linux"]["path"],
-        "Editor/linux/editor.tar.gz"
-    );
-    assert_eq!(
-        lookup("Editor")["builds"]["windows"]["path"],
-        "Editor/windows/editor.zip"
-    );
-    assert_eq!(lookup("Pinned")["version"], "2.4");
-    assert_eq!(
-        lookup("Pinned")["builds"]["windows"]["path"],
-        "Pinned/current.bin"
+        entries
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "bin",
+            "bin/game.exe",
+            "data",
+            "data/empty",
+            "data/level.dat"
+        ]
     );
 
-    let path = format!("/files/v1/shares/{app}/metadata?path=Launcher/launcher.exe&checksum=true");
-    let original = read(api("GET", &path, owner_token, Value::Null).await.unwrap()).await;
-    std::fs::write(files.path().join("Launcher/launcher.exe"), "new").unwrap();
-    let updated = read(api("GET", &path, owner_token, Value::Null).await.unwrap()).await;
-    assert_eq!(original["size"], updated["size"]);
-    assert_ne!(original["sha256"], updated["sha256"]);
-    let response = api(
-        "GET",
-        &format!("/files/v1/shares/{app}/file?path=Launcher/launcher.exe"),
-        owner_token,
-        Value::Null,
-    )
-    .await
-    .unwrap();
+    let archive_path = format!("/api/shares/{id}/archive?path=Game");
+    let response = owner.request("GET", &archive_path, Value::Null).await;
     assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    assert!(archive.by_name("Game/data/empty/").unwrap().is_dir());
+    assert!(archive.by_name("Game/bin/game.exe").is_ok());
+    assert!(archive.by_name("Game/data/level.dat").is_ok());
+    assert!(archive.by_name("Game/data/secret.bak").is_err());
+
+    assert_eq!(save(id, Some(true)).await.status(), StatusCode::OK);
+    std::fs::write(files.path().join("Game/bin/game.exe"), "new").unwrap();
+    let after = json_body(api("GET", &check, owner_token, Value::Null).await.unwrap()).await;
+    assert_ne!(before["revision"], after["revision"]);
+    let hash = after["entries"][1]["sha256"].as_str().unwrap();
+    let chunks = format!("/files/v1/shares/{id}/chunks?path=Game/bin/game.exe&sha256={hash}");
+    let response = json_body(api("GET", &chunks, owner_token, Value::Null).await.unwrap()).await;
     assert_eq!(
-        to_bytes(response.into_body(), 100).await.unwrap(),
-        &b"new"[..]
+        response["chunks"],
+        json!([{"offset":0,"size":3,"sha256":hash}])
+    );
+    assert_eq!(response["next_offset"], Value::Null);
+    assert_eq!(save(id, Some(false)).await.status(), StatusCode::OK);
+    assert_eq!(
+        api("GET", &chunks, owner_token, Value::Null)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        api("GET", &manifest, owner_token, Value::Null)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
     );
 }
 

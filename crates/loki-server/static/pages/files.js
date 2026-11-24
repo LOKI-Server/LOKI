@@ -24,6 +24,7 @@ export const browseUrl = (id, path = "", page = 0, sort = "name") => {
   return `/shares/${enc(id)}${query.size ? `?${query}` : ""}`;
 };
 const fileUrl = (id, path) => `/api/shares/${enc(id)}/file?path=${enc(path)}`;
+const archiveUrl = (id, path) => `/api/shares/${enc(id)}/archive?path=${enc(path)}`;
 
 export async function browse(id, { path = "", page = 0, sort = "name" } = {}) {
   const r = resource(id);
@@ -41,7 +42,7 @@ export async function browse(id, { path = "", page = 0, sort = "name" } = {}) {
       : html`<a class="file-name"${attrs({ href: `${fileUrl(id, full)}&download=true`, "data-preview": full, "data-share": id })}><span class="file-icon" aria-hidden="true">${icon(kindOf(e.name))}</span>${e.name}</a>`;
     return {
       key: full,
-      cells: [name, e.directory ? html`<span class="muted">—</span>` : fmt(e.size), html`<span class="muted nowrap">${e.modified ? ago(e.modified) : "—"}</span>`, e.directory ? "" : IconLink({ icon: "download", label: `Download ${e.name}`, href: `${fileUrl(id, full)}&download=true`, download: true, size: "sm" })],
+      cells: [name, e.directory ? html`<span class="muted">—</span>` : fmt(e.size), html`<span class="muted nowrap">${e.modified ? ago(e.modified) : "—"}</span>`, IconLink({ icon: "download", label: `Download ${e.name}`, href: e.directory ? archiveUrl(id, full) : `${fileUrl(id, full)}&download=true`, download: true, size: "sm" })],
     };
   });
   const sorts = { name: "Name", size: "Size", modified: "Modified" };

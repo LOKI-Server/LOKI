@@ -419,7 +419,7 @@ export async function onClick(event) {
     if (action === "grant-add") { $("#grants").insertAdjacentHTML("beforeend", String(grantRow(subjects(), roles(resource(id))))); return; }
     if (action === "folder-picker") {
       const form = b.closest("form");
-      folderReturn = { id: form.dataset.id || "", name: form.elements.name.value, excluded_extensions: form.elements.excluded_extensions.value, ...(form.elements.share_type ? { share_type: form.elements.share_type.value } : {}) };
+      folderReturn = { id: form.dataset.id || "", name: form.elements.name.value, excluded_extensions: form.elements.excluded_extensions.value, supports_updates: form.elements.supports_updates.checked };
       return await folderPicker(form.elements.root.value);
     }
     if (action === "folder-open") return await folderPicker(b.dataset.path);

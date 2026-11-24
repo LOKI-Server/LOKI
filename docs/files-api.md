@@ -65,40 +65,8 @@ request; revocation does not interrupt a response stream already opened.
 `GET /files/v1/shares` returns only accessible shares:
 
 ```json
-{"shares":[{"id":"…","name":"Archive","visibility":"restricted","kind":"share"}]}
+{"shares":[{"id":"…","name":"Archive","visibility":"restricted","kind":"share","supports_updates":true}]}
 ```
-
-These are ordinary file servers. App repositories are listed separately at
-`GET /files/v1/app-repositories`, with the same response shape and
-`share_type: "apps"`.
-
-`GET /files/v1/app-repositories/{id}` returns the apps and their current builds
-for an accessible app repository. For example:
-
-```json
-{
-  "apps": [
-    {
-      "id": "Sample Game",
-      "name": "Sample Game",
-      "version": null,
-      "builds": {
-        "windows": {
-          "path": "Sample Game/windows/game.zip",
-          "name": "game.zip",
-          "size": 1048576,
-          "modified": 1795000000000
-        }
-      }
-    }
-  ]
-}
-```
-
-Build `modified` is Unix milliseconds. Use the file metadata endpoint with
-`checksum=true` to compare content with a previously downloaded build. Fetch
-the selected build using the ordinary file download endpoint and verify its
-size and SHA-256. Both endpoints apply the share's access rules.
 
 `GET /files/v1/shares/{id}` returns one share with the same fields. Absolute
 server paths and other administrative settings are never exposed. Existing
@@ -126,6 +94,31 @@ snapshots, so changes between requests can shift entries between pages.
 `size` is bytes and `modified` is Unix seconds. Excluded extensions are filtered
 before pagination, at every directory depth. Excluded files return `404` on
 direct metadata and download requests too. Directories remain browsable.
+
+## Folder downloads and updates
+
+`GET /files/v1/shares/{id}/manifest?path=Games/Example` returns
+`{directory, revision, entries}` for the selected folder. Entries have `path`
+relative to the selected folder, `directory`, `size`, `sha256`, and
+`last_modified`. Directory entries have no checksum or HTTP modification date.
+The revision changes when files, names, or directories change. Fetch file
+entries with the existing file endpoint and verify their size and SHA-256.
+
+Add `update=true` for an update check. The share must have
+`supports_updates: true`. File manifests also require this setting and contain
+one entry with an empty relative path. Requests still use the share's normal
+access rules. Folder downloads apply extension exclusions, and the browser
+offers a ZIP download at `GET /api/shares/{id}/archive?path=Games/Example`.
+
+For a changed file on a share that supports updates, request
+`GET /files/v1/shares/{id}/chunks?path=...&sha256=...&offset=0`. Use the file's
+manifest SHA-256. The response contains `chunks` with byte `offset`, `size`,
+and SHA-256, plus a nullable `next_offset` for the next page. Chunk boundaries
+use a 64-bit rolling gear hash and range from 256 KiB to 4 MiB, with a
+possibly shorter final chunk. Clients can reuse matching bytes locally and
+fetch missing byte ranges with the existing file endpoint. Verify the whole
+reconstructed file before replacing the local copy. If the target hash
+changes while preparing the chunks, the server returns `409`.
 
 ## Metadata and checksums
 

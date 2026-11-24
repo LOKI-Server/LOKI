@@ -82,6 +82,7 @@ pub fn router(state: State) -> Router {
         )
         .route("/api/shares/{id}", get(files::list))
         .route("/api/shares/{id}/file", get(files::download))
+        .route("/api/shares/{id}/archive", get(files::archive))
         .route("/api/shares/{id}/info", get(files::info))
         .route("/api/logs/{id}", get(logs))
         .route("/api/backups/{id}", get(backup_download))
@@ -387,14 +388,14 @@ async fn dashboard(
                 }
             }
             "share" => {
-                let (root, excluded, share_type): (String, String, String) = sqlx::query_as(
-                    "SELECT root,excluded_extensions,share_type FROM shares WHERE id=?",
+                let (root, excluded, supports_updates): (String, String, bool) = sqlx::query_as(
+                    "SELECT root,excluded_extensions,supports_updates FROM shares WHERE id=?",
                 )
                 .bind(&id)
                 .fetch_one(&state.0.db)
                 .await?;
                 resource["url"] = json!(format!("/shares/{id}"));
-                resource["share_type"] = json!(share_type);
+                resource["supports_updates"] = json!(supports_updates);
                 if user.owner {
                     resource["root"] = json!(root);
                     resource["excluded_extensions"] = serde_json::from_str(&excluded)?;
