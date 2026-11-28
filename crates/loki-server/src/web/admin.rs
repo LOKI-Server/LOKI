@@ -286,7 +286,6 @@ pub(super) struct Share {
     name: String,
     #[serde(default)]
     excluded_extensions: String,
-    supports_updates: Option<bool>,
 }
 /// Creates a share when `id` is empty, otherwise changes it.
 pub(super) async fn share_save(state: &State, id: &str, input: Share) -> Result<Value> {
@@ -319,20 +318,16 @@ pub(super) async fn share_save(state: &State, id: &str, input: Share) -> Result<
             .bind(name)
             .execute(&mut *tx)
             .await?;
-        sqlx::query(
-            "INSERT INTO shares(id,root,excluded_extensions,supports_updates) VALUES(?,?,?,?)",
-        )
-        .bind(&rid)
-        .bind(root.to_string_lossy().as_ref())
-        .bind(&excluded)
-        .bind(input.supports_updates.unwrap_or(false))
-        .execute(&mut *tx)
-        .await?;
-    } else {
-        let saved = sqlx::query("UPDATE shares SET root=?,excluded_extensions=?,supports_updates=coalesce(?,supports_updates) WHERE id=?")
+        sqlx::query("INSERT INTO shares(id,root,excluded_extensions) VALUES(?,?,?)")
+            .bind(&rid)
             .bind(root.to_string_lossy().as_ref())
             .bind(&excluded)
-            .bind(input.supports_updates)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        let saved = sqlx::query("UPDATE shares SET root=?,excluded_extensions=? WHERE id=?")
+            .bind(root.to_string_lossy().as_ref())
+            .bind(&excluded)
             .bind(id)
             .execute(&mut *tx)
             .await?;

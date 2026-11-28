@@ -388,14 +388,12 @@ async fn dashboard(
                 }
             }
             "share" => {
-                let (root, excluded, supports_updates): (String, String, bool) = sqlx::query_as(
-                    "SELECT root,excluded_extensions,supports_updates FROM shares WHERE id=?",
-                )
-                .bind(&id)
-                .fetch_one(&state.0.db)
-                .await?;
+                let (root, excluded): (String, String) =
+                    sqlx::query_as("SELECT root,excluded_extensions FROM shares WHERE id=?")
+                        .bind(&id)
+                        .fetch_one(&state.0.db)
+                        .await?;
                 resource["url"] = json!(format!("/shares/{id}"));
-                resource["supports_updates"] = json!(supports_updates);
                 if user.owner {
                     resource["root"] = json!(root);
                     resource["excluded_extensions"] = serde_json::from_str(&excluded)?;

@@ -65,7 +65,7 @@ request; revocation does not interrupt a response stream already opened.
 `GET /files/v1/shares` returns only accessible shares:
 
 ```json
-{"shares":[{"id":"…","name":"Archive","visibility":"restricted","kind":"share","supports_updates":true}]}
+{"shares":[{"id":"…","name":"Archive","visibility":"restricted","kind":"share"}]}
 ```
 
 `GET /files/v1/shares/{id}` returns one share with the same fields. Absolute
@@ -95,7 +95,7 @@ snapshots, so changes between requests can shift entries between pages.
 before pagination, at every directory depth. Excluded files return `404` on
 direct metadata and download requests too. Directories remain browsable.
 
-## Folder downloads and updates
+## Folder downloads
 
 `GET /files/v1/shares/{id}/manifest?path=Games/Example` returns
 `{directory, revision, entries}` for the selected folder. Entries have `path`
@@ -104,21 +104,10 @@ relative to the selected folder, `directory`, `size`, `sha256`, and
 The revision changes when files, names, or directories change. Fetch file
 entries with the existing file endpoint and verify their size and SHA-256.
 
-Add `update=true` for an update check. The share must have
-`supports_updates: true`. File manifests also require this setting and contain
-one entry with an empty relative path. Requests still use the share's normal
-access rules. Folder downloads apply extension exclusions, and the browser
-offers a ZIP download at `GET /api/shares/{id}/archive?path=Games/Example`.
-
-For a changed file on a share that supports updates, request
-`GET /files/v1/shares/{id}/chunks?path=...&sha256=...&offset=0`. Use the file's
-manifest SHA-256. The response contains `chunks` with byte `offset`, `size`,
-and SHA-256, plus a nullable `next_offset` for the next page. Chunk boundaries
-use a 64-bit rolling gear hash and range from 256 KiB to 4 MiB, with a
-possibly shorter final chunk. Clients can reuse matching bytes locally and
-fetch missing byte ranges with the existing file endpoint. Verify the whole
-reconstructed file before replacing the local copy. If the target hash
-changes while preparing the chunks, the server returns `409`.
+Manifests describe folders only; a file path returns `400`, so download single
+files directly. Requests use the share's normal access rules. Folder downloads
+apply extension exclusions, and the browser offers a ZIP download at
+`GET /api/shares/{id}/archive?path=Games/Example`.
 
 ## Metadata and checksums
 

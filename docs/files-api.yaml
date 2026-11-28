@@ -235,15 +235,11 @@ paths:
     - $ref: '#/components/parameters/ShareId'
     get:
       operationId: filesManifest
-      summary: Get a download manifest for a folder or tracked file
+      summary: Get a download manifest for a folder
       parameters:
       - name: path
         in: query
         schema: { type: string, default: '' }
-      - name: update
-        in: query
-        description: Requires updates to be enabled for the share. File manifests always require this capability.
-        schema: { type: boolean, default: false }
       responses:
         '200':
           description: Manifest with relative paths and SHA-256 checksums
@@ -266,6 +262,8 @@ paths:
                         size: { type: integer, minimum: 0 }
                         sha256: { type: [string, 'null'] }
                         last_modified: { type: [string, 'null'] }
+        '400':
+          description: The path is a file, not a folder
         '401':
           $ref: '#/components/responses/401'
         '403':
@@ -276,56 +274,6 @@ paths:
           description: The file changed during the request
         '413':
           description: The folder exceeds the manifest limit
-        '503':
-          $ref: '#/components/responses/503'
-  /files/v1/shares/{id}/chunks:
-    parameters:
-    - $ref: '#/components/parameters/ShareId'
-    get:
-      operationId: filesChunks
-      summary: Get one page of chunk checksums for a file on an update-enabled share
-      parameters:
-      - name: path
-        in: query
-        required: true
-        schema: { type: string }
-      - name: sha256
-        in: query
-        required: true
-        schema: { type: string, pattern: '^[a-f0-9]{64}$' }
-      - name: offset
-        in: query
-        description: First byte offset from the previous page's next_offset
-        schema: { type: integer, minimum: 0, default: 0 }
-      responses:
-        '200':
-          description: Chunk checksums and the next byte offset, when another page exists
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [chunks, next_offset]
-                properties:
-                  next_offset: { type: [integer, 'null'], minimum: 0 }
-                  chunks:
-                    type: array
-                    items:
-                      type: object
-                      required: [offset, size, sha256]
-                      properties:
-                        offset: { type: integer, minimum: 0 }
-                        size: { type: integer, minimum: 1 }
-                        sha256: { type: string }
-        '400':
-          $ref: '#/components/responses/400'
-        '401':
-          $ref: '#/components/responses/401'
-        '403':
-          $ref: '#/components/responses/403'
-        '404':
-          $ref: '#/components/responses/404'
-        '409':
-          description: The file no longer matches the requested checksum
         '503':
           $ref: '#/components/responses/503'
   /files/v1/shares/{id}/file:
@@ -622,9 +570,6 @@ components:
     Share:
       type: object
       properties:
-        supports_updates:
-          type: boolean
-          default: false
         id:
           type: string
         name:

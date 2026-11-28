@@ -30,7 +30,6 @@ pub fn router() -> Router<State> {
         .route("/files/v1/shares/{id}/metadata", get(metadata))
         .route("/files/v1/shares/{id}/file", get(download))
         .route("/files/v1/shares/{id}/manifest", get(manifest))
-        .route("/files/v1/shares/{id}/chunks", get(chunks))
         // Account settings can manage download credentials without holding one.
         .route("/api/file-devices", get(browser_devices))
         .route("/api/file-devices/{id}", delete(browser_revoke))
@@ -129,13 +128,13 @@ async fn shares(
     headers: HeaderMap,
 ) -> Result<Json<Value>> {
     let (user, _) = caller(&state, &headers).await?;
-    let rows = sqlx::query("SELECT r.id,r.name,r.visibility,s.supports_updates FROM resources r JOIN shares s ON s.id=r.id WHERE r.kind='share' ORDER BY r.name COLLATE NOCASE,r.id")
+    let rows = sqlx::query("SELECT r.id,r.name,r.visibility FROM resources r JOIN shares s ON s.id=r.id WHERE r.kind='share' ORDER BY r.name COLLATE NOCASE,r.id")
         .fetch_all(&state.0.db).await?;
     let mut shares = Vec::new();
     for row in rows {
         let id: String = row.get("id");
         if auth::allowed(&state, Some(&user), &id, "access").await? {
-            shares.push(json!({"id":id,"name":row.get::<String,_>("name"),"visibility":row.get::<String,_>("visibility"),"kind":"share","supports_updates":row.get::<bool,_>("supports_updates")}));
+            shares.push(json!({"id":id,"name":row.get::<String,_>("name"),"visibility":row.get::<String,_>("visibility"),"kind":"share"}));
         }
     }
     Ok(Json(json!({"shares":shares})))
@@ -148,10 +147,10 @@ async fn manifest(
     Query(query): Query<ManifestQuery>,
 ) -> Result<Json<super::tree::Manifest>> {
     let share = share(&state, &headers, &id).await?;
-    if (query.update || !super::tree::is_directory(&share, &query.path).await?)
-        && !supports_updates(&state, &id).await?
-    {
-        return Err(updates_disabled());
+    if !super::tree::is_directory(&share, &query.path).await? {
+        return Err(Error::bad(
+            "Manifests describe folders. Download a file directly.",
+        ));
     }
     Ok(Json(super::tree::manifest(share, query.path).await?))
 }
@@ -160,47 +159,6 @@ async fn manifest(
 struct ManifestQuery {
     #[serde(default)]
     path: String,
-    #[serde(default)]
-    update: bool,
-}
-
-#[derive(Deserialize)]
-struct ChunkQuery {
-    path: String,
-    sha256: String,
-    #[serde(default)]
-    offset: u64,
-}
-
-async fn chunks(
-    ExtractState(state): ExtractState<State>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Query(query): Query<ChunkQuery>,
-) -> Result<Json<super::tree::ChunkPage>> {
-    let share = share(&state, &headers, &id).await?;
-    if !supports_updates(&state, &id).await? {
-        return Err(updates_disabled());
-    }
-    Ok(Json(
-        super::tree::chunks(share, query.path, query.sha256, query.offset).await?,
-    ))
-}
-
-async fn supports_updates(state: &State, id: &str) -> Result<bool> {
-    sqlx::query_scalar("SELECT supports_updates FROM shares WHERE id=?")
-        .bind(id)
-        .fetch_optional(&state.0.db)
-        .await?
-        .ok_or_else(Error::not_found)
-}
-
-fn updates_disabled() -> Error {
-    Error::coded(
-        StatusCode::FORBIDDEN,
-        "updates_disabled",
-        "Updates are disabled for this file server.",
-    )
 }
 
 async fn share(state: &State, headers: &HeaderMap, id: &str) -> Result<Share> {
@@ -228,13 +186,14 @@ async fn info(
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
     share(&state, &headers, &id).await?;
-    let (name, visibility, supports_updates): (String, String, bool) =
-        sqlx::query_as("SELECT r.name,r.visibility,s.supports_updates FROM resources r JOIN shares s ON s.id=r.id WHERE r.id=?")
-            .bind(&id)
-            .fetch_one(&state.0.db)
-            .await?;
+    let (name, visibility): (String, String) = sqlx::query_as(
+        "SELECT r.name,r.visibility FROM resources r JOIN shares s ON s.id=r.id WHERE r.id=?",
+    )
+    .bind(&id)
+    .fetch_one(&state.0.db)
+    .await?;
     Ok(Json(
-        json!({"id":id,"name":name,"visibility":visibility,"kind":"share","supports_updates":supports_updates}),
+        json!({"id":id,"name":name,"visibility":visibility,"kind":"share"}),
     ))
 }
 

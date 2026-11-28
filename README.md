@@ -104,17 +104,12 @@ language. See the [client guide](docs/sync-api.md), its [OpenAPI description](do
 for generating Kotlin, C#, or TypeScript bindings, and the standard-library
 [Python reference client](examples/sync-reference-client/README.md).
 
-## File-server downloads and updates
+## File-server downloads
 
 Use **File shares → Share a folder** to share a folder on the server. People
 with access can download individual files or entire subfolders. The web browser
-downloads folders as ZIP archives. LOKI Desktop saves them as directories.
-
-Turn on **Support updates** to let Desktop track files and folders downloaded
-from that share. In **Updates**, users can check the share for changes and
-choose which download to update. Desktop verifies downloaded bytes and can
-reuse matching parts of large local files. Existing app repositories become
-file servers with updates enabled.
+downloads folders as ZIP archives. LOKI Client on desktop and Android saves them
+as folders, checking every file against its SHA-256.
 
 ## Repositories and personal storage
 

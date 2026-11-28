@@ -457,7 +457,7 @@ async fn management_pairing_keeps_browser_native_and_owner_permissions_separate(
     );
 }
 #[tokio::test]
-async fn folder_downloads_and_updates_follow_share_access() {
+async fn folder_downloads_follow_share_access() {
     async fn json_body(response: axum::response::Response) -> Value {
         let status = response.status();
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
@@ -482,11 +482,17 @@ async fn folder_downloads_and_updates_follow_share_access() {
     }
 
     let owner = Browser::new(&state, "owner").await;
-    let save = |id: &str, enabled: Option<bool>| {
-        owner.request("POST", "/api/action", json!({"action":"share-save","id":id,
-            "data":{"name":"Games","root":files.path(),"supports_updates":enabled,"excluded_extensions":"bak"}}))
-    };
-    let created = json_body(save("", None).await).await;
+    let created = json_body(
+        owner
+            .request(
+                "POST",
+                "/api/action",
+                json!({"action":"share-save","id":"",
+            "data":{"name":"Games","root":files.path(),"excluded_extensions":"bak"}}),
+            )
+            .await,
+    )
+    .await;
     let id = created["id"].as_str().unwrap();
     let api = |method: &str, path: &str, token: &str, body: Value| {
         owner.app.clone().oneshot(
@@ -520,10 +526,8 @@ async fn folder_downloads_and_updates_follow_share_access() {
     )
     .await;
     assert_eq!(list["shares"][0]["id"], id);
-    assert_eq!(list["shares"][0]["supports_updates"], false);
 
     let manifest = format!("/files/v1/shares/{id}/manifest?path=Game");
-    let check = format!("{manifest}&update=true");
     assert_eq!(
         api("GET", &manifest, alice_token, Value::Null)
             .await
@@ -531,12 +535,14 @@ async fn folder_downloads_and_updates_follow_share_access() {
             .status(),
         StatusCode::FORBIDDEN
     );
+    // Manifests describe folders; single files download directly.
+    let file_manifest = format!("/files/v1/shares/{id}/manifest?path=Game/bin/game.exe");
     assert_eq!(
-        api("GET", &check, owner_token, Value::Null)
+        api("GET", &file_manifest, owner_token, Value::Null)
             .await
             .unwrap()
             .status(),
-        StatusCode::FORBIDDEN
+        StatusCode::BAD_REQUEST
     );
     let before = json_body(
         api("GET", &manifest, owner_token, Value::Null)
@@ -569,34 +575,6 @@ async fn folder_downloads_and_updates_follow_share_access() {
     assert!(archive.by_name("Game/bin/game.exe").is_ok());
     assert!(archive.by_name("Game/data/level.dat").is_ok());
     assert!(archive.by_name("Game/data/secret.bak").is_err());
-
-    assert_eq!(save(id, Some(true)).await.status(), StatusCode::OK);
-    std::fs::write(files.path().join("Game/bin/game.exe"), "new").unwrap();
-    let after = json_body(api("GET", &check, owner_token, Value::Null).await.unwrap()).await;
-    assert_ne!(before["revision"], after["revision"]);
-    let hash = after["entries"][1]["sha256"].as_str().unwrap();
-    let chunks = format!("/files/v1/shares/{id}/chunks?path=Game/bin/game.exe&sha256={hash}");
-    let response = json_body(api("GET", &chunks, owner_token, Value::Null).await.unwrap()).await;
-    assert_eq!(
-        response["chunks"],
-        json!([{"offset":0,"size":3,"sha256":hash}])
-    );
-    assert_eq!(response["next_offset"], Value::Null);
-    assert_eq!(save(id, Some(false)).await.status(), StatusCode::OK);
-    assert_eq!(
-        api("GET", &chunks, owner_token, Value::Null)
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        api("GET", &manifest, owner_token, Value::Null)
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::OK
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

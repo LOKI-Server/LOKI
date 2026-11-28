@@ -27,9 +27,11 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
 enum Migration {
     /// Adds a column unless the table has it.
     Column(&'static str, &'static str, &'static str),
+    /// Removes a column if the table has it.
+    DropColumn(&'static str, &'static str),
     Sql(&'static str),
 }
-use Migration::{Column, Sql};
+use Migration::{Column, DropColumn, Sql};
 /// Applied in order, once each: `PRAGMA user_version` counts how many have run.
 /// Databases from before the count start at 0 and may already have some columns,
 /// so `Column` checks first. Only append; never reorder or remove a step.
@@ -139,6 +141,8 @@ const MIGRATIONS: &[Migration] = &[
     Sql("UPDATE sync_history SET stashed=1 WHERE reason='conflict' AND (version=0 OR EXISTS(SELECT 1 FROM sync_history o WHERE o.folder=sync_history.folder AND o.path=sync_history.path AND o.version=sync_history.version AND o.id<sync_history.id))"),
     // A version became current when the one before it was displaced.
     Sql("UPDATE sync_history SET since=coalesce((SELECT max(p.created) FROM sync_history p WHERE p.folder=sync_history.folder AND p.path=sync_history.path AND p.version=sync_history.version-1 AND p.stashed=0),0) WHERE stashed=0"),
+    // File shares no longer offer update tracking.
+    DropColumn("shares", "supports_updates"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
@@ -170,6 +174,18 @@ async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
                     ))
                     .execute(&mut *tx)
                     .await?;
+                }
+            }
+            DropColumn(table, column) => {
+                let exists = sqlx::query(&format!("PRAGMA table_info({table})"))
+                    .fetch_all(&mut *tx)
+                    .await?
+                    .iter()
+                    .any(|r| r.get::<String, _>("name") == *column);
+                if exists {
+                    sqlx::query(&format!("ALTER TABLE {table} DROP COLUMN {column}"))
+                        .execute(&mut *tx)
+                        .await?;
                 }
             }
             Sql(sql) => {
@@ -282,12 +298,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
-        let supports_updates: bool =
-            sqlx::query_scalar("SELECT supports_updates FROM shares WHERE id='old'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(!supports_updates);
         sqlx::query("UPDATE shares SET excluded_extensions='[\"tmp\"]' WHERE id='old'")
             .execute(&pool)
             .await
@@ -321,7 +331,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 2))
+        sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 3))
             .execute(&pool)
             .await
             .unwrap();
@@ -349,7 +359,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn former_app_repositories_become_file_shares_with_updates() {
+    async fn former_app_repositories_become_plain_file_shares() {
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("loki.db");
         let pool = open(&path).await.unwrap();
@@ -360,32 +370,29 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        // Back to before the share-update steps (the last six include sync history).
-        sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 6))
+        // Back to before the 0.11 share steps: the update column comes and goes again.
+        sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 7))
             .execute(&pool)
             .await
             .unwrap();
         pool.close().await;
         let pool = open(&path).await.unwrap();
-        let share: (String, String, bool) = sqlx::query_as(
-            "SELECT root,excluded_extensions,supports_updates FROM shares WHERE id='games'",
+        let share: (String, String, String) = sqlx::query_as(
+            "SELECT root,excluded_extensions,share_type FROM shares WHERE id='games'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(share, ("game-root".into(), "[\"bak\"]".into(), true));
-        sqlx::query("UPDATE shares SET supports_updates=0 WHERE id='games'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-        let pool = open(&path).await.unwrap();
-        let enabled: bool =
-            sqlx::query_scalar("SELECT supports_updates FROM shares WHERE id='games'")
-                .fetch_one(&pool)
+        assert_eq!(
+            share,
+            ("game-root".into(), "[\"bak\"]".into(), "files".into())
+        );
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('shares')")
+                .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert!(!enabled);
+        assert!(!columns.iter().any(|c| c == "supports_updates"));
     }
 
     /// LOKI 0.3.0 databases stop at 17 steps; a development build left some at

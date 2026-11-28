@@ -74,7 +74,7 @@ dashboard:
 | `group-delete` | Group ID. |
 | `membership` | User ID, `data.group`, and `data.enabled`. |
 | `resource-access` | Resource ID, `data.visibility` and `data.grants` with `subject_kind`, `subject`, and `role` per grant. |
-| `share-save` | Existing share ID or empty for a new share. Send `data.name`, `data.root`, and optionally `data.excluded_extensions`. Set `data.supports_updates` to enable Desktop update checks. New shares default to `false`, and omitted values leave existing shares unchanged. |
+| `share-save` | Existing share ID or empty for a new share. Send `data.name`, `data.root`, and optionally `data.excluded_extensions`. |
 | `app-action` | App ID and `data.operation`, such as `enable` or `disable`. |
 | `sync-quota` | User ID and `data.mb` in MiB or `null` for the default. |
 | `backup` | Returns a local backup filename. |
