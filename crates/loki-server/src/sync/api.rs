@@ -194,34 +194,38 @@ pub async fn change_folder(
 }
 
 #[derive(FromRow)]
-struct Current {
-    version: i64,
-    hash: Option<String>,
-    size: i64,
-    mtime: i64,
-    device: String,
-    seq: i64,
+pub(super) struct Current {
+    pub(super) version: i64,
+    pub(super) hash: Option<String>,
+    pub(super) size: i64,
+    pub(super) mtime: i64,
+    pub(super) device: String,
+    pub(super) seq: i64,
+    /// When this version became current.
+    pub(super) updated: i64,
 }
 impl Current {
     fn json(&self) -> Value {
         json!({"version":self.version,"hash":self.hash,"size":self.size,"mtime":self.mtime,"device":self.device,"seq":self.seq})
     }
 }
-async fn current(
+pub(super) async fn current(
     tx: &mut Transaction<'_, Sqlite>,
     folder: &str,
     path: &str,
 ) -> Result<Option<Current>> {
     Ok(sqlx::query_as(
-        "SELECT version,hash,size,mtime,device,seq FROM sync_files WHERE folder=? AND path=?",
+        "SELECT version,hash,size,mtime,device,seq,updated FROM sync_files WHERE folder=? AND path=?",
     )
     .bind(folder)
     .bind(path)
     .fetch_optional(&mut **tx)
     .await?)
 }
+/// Keeps content in history. `since` is when it became current, or `None` for a
+/// conflicting upload that never was.
 #[allow(clippy::too_many_arguments)]
-async fn record_history(
+pub(super) async fn record_history(
     tx: &mut Transaction<'_, Sqlite>,
     folder: &str,
     path: &str,
@@ -231,8 +235,10 @@ async fn record_history(
     mtime: i64,
     device: &str,
     reason: &str,
+    since: Option<i64>,
 ) -> Result<i64> {
-    Ok(sqlx::query("INSERT INTO sync_history(folder,path,version,hash,size,mtime,device,created,reason,resolved) VALUES(?,?,?,?,?,?,?,?,?,?)")
+    let now = auth::now();
+    Ok(sqlx::query("INSERT INTO sync_history(folder,path,version,hash,size,mtime,device,created,reason,resolved,since,stashed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
         .bind(folder)
         .bind(path)
         .bind(version)
@@ -240,16 +246,18 @@ async fn record_history(
         .bind(size)
         .bind(mtime)
         .bind(device)
-        .bind(auth::now())
+        .bind(now)
         .bind(reason)
         .bind(reason != "conflict")
+        .bind(since.unwrap_or(now))
+        .bind(since.is_none())
         .execute(&mut **tx)
         .await?
         .last_insert_rowid())
 }
 /// Writes the next version of a path and returns its folder sequence number.
 #[allow(clippy::too_many_arguments)]
-async fn write_version(
+pub(super) async fn write_version(
     tx: &mut Transaction<'_, Sqlite>,
     folder: &str,
     path: &str,
@@ -278,7 +286,7 @@ async fn write_version(
     Ok(seq)
 }
 /// Keeps the newest `keep` resolved versions of each path. Unresolved conflicts stay.
-async fn prune(
+pub(super) async fn prune(
     tx: &mut Transaction<'_, Sqlite>,
     folder: &str,
     path: Option<&str>,
@@ -300,7 +308,7 @@ fn like_escape(value: &str) -> String {
 }
 /// Paths that cannot coexist on a case-insensitive or ordinary filesystem: the same
 /// name in another case, or a file where another live path needs a folder.
-async fn clash(
+pub(super) async fn clash(
     tx: &mut Transaction<'_, Sqlite>,
     folder: &str,
     path: &str,
@@ -607,6 +615,7 @@ pub async fn commit(
                     change.mtime,
                     &device,
                     "conflict",
+                    None,
                 )
                 .await?;
                 changed = true;
@@ -642,6 +651,7 @@ pub async fn commit(
                 old.mtime,
                 &old.device,
                 reason,
+                Some(old.updated),
             )
             .await?;
         }
@@ -754,6 +764,7 @@ pub async fn restore_version(
                     old.mtime,
                     &old.device,
                     "replaced",
+                    Some(old.updated),
                 )
                 .await?;
             }
@@ -811,6 +822,9 @@ pub struct Browse {
     path: String,
     #[serde(default)]
     page: usize,
+    /// Also list deleted files whose earlier content is still in history.
+    #[serde(default)]
+    deleted: bool,
 }
 /// One directory level of a folder's live files, for the dashboard.
 pub async fn browse(
@@ -830,22 +844,30 @@ pub async fn browse(
     } else {
         format!("{dir}/")
     };
-    let rows: Vec<(String, i64, i64, i64, String)> = sqlx::query_as("SELECT f.path,f.size,f.mtime,f.version,coalesce(d.name,CASE f.device WHEN 'web' THEN 'Dashboard' ELSE 'Removed device' END) FROM sync_files f LEFT JOIN devices d ON d.id=f.device WHERE f.folder=?1 AND f.hash IS NOT NULL AND substr(f.path,1,length(?2))=?2")
+    // A deleted file's time is when it was deleted; its size is what it last held.
+    let rows: Vec<(String, i64, i64, i64, String, bool)> = sqlx::query_as("SELECT f.path,CASE WHEN f.hash IS NULL THEN coalesce((SELECT h.size FROM sync_history h WHERE h.folder=f.folder AND h.path=f.path AND h.stashed=0 ORDER BY h.id DESC LIMIT 1),0) ELSE f.size END,CASE WHEN f.hash IS NULL THEN f.updated ELSE f.mtime END,f.version,coalesce(d.name,CASE f.device WHEN 'web' THEN 'Dashboard' ELSE 'Removed device' END),f.hash IS NULL FROM sync_files f LEFT JOIN devices d ON d.id=f.device WHERE f.folder=?1 AND substr(f.path,1,length(?2))=?2 AND (f.hash IS NOT NULL OR (?3 AND EXISTS(SELECT 1 FROM sync_history h WHERE h.folder=f.folder AND h.path=f.path AND h.hash IS NOT NULL)))")
         .bind(&id)
         .bind(&prefix)
+        .bind(query.deleted)
         .fetch_all(&state.0.db)
         .await?;
-    let mut directories = std::collections::BTreeMap::<String, (i64, i64)>::new();
+    // Size, newest time, and whether everything inside is deleted.
+    let mut directories = std::collections::BTreeMap::<String, (i64, i64, bool)>::new();
     let mut files = Vec::new();
-    for (path, size, mtime, version, device) in rows {
+    for (path, size, mtime, version, device, deleted) in rows {
         let rest = &path[prefix.len()..];
         match rest.split_once('/') {
             Some((name, _)) => {
-                let entry = directories.entry(name.to_string()).or_default();
-                entry.0 += size;
+                let entry = directories
+                    .entry(name.to_string())
+                    .or_insert((0, 0, true));
+                if !deleted {
+                    entry.0 += size;
+                }
                 entry.1 = entry.1.max(mtime);
+                entry.2 &= deleted;
             }
-            None => files.push(json!({"name":rest,"directory":false,"size":size,"modified":mtime,"version":version,"device":device})),
+            None => files.push(json!({"name":rest,"directory":false,"size":size,"modified":mtime,"version":version,"device":device,"deleted":deleted})),
         }
     }
     files.sort_by(|a, b| {
@@ -857,7 +879,7 @@ pub async fn browse(
     });
     let mut entries: Vec<Value> = directories
         .into_iter()
-        .map(|(name, (size, mtime))| json!({"name":name,"directory":true,"size":size,"modified":mtime}))
+        .map(|(name, (size, mtime, deleted))| json!({"name":name,"directory":true,"size":size,"modified":mtime,"deleted":deleted}))
         .collect();
     entries.extend(files);
     let total = entries.len();

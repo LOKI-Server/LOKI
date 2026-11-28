@@ -370,48 +370,64 @@ impl Write for ArchiveWriter {
     }
 }
 
-pub(super) async fn archive(share: Share, path: String) -> Result<Response> {
-    let permit = ARCHIVES.try_acquire().map_err(|_| busy())?;
-    let (share, path, name, entries) = tokio::task::spawn_blocking(move || -> Result<_> {
-        if !directory(&share, &path)? {
-            return Err(Error::not_found());
-        }
-        let name = Path::new(&path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Shared files")
-            .to_owned();
-        safe_leaf(&name)?;
-        let entries = tree(&share, &path)?;
-        Ok((share, path, name, entries))
-    })
-    .await??;
+/// A ZIP being written straight to a download as it is built.
+pub(crate) struct ZipOut {
+    zip: zip::ZipWriter<zip::write::StreamWriter<io::BufWriter<ArchiveWriter>>>,
+    sender: mpsc::Sender<io::Result<Bytes>>,
+}
+
+impl ZipOut {
+    fn options() -> zip::write::SimpleFileOptions {
+        zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .large_file(true)
+    }
+
+    /// Whether the person stopped the download, so the rest can be skipped.
+    pub(crate) fn closed(&self) -> bool {
+        self.sender.is_closed()
+    }
+
+    pub(crate) fn directory(&mut self, name: &str) -> Result<()> {
+        self.zip
+            .add_directory(format!("{name}/"), Self::options())?;
+        Ok(())
+    }
+
+    pub(crate) fn file(
+        &mut self,
+        name: &str,
+        write: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<()> {
+        self.zip.start_file(name, Self::options())?;
+        write(&mut self.zip)
+    }
+}
+
+/// Only a few ZIP downloads run at once; the rest are asked to retry.
+pub(crate) fn zip_permit() -> Result<tokio::sync::SemaphorePermit<'static>> {
+    ARCHIVES.try_acquire().map_err(|_| busy())
+}
+
+/// Streams the ZIP that `fill` writes as `{name}.zip`. Errors after the first
+/// byte can only end the download early, so they are logged.
+pub(crate) fn zip_download(
+    permit: tokio::sync::SemaphorePermit<'static>,
+    name: &str,
+    fill: impl FnOnce(&mut ZipOut) -> Result<()> + Send + 'static,
+) -> Result<Response> {
     let (sender, receiver) = mpsc::channel(16);
     let worker = sender.clone();
-    let folder = name.clone();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let write = || -> Result<()> {
             let writer = io::BufWriter::with_capacity(64 * 1024, ArchiveWriter(worker.clone()));
-            let mut zip = zip::ZipWriter::new_stream(writer);
-            let options = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored)
-                .large_file(true);
-            zip.add_directory(format!("{folder}/"), options)?;
-            for (relative, directory) in entries {
-                if worker.is_closed() {
-                    return Ok(());
-                }
-                let name = format!("{folder}/{relative}");
-                if directory {
-                    zip.add_directory(format!("{name}/"), options)?;
-                } else {
-                    let mut file = open(&share, &join(&path, &relative))?;
-                    zip.start_file(name, options)?;
-                    checked_read(&mut file, |bytes| Ok(zip.write_all(bytes)?))?;
-                }
-            }
-            zip.finish()?.flush()?;
+            let mut out = ZipOut {
+                zip: zip::ZipWriter::new_stream(writer),
+                sender: worker.clone(),
+            };
+            fill(&mut out)?;
+            out.zip.finish()?.flush()?;
             Ok(())
         };
         if let Err(error) = write()
@@ -436,4 +452,41 @@ pub(super) async fn archive(share: Share, path: String) -> Result<Response> {
             format!("attachment; filename=\"folder.zip\"; filename*=UTF-8''{filename}"),
         )
         .body(Body::from_stream(stream))?)
+}
+
+pub(super) async fn archive(share: Share, path: String) -> Result<Response> {
+    let permit = zip_permit()?;
+    let (share, path, name, entries) = tokio::task::spawn_blocking(move || -> Result<_> {
+        if !directory(&share, &path)? {
+            return Err(Error::not_found());
+        }
+        let name = Path::new(&path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Shared files")
+            .to_owned();
+        safe_leaf(&name)?;
+        let entries = tree(&share, &path)?;
+        Ok((share, path, name, entries))
+    })
+    .await??;
+    let folder = name.clone();
+    zip_download(permit, &name, move |out| {
+        out.directory(&folder)?;
+        for (relative, directory) in entries {
+            if out.closed() {
+                return Ok(());
+            }
+            let name = format!("{folder}/{relative}");
+            if directory {
+                out.directory(&name)?;
+            } else {
+                let mut file = open(&share, &join(&path, &relative))?;
+                out.file(&name, |zip| {
+                    checked_read(&mut file, |bytes| Ok(zip.write_all(bytes)?)).map(|_| ())
+                })?;
+            }
+        }
+        Ok(())
+    })
 }

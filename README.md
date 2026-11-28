@@ -4,7 +4,7 @@
 
 **Your services, held together.**
 
-By [Aspenini](https://github.com/Aspenini) Â· [GitHub](https://github.com/LOKI-Server/LOKI) Â· [MIT license](LICENSE)
+By [Aspenini](https://github.com/Aspenini) · [GitHub](https://github.com/LOKI-Server/LOKI) · [MIT license](LICENSE)
 
 LOKI is a self-hosted Rust account server, application host, Caddy controller, and
 read-only file-sharing portal. Each installation owns its accounts. Your apps
@@ -92,9 +92,11 @@ CSS, and framework-free JavaScript, with no CDN or Node.js runtime dependency.
 
 LOKI can keep per-user folders in sync between devices, such as emulator saves
 on an Android handheld and a desktop. The server is authoritative and keeps
-version history, so a conflict or a bad sync never loses a save. Grant the
+version history, so a conflict or a bad sync never loses a save: restore one
+file, show deleted files, roll a whole folder back to an earlier time, or
+download a folder (now or as it was) as a ZIP. Grant the
 **Save sync** resource to the people who should use it, then pair each device
-from **Account â†’ Devices** in the dashboard. The same device login also opens
+from **Account → Devices** in the dashboard. The same device login also opens
 file shares in the clients, with no second sign-in. Quotas are per user.
 
 Clients use a versioned HTTP/JSON API under `/sync/v1` and can be written in any
@@ -128,7 +130,7 @@ Before upgrading a server that hosted Git repositories, follow the
 [legacy backup and snapshot import guide](docs/private-services.md#preserve-existing-git-hosted-data).
 
 Approved apps can save files in private folders for signed-in users.
-**Account â†’ Export my data** lets users choose their app folders, current Save
+**Account → Export my data** lets users choose their app folders, current Save
 Sync files, and profile. Installation backups include these app files.
 
 ## Install Bigshot Voter

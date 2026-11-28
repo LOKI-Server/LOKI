@@ -38,6 +38,11 @@ wins with `overwrite`; a file this device has never synced uses `stash`; a
 local delete uses `reject`. In every case the losing version stays in the
 server's history, and conflicts appear in the dashboard.
 
+A directory that cannot be read stops the run before anything is sent. When
+most of the folder is missing at once (as when its drive is gone), the client
+does not send those deletions; pass `--delete-missing` if you removed the files
+on purpose.
+
 To try two devices on one machine, sync two directories against the same
 folder. Note that both share one device token from `~/.loki-sync.json`.
 Paths the server rejects (for example names with `:`) are reported as

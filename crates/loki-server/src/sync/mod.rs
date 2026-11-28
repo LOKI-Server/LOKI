@@ -4,6 +4,7 @@
 mod api;
 pub(crate) mod blobs;
 mod devices;
+mod snapshot;
 
 use crate::{Error, Result, State, apps, auth, auth::User, web::args};
 use axum::{
@@ -45,12 +46,32 @@ pub fn router() -> Router<State> {
         .route("/sync/v1/folders/{id}/history", get(api::history))
         .route("/sync/v1/folders/{id}/restore", post(api::restore))
         .route(
+            "/sync/v1/folders/{id}/snapshot",
+            get(snapshot::snapshot_api),
+        )
+        .route(
+            "/sync/v1/folders/{id}/rollback",
+            post(snapshot::rollback_api),
+        )
+        .route(
             "/sync/v1/blobs/{hash}",
             get(blobs::download).put(blobs::upload),
         )
         .route("/api/sync/folders/{id}", get(api::browse))
         .route("/api/sync/folders/{id}/file", get(api::browser_file))
         .route("/api/sync/folders/{id}/history", get(api::browser_history))
+        .route(
+            "/api/sync/folders/{id}/snapshot",
+            get(snapshot::browser_snapshot),
+        )
+        .route(
+            "/api/sync/folders/{id}/activity",
+            get(snapshot::browser_activity),
+        )
+        .route(
+            "/api/sync/folders/{id}/archive",
+            get(snapshot::browser_archive),
+        )
 }
 
 pub(crate) use crate::devices::Caller;
@@ -302,6 +323,7 @@ pub async fn action(
             state.wake_sync();
             Ok(json!({"ok":true}))
         }
+        "sync-rollback" => snapshot::rollback_action(state, &user.id, id, data).await,
         "sync-restore" => {
             let input: Version = args(data)?;
             api::restore_version(state, &user.id, id, input.history_id, "web").await

@@ -360,6 +360,69 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /folders/{id}/snapshot:
+    parameters:
+      - $ref: "#/components/parameters/FolderId"
+    get:
+      tags: [folders]
+      operationId: snapshot
+      summary: Describe the folder as it was at an earlier time
+      parameters:
+        - name: time
+          in: query
+          description: Unix seconds. Omitted means now.
+          schema: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: What the folder held then, compared with now.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Snapshot" }
+        "404": { $ref: "#/components/responses/Error" }
+  /folders/{id}/rollback:
+    parameters:
+      - $ref: "#/components/parameters/FolderId"
+    post:
+      tags: [folders]
+      operationId: rollback
+      summary: Make the folder match an earlier time
+      description: >-
+        Writes every changed file as a new version and keeps what it replaces in
+        history, so a rollback can be undone. Files added since are kept unless
+        remove_newer is true.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [time]
+              properties:
+                time: { type: integer, format: int64, description: Unix seconds, in the past. }
+                remove_newer: { type: boolean, default: false }
+      responses:
+        "200":
+          description: What changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, restored, removed, skipped, unavailable]
+                properties:
+                  ok: { type: boolean }
+                  restored: { type: integer }
+                  removed: { type: integer }
+                  unavailable: { type: integer }
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      required: [path, error]
+                      properties:
+                        path: { type: string }
+                        error: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /blobs/{hash}:
     parameters:
       - name: hash
@@ -703,6 +766,20 @@ components:
         path: { $ref: "#/components/schemas/Path" }
         version: { type: integer, format: int64 }
         seq: { type: integer, format: int64 }
+    Snapshot:
+      type: object
+      required: [time, files, bytes, restore, remove, unchanged, unavailable, restore_paths, remove_paths, unavailable_paths]
+      properties:
+        time: { type: integer, format: int64 }
+        files: { type: integer, description: Files the folder held then. }
+        bytes: { type: integer, format: int64 }
+        restore: { type: integer, description: Files missing now or different from then. }
+        remove: { type: integer, description: Files added since then. }
+        unchanged: { type: integer }
+        unavailable: { type: integer, description: Paths whose content then was pruned from history. }
+        restore_paths: { type: array, items: { type: string }, maxItems: 100 }
+        remove_paths: { type: array, items: { type: string }, maxItems: 100 }
+        unavailable_paths: { type: array, items: { type: string }, maxItems: 100 }
     HistoryEntry:
       type: object
       required: [id, path, version, hash, size, mtime, device, device_name, created, reason, resolved]

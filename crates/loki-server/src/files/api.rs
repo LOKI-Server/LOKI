@@ -188,13 +188,11 @@ async fn chunks(
 }
 
 async fn supports_updates(state: &State, id: &str) -> Result<bool> {
-    Ok(
-        sqlx::query_scalar("SELECT supports_updates FROM shares WHERE id=?")
-            .bind(id)
-            .fetch_optional(&state.0.db)
-            .await?
-            .ok_or_else(Error::not_found)?,
-    )
+    sqlx::query_scalar("SELECT supports_updates FROM shares WHERE id=?")
+        .bind(id)
+        .fetch_optional(&state.0.db)
+        .await?
+        .ok_or_else(Error::not_found)
 }
 
 fn updates_disabled() -> Error {

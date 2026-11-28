@@ -129,6 +129,16 @@ const MIGRATIONS: &[Migration] = &[
         "INTEGER NOT NULL DEFAULT 0 CHECK(supports_updates IN (0,1))",
     ),
     Sql("UPDATE shares SET supports_updates=1,share_type='files' WHERE share_type='apps'"),
+    // Folder rollback needs to know when each earlier version was current. `stashed`
+    // marks conflicting uploads that never were; `since` is when a version became
+    // current (0: unknown, treated as always).
+    Column("sync_history", "since", "INTEGER NOT NULL DEFAULT 0"),
+    Column("sync_history", "stashed", "INTEGER NOT NULL DEFAULT 0"),
+    // A stash was recorded against a version the device had seen, so it repeats a
+    // version number already in history, or uses 0 for a path never seen.
+    Sql("UPDATE sync_history SET stashed=1 WHERE reason='conflict' AND (version=0 OR EXISTS(SELECT 1 FROM sync_history o WHERE o.folder=sync_history.folder AND o.path=sync_history.path AND o.version=sync_history.version AND o.id<sync_history.id))"),
+    // A version became current when the one before it was displaced.
+    Sql("UPDATE sync_history SET since=coalesce((SELECT max(p.created) FROM sync_history p WHERE p.folder=sync_history.folder AND p.path=sync_history.path AND p.version=sync_history.version-1 AND p.stashed=0),0) WHERE stashed=0"),
 ];
 async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
@@ -294,6 +304,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_sync_history_learns_when_versions_began_and_which_were_stashed() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("loki.db");
+        let pool = open(&path).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users(id,username,display_name,password,status,created) VALUES('u','user','User','','approved',1);
+             INSERT INTO sync_folders(id,user_id,name,created) VALUES('f','u','Saves',1);
+             INSERT INTO sync_history(id,folder,path,version,hash,size,mtime,device,created,reason) VALUES
+               (1,'f','a.srm',1,'h1',1,1,'d',100,'replaced'),
+               (2,'f','a.srm',2,'h2',1,1,'d',200,'conflict'),
+               (3,'f','a.srm',2,'h3',1,1,'e',300,'conflict'),
+               (4,'f','b.srm',0,'h4',1,1,'e',400,'conflict'),
+               (5,'f','b.srm',3,'h5',1,1,'e',500,'deleted');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 2))
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = open(&path).await.unwrap();
+        let rows: Vec<(i64, i64, bool)> =
+            sqlx::query_as("SELECT id,since,stashed FROM sync_history ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (1, 0, false),
+                // Version 2 began when version 1 was replaced.
+                (2, 100, false),
+                // A second entry for version 2, and a version 0, were stashed uploads.
+                (3, 0, true),
+                (4, 0, true),
+                // Version 2 of b.srm is not in history (a deletion), so its start is unknown.
+                (5, 0, false),
+            ]
+        );
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn former_app_repositories_become_file_shares_with_updates() {
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("loki.db");
@@ -305,17 +360,19 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 2))
+        // Back to before the share-update steps (the last six include sync history).
+        sqlx::query(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 6))
             .execute(&pool)
             .await
             .unwrap();
         pool.close().await;
         let pool = open(&path).await.unwrap();
-        let share: (String, String, bool) =
-            sqlx::query_as("SELECT root,excluded_extensions,supports_updates FROM shares WHERE id='games'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let share: (String, String, bool) = sqlx::query_as(
+            "SELECT root,excluded_extensions,supports_updates FROM shares WHERE id='games'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(share, ("game-root".into(), "[\"bak\"]".into(), true));
         sqlx::query("UPDATE shares SET supports_updates=0 WHERE id='games'")
             .execute(&pool)

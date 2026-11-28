@@ -27,7 +27,9 @@ the owner can use it until the owner grants access to people or groups.
   Tombstones appear in the changes feed so other devices delete too.
 - Replaced, deleted, and conflicting versions move to **history**. The newest
   `keep_versions` resolved entries are kept per path; unresolved conflicts are
-  always kept. History can be restored from the API or the dashboard.
+  always kept. History can be restored from the API or the dashboard, one file
+  at a time or by [rolling the whole folder back](#rolling-a-folder-back) to an
+  earlier time.
 
 `mtime` is an integer the server stores and returns but never interprets or
 uses for ordering. This guide and the reference client use the file's
@@ -405,6 +407,51 @@ Restoring content that is already current only marks the entry resolved. An
 unknown entry returns `404`; restoring onto a path that now clashes with
 another returns `409` with code `path_conflict`.
 
+## Rolling a folder back
+
+The server knows when every kept version became current and when it was
+replaced, so it can show a whole folder as it was at an earlier moment and
+restore it. This undoes a bad sync, such as a device that lost its storage and
+reported every file deleted.
+
+`GET /sync/v1/folders/{id}/snapshot?time=1793320000` describes the folder at
+`time` (Unix seconds; omitted means now) compared with now:
+
+```json
+{
+  "time": 1793320000,
+  "files": 312, "bytes": 4831838208,
+  "restore": 310, "remove": 1, "unchanged": 2, "unavailable": 0,
+  "restore_paths": ["gba/Pokemon Emerald.srm", "…"],
+  "remove_paths": ["snes/new.srm"],
+  "unavailable_paths": []
+}
+```
+
+- `files` and `bytes` describe what the folder held then.
+- `restore` counts files that are missing now or differ from then.
+- `remove` counts files added since then.
+- `unavailable` counts paths whose content at that time was pruned from history
+  (they changed more than `keep_versions` times since). A rollback leaves them
+  as they are.
+- Each `*_paths` list shows at most 100 paths.
+
+`POST /sync/v1/folders/{id}/rollback` with `{"time":1793320000}` makes the folder
+match that moment. Every changed file becomes a new version, so devices pull the
+rollback like any other change, and what it replaces goes to history: a rollback
+can itself be rolled back. Files added since are kept unless the request has
+`"remove_newer": true`; then they are deleted (into history) too. The response
+is `{"ok":true,"restored":310,"removed":0,"skipped":[{"path":"…","error":"…"}],"unavailable":0}`.
+A file is skipped when its name now clashes with another live path or its
+content is missing from the server's disk. A `time` in the future or not
+positive returns `400`.
+
+The dashboard offers the same from a folder's **Roll back** button, with the
+folder's recent replacements and deletions grouped by device, a preview, and a
+ZIP download of the folder as it was at the chosen time. **Download ZIP** on a
+folder downloads it as it is now, and **Show deleted files** lists deleted files
+whose content is still in history so each can be restored.
+
 ## Paths
 
 Paths are relative to the folder and use these rules on every platform. A path
@@ -488,12 +535,35 @@ file such as `.loki-sync-index.json`):
 Write the index atomically (temp file and rename) after every step, so a crash
 or kill mid-sync resumes cleanly.
 
+### Missing folders and mass deletions
+
+A device whose storage goes away, such as a handheld whose SD card fails or a
+computer whose external drive is unplugged, must never report every file as
+deleted. LOKI's own clients guard against it in two ways, and other clients
+should too:
+
+- **Unreadable is not empty.** If the synced directory, or any directory under
+  it, cannot be listed, stop the round with an error before pulling or
+  committing anything.
+- **Hold mass deletions.** When a scan finds that many synced files are gone at
+  once, do not commit the deletions. LOKI Client holds them when every synced
+  file is gone (two or more), when five or more files and over half the folder
+  are gone, or when 50 or more are gone. Keep pulling and pushing other
+  changes, tell the person, and let them choose: **bring them back** (forget
+  those index entries and read the feed from `0`, which downloads them again) or
+  **delete them everywhere** (commit the deletions once).
+
+Deleted files are kept in history either way, and a folder can be
+[rolled back](#rolling-a-folder-back), but every other device would delete its
+copies in the meantime.
+
 ### One sync round
 
 1. **Scan.** Walk the local directory. For each file, NFC-normalize the
    relative path. If `size` and `mtime` match the index, assume unchanged;
    otherwise hash it. A file is **locally changed** when its hash differs from
-   the index, it is new, or an indexed file with a hash is gone.
+   the index, it is new, or an indexed file with a hash is gone. If the
+   directory cannot be read, stop here (see above).
 2. **Settle.** Wait about 3 seconds and stat again. Skip any file whose size or
    mtime moved; it is still being written. Emulators often write saves while
    running, and in several steps.
@@ -511,7 +581,8 @@ or kill mid-sync resumes cleanly.
    Then store the new cursor.
 4. **Push.** For each locally changed path, `HEAD` its blob and `PUT` it if
    missing. Then commit, using `base_version` from the index (`0` if absent).
-   Group the changes by conflict policy (below), one commit per group.
+   Group the changes by conflict policy (below), one commit per group. Hold
+   back deletions that look like lost storage (see above).
 5. **Apply results.**
    - `ok`: store the returned `version` and your hash in the index.
    - `conflict` or `stashed` with a `current`: download `current` and apply it

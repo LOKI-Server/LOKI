@@ -66,6 +66,42 @@ impl Browser {
         self.post("/api/action", json!({"action":name,"id":id,"data":data}))
             .await
     }
+    async fn get(&mut self, path: &str) -> Value {
+        let (status, value) = self.request("GET", path, None).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {value}");
+        value
+    }
+    async fn bytes(&self, path: &str) -> (StatusCode, bytes::Bytes) {
+        let request = Request::builder()
+            .uri(path)
+            .header(header::HOST, "127.0.0.1:7070")
+            .header(header::COOKIE, &self.cookie)
+            .body(Body::empty())
+            .unwrap();
+        let response = self.app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        (
+            status,
+            response.into_body().collect().await.unwrap().to_bytes(),
+        )
+    }
+}
+
+/// The files in a ZIP, by name, with their contents.
+fn unzip(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut files = std::collections::BTreeMap::new();
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).unwrap();
+        if file.is_dir() {
+            continue;
+        }
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+        files.insert(file.name().unwrap().to_string(), content);
+    }
+    files
 }
 
 /// A sync client, speaking only the bearer-token API.
@@ -989,4 +1025,307 @@ async fn backups_carry_synced_files_and_collection_spares_referenced_blobs() {
     assert_eq!(path, "kept.sav");
     copy.0.db.close().await;
     state.0.db.close().await;
+}
+
+#[tokio::test]
+async fn a_folder_rolls_back_to_an_earlier_time_and_downloads_as_a_zip() {
+    let (_tmp, state, mut owner) = installation().await;
+    let thor = login_device(&state, "owner", "owner-password-123", "Thor").await;
+    let desktop = login_device(&state, "owner", "owner-password-123", "Desktop").await;
+    let id = thor
+        .ok(
+            "POST",
+            "/sync/v1/folders",
+            Some(json!({"name":"GBA saves"})),
+        )
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let a1 = thor.upload(b"a, first").await;
+    let b1 = thor.upload(b"b, first").await;
+    let d1 = thor.upload(b"d, first").await;
+    thor.commit(
+        &id,
+        json!([
+            {"path":"a.srm","base_version":0,"hash":a1,"mtime":1},
+            {"path":"b.srm","base_version":0,"hash":b1,"mtime":1},
+            {"path":"c/d.srm","base_version":0,"hash":d1,"mtime":1},
+        ]),
+        "reject",
+    )
+    .await;
+    // Those were written long ago; everything after happens "now".
+    sqlx::query("UPDATE sync_files SET updated=1000")
+        .execute(&state.0.db)
+        .await
+        .unwrap();
+    let before = 2000;
+
+    let a2 = desktop.upload(b"a, second").await;
+    desktop
+        .commit(
+            &id,
+            json!([{"path":"a.srm","base_version":1,"hash":a2}]),
+            "overwrite",
+        )
+        .await;
+    // A stashed upload never was current, so a rollback never picks it.
+    let stash = desktop.upload(b"b, stashed").await;
+    assert_eq!(
+        desktop
+            .commit(
+                &id,
+                json!([{"path":"b.srm","base_version":0,"hash":stash}]),
+                "stash"
+            )
+            .await[0]["status"],
+        "stashed"
+    );
+    // The SD card disappears: Thor reports every file deleted, then adds one.
+    thor.commit(
+        &id,
+        json!([
+            {"path":"b.srm","base_version":1,"hash":null},
+            {"path":"c/d.srm","base_version":1,"hash":null},
+        ]),
+        "reject",
+    )
+    .await;
+    let new = thor.upload(b"new").await;
+    thor.commit(
+        &id,
+        json!([{"path":"new.srm","base_version":0,"hash":new}]),
+        "reject",
+    )
+    .await;
+
+    // Deleted files can be found, and their history opened, from the dashboard.
+    let live = owner.get(&format!("/api/sync/folders/{id}")).await;
+    let names: Vec<&str> = live["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["a.srm", "new.srm"]);
+    let all = owner
+        .get(&format!("/api/sync/folders/{id}?deleted=true"))
+        .await;
+    let entries: Vec<(&str, bool)> = all["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["name"].as_str().unwrap(), e["deleted"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            ("c", true),
+            ("a.srm", false),
+            ("b.srm", true),
+            ("new.srm", false)
+        ]
+    );
+    assert_eq!(all["entries"][2]["size"], 8);
+    let history = owner
+        .get(&format!("/api/sync/folders/{id}/history?path=b.srm"))
+        .await;
+    assert!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["reason"] == "deleted" && h["hash"] == b1.as_str())
+    );
+
+    // The activity shows Thor's deletions, to roll back to just before them.
+    let activity = owner.get(&format!("/api/sync/folders/{id}/activity")).await;
+    assert_eq!(
+        (
+            activity[0]["device"].as_str(),
+            activity[0]["deleted"].as_i64()
+        ),
+        (Some("Thor"), Some(2))
+    );
+
+    let preview = owner
+        .get(&format!("/api/sync/folders/{id}/snapshot?time={before}"))
+        .await;
+    assert_eq!(
+        (
+            preview["files"].as_i64(),
+            preview["restore"].as_i64(),
+            preview["remove"].as_i64(),
+            preview["unchanged"].as_i64(),
+            preview["unavailable"].as_i64()
+        ),
+        (Some(3), Some(3), Some(1), Some(0), Some(0))
+    );
+    assert_eq!(preview["remove_paths"], json!(["new.srm"]));
+    // Devices can ask too.
+    assert_eq!(
+        thor.ok(
+            "GET",
+            &format!("/sync/v1/folders/{id}/snapshot?time={before}"),
+            None
+        )
+        .await["restore"],
+        3
+    );
+
+    // The ZIP of that moment holds what the folder held then.
+    let (status, bytes) = owner
+        .bytes(&format!("/api/sync/folders/{id}/archive?time={before}"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let files = unzip(&bytes);
+    assert_eq!(
+        files.keys().collect::<Vec<_>>(),
+        ["GBA saves/a.srm", "GBA saves/b.srm", "GBA saves/c/d.srm"]
+    );
+    assert_eq!(files["GBA saves/a.srm"], b"a, first");
+    let (_, bytes) = owner
+        .bytes(&format!("/api/sync/folders/{id}/archive"))
+        .await;
+    assert_eq!(
+        unzip(&bytes).keys().collect::<Vec<_>>(),
+        ["GBA saves/a.srm", "GBA saves/new.srm"]
+    );
+
+    let seq = desktop.changes(&id, 0).await["seq"].as_i64().unwrap();
+    let result = owner
+        .action("sync-rollback", &id, json!({"time":before}))
+        .await;
+    assert_eq!(
+        (result["restored"].as_i64(), result["removed"].as_i64()),
+        (Some(3), Some(0))
+    );
+    // Every device pulls the rollback as ordinary changes.
+    let feed = desktop.changes(&id, seq).await;
+    let mut changes: Vec<(&str, &str)> = feed["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["path"].as_str().unwrap(), c["hash"].as_str().unwrap()))
+        .collect();
+    changes.sort();
+    assert_eq!(
+        changes,
+        [
+            ("a.srm", a1.as_str()),
+            ("b.srm", b1.as_str()),
+            ("c/d.srm", d1.as_str())
+        ]
+    );
+
+    // Files added since stay unless asked; then they are deleted, into history.
+    let again = owner
+        .action(
+            "sync-rollback",
+            &id,
+            json!({"time":before,"remove_newer":true}),
+        )
+        .await;
+    assert_eq!(
+        (again["restored"].as_i64(), again["removed"].as_i64()),
+        (Some(0), Some(1))
+    );
+    let now = owner.get(&format!("/api/sync/folders/{id}")).await;
+    let names: Vec<&str> = now["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["c", "a.srm", "b.srm"]);
+
+    // The rollback itself is undoable: the replaced second version is in history.
+    let history = owner
+        .get(&format!("/api/sync/folders/{id}/history?path=a.srm"))
+        .await;
+    assert!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["hash"] == a2.as_str() && h["device_name"] == "Desktop")
+    );
+
+    // Bearer clients can roll back too, and never into the future.
+    let (status, _) = thor
+        .call(
+            "POST",
+            &format!("/sync/v1/folders/{id}/rollback"),
+            Some(json!({"time":i64::MAX})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        thor.ok(
+            "POST",
+            &format!("/sync/v1/folders/{id}/rollback"),
+            Some(json!({"time":before}))
+        )
+        .await["restored"],
+        0
+    );
+}
+
+#[tokio::test]
+async fn pruned_history_is_reported_instead_of_guessed() {
+    let (_tmp, state, mut owner) = installation().await;
+    let thor = login_device(&state, "owner", "owner-password-123", "Thor").await;
+    let id = thor
+        .ok("POST", "/sync/v1/folders", Some(json!({"name":"Saves"})))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    thor.ok(
+        "PATCH",
+        &format!("/sync/v1/folders/{id}"),
+        Some(json!({"keep_versions":1})),
+    )
+    .await;
+    for (version, body) in [b"one".as_slice(), b"two", b"three"]
+        .into_iter()
+        .enumerate()
+    {
+        let hash = thor.upload(body).await;
+        thor.commit(
+            &id,
+            json!([{"path":"a.srm","base_version":version,"hash":hash}]),
+            "reject",
+        )
+        .await;
+        if version == 0 {
+            sqlx::query("UPDATE sync_files SET updated=1000")
+                .execute(&state.0.db)
+                .await
+                .unwrap();
+        }
+    }
+    // Only version 2 is left in history, and it began after time 2000.
+    let preview = owner
+        .get(&format!("/api/sync/folders/{id}/snapshot?time=2000"))
+        .await;
+    assert_eq!(
+        (
+            preview["unavailable"].as_i64(),
+            preview["restore"].as_i64(),
+            preview["remove"].as_i64()
+        ),
+        (Some(1), Some(0), Some(0))
+    );
+    assert_eq!(
+        owner
+            .action(
+                "sync-rollback",
+                &id,
+                json!({"time":2000,"remove_newer":true})
+            )
+            .await["removed"],
+        0
+    );
 }

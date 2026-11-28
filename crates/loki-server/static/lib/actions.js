@@ -9,7 +9,7 @@ import { newItem, newRepo } from "../pages/vcs.js";
 import { groupManage, userManage } from "../pages/people.js";
 import { accountUrl, deviceRename, pairDialog, passwordProof, profileConfirm, vcsTokenDialog } from "../pages/account.js";
 import { browseUrl, preview } from "../pages/files.js";
-import { conflictsDialog, folderForm, folderManage, historyDialog } from "../pages/sync.js";
+import { conflictsDialog, folderForm, folderManage, historyDialog, rollbackDialog, rollbackPreview } from "../pages/sync.js";
 import { panelAction, panelDialog } from "../pages/panel.js";
 import { previewPackage } from "./package.js";
 import { cropSquare } from "./crop.js";
@@ -164,6 +164,18 @@ export async function onSubmit(event) {
       await navigate("/sync", { replace: true });
       return;
     }
+    else if (kind === "sync-rollback-time") {
+      const time = Math.floor(new Date(data.when).getTime() / 1000);
+      if (!Number.isFinite(time)) return toast("Choose a date and time.", true);
+      if (time >= Date.now() / 1000) return toast("Choose a time in the past.", true);
+      return await rollbackPreview(id, time);
+    }
+    else if (kind === "sync-rollback") {
+      const result = await act(kind, id, { time: Number(form.dataset.time), remove_newer: Boolean(data.remove_newer) });
+      close();
+      const done = `Rolled back: ${result.restored} brought back, ${result.removed} removed. Devices pick it up on their next sync.`;
+      toast(result.skipped.length ? `${done} ${result.skipped.length} skipped, such as ${result.skipped[0].path}: ${result.skipped[0].error}` : done, result.skipped.length > 0);
+    }
     else if (kind === "device-rename" || kind === "sync-device-rename") { await act(kind, id, data); close(); toast("Device renamed."); }
     else if (kind === "vcs-quota") {
       const key = id || data.subject, size = value => value === "" || value === undefined ? null : Number(value);
@@ -268,6 +280,7 @@ const dialogs = {
   "sync-folder-manage": id => folderManage(id),
   "sync-device-rename": id => deviceRename(id),
   "sync-conflicts": id => conflictsDialog(id),
+  "sync-rollback-open": id => rollbackDialog(id),
   "storage-move": () => storage("Move server data", false),
   "storage-restore": () => storage("Restore a backup", true),
 };
@@ -430,6 +443,7 @@ export async function onClick(event) {
       return;
     }
     if (action === "sync-history") return await historyDialog(id, b.dataset.path);
+    if (action === "sync-rollback-preview") return await rollbackPreview(id, Number(b.dataset.time));
     if (action === "logs") {
       const result = await api(`/api/logs/${enc(id)}`);
       return modal(id === "caddy" ? "Caddy logs" : "Service logs", html`<pre class="log">${result.text || "No log output yet."}</pre>`);

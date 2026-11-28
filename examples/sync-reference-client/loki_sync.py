@@ -91,7 +91,11 @@ def copy(src, out=None):
 def scan(root):
     """NFC folder path -> (size, mtime ms, local path) for every regular file."""
     found = {}
-    for top, _, names in os.walk(root):
+
+    def unreadable(error):  # a folder read only in part would look like deleted files
+        raise RuntimeError(f"Cannot read {error.filename}: {error.strerror}. Nothing was synced or deleted.")
+
+    for top, _, names in os.walk(root, onerror=unreadable):
         for name in names:
             full = os.path.join(top, name)
             if name != INDEX and not name.endswith(TMP) and not os.path.islink(full):
@@ -167,13 +171,23 @@ def commit(c, fid, policy, changes):
         results += commit(c, fid, policy, [change])
     return results
 
-def sync_once(c, fid, root, state, index_path):
+def suspicious_deletion(deleting, synced):
+    """Deleting this many of a folder's synced files at once looks like lost storage (docs/sync-api.md)."""
+    return deleting >= 50 or (synced >= 2 and deleting >= synced) or (deleting >= 5 and deleting * 2 > synced)
+
+def sync_once(c, fid, root, state, index_path, delete_missing=False):
     files = state["files"]
 
     def record(path, version, digest, size, mtime):
         files[path] = {"version": version, "hash": digest, "size": size, "mtime": mtime}
 
     changed, moving = local_changes(root, files)
+    missing = [rel for rel, (digest, _, _) in changed.items() if digest is None]
+    if missing and not delete_missing and suspicious_deletion(len(missing), sum(1 for f in files.values() if f["hash"])):
+        for rel in missing:  # keep them on the server; pulling may even bring them back
+            del changed[rel]
+        print(f"{len(missing)} synced files are missing here; not deleting them anywhere. "
+              "Run again with --delete-missing if you deleted them on purpose.")
     more = True
     while more:  # pull
         feed = c.api("GET", f"/folders/{fid}/changes?since={state['cursor']}")
@@ -243,7 +257,7 @@ def sync(args):
     if state.get("folder") != folder["id"]:
         state = {"folder": folder["id"], "cursor": 0, "files": {}}
     while True:
-        while sync_once(c, folder["id"], root, state, index_path):
+        while sync_once(c, folder["id"], root, state, index_path, args.delete_missing):
             print("The server was restored from a backup; syncing again as a new device.")
         if not args.watch:
             return
@@ -264,6 +278,8 @@ def main():
     s.add_argument("local_dir")
     s.add_argument("--kind", default="generic", help="kind hint for a new folder, e.g. retroarch-saves")
     s.add_argument("--watch", action="store_true", help="keep syncing, long-polling for changes")
+    s.add_argument("--delete-missing", action="store_true",
+                   help="send deletions even when most of the folder is gone at once")
     s.set_defaults(fn=sync)
     args = p.parse_args()
     try:

@@ -26,7 +26,7 @@ export async function refreshState({ session = false } = {}) {
 
 function browseParams() {
   const query = new URLSearchParams(location.search);
-  return { path: query.get("path") || "", page: Number(query.get("page")) || 0, sort: query.get("sort") || "name" };
+  return { path: query.get("path") || "", page: Number(query.get("page")) || 0, sort: query.get("sort") || "name", deleted: query.get("deleted") === "1" };
 }
 
 async function resolve() {

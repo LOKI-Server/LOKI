@@ -13,7 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 pub mod api;
-mod tree;
+pub(crate) mod tree;
 
 pub fn parse_excluded_extensions(input: &str) -> Result<Vec<String>> {
     if input.len() > 4096 {
@@ -414,7 +414,11 @@ fn http_date(time: std::time::SystemTime) -> Option<String> {
 }
 
 fn file_changed() -> Error {
-    Error::coded(StatusCode::CONFLICT, "file_changed", "The file changed during the operation. Retry.")
+    Error::coded(
+        StatusCode::CONFLICT,
+        "file_changed",
+        "The file changed during the operation. Retry.",
+    )
 }
 
 pub(super) async fn serve_file(

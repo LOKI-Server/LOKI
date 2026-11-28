@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS sync_folders(id TEXT PRIMARY KEY, user_id TEXT NOT NU
 CREATE TABLE IF NOT EXISTS sync_files(folder TEXT NOT NULL REFERENCES sync_folders(id) ON DELETE CASCADE, path TEXT NOT NULL, version INTEGER NOT NULL, hash TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL, device TEXT NOT NULL, seq INTEGER NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY(folder,path));
 CREATE INDEX IF NOT EXISTS sync_files_seq ON sync_files(folder,seq);
 CREATE INDEX IF NOT EXISTS sync_files_hash ON sync_files(hash);
-CREATE TABLE IF NOT EXISTS sync_history(id INTEGER PRIMARY KEY AUTOINCREMENT, folder TEXT NOT NULL REFERENCES sync_folders(id) ON DELETE CASCADE, path TEXT NOT NULL, version INTEGER NOT NULL, hash TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL, device TEXT NOT NULL, created INTEGER NOT NULL, reason TEXT NOT NULL CHECK(reason IN('replaced','deleted','conflict')), resolved INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS sync_history(id INTEGER PRIMARY KEY AUTOINCREMENT, folder TEXT NOT NULL REFERENCES sync_folders(id) ON DELETE CASCADE, path TEXT NOT NULL, version INTEGER NOT NULL, hash TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL, device TEXT NOT NULL, created INTEGER NOT NULL, reason TEXT NOT NULL CHECK(reason IN('replaced','deleted','conflict')), resolved INTEGER NOT NULL DEFAULT 1, since INTEGER NOT NULL DEFAULT 0, stashed INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS sync_history_path ON sync_history(folder,path,id);
 CREATE INDEX IF NOT EXISTS sync_history_hash ON sync_history(hash);
 CREATE TABLE IF NOT EXISTS sync_uploads(user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, hash TEXT NOT NULL, size INTEGER NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(user_id,hash));
