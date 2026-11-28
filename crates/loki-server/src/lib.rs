@@ -166,7 +166,7 @@ const PASSWORD_HASHES: usize = 2;
 /// Requests LOKI handles at once. Storage operations drain all but their own.
 pub(crate) const REQUESTS: u32 = 1024;
 /// WASI component requests running at once across every app: two per CPU core,
-/// within 8â€“64.
+/// within 8–64.
 fn component_requests() -> usize {
     std::thread::available_parallelism()
         .map_or(8, |n| n.get() * 2)

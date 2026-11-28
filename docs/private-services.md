@@ -12,13 +12,13 @@ when it fast-forwards. For diverged history, merge the current default branch
 into the source branch with skald, resolve any conflicts, push the result, then
 refresh and review the submission.
 
-Create an expiring read or write token under **My account â†’ Skald
+Create an expiring read or write token under **My account → Skald
 credentials**. Set SKALD_TOKEN in the shell that runs skald, or supply the token
 to an application using the native SDK. Paired management API clients can
 request repository-scoped transfer tokens. Both credentials follow current
 account and repository permissions.
 
-Use **Server settings â†’ Skald storage** for per-repository and installation
+Use **Server settings → Skald storage** for per-repository and installation
 quotas. The limits count logical bytes of unique objects within each repository,
 including history, pending uploads, and metadata. Compression may reduce
 physical disk usage. The default limits are 1 GiB per repository and 20 GiB
@@ -89,7 +89,7 @@ history and discussions remain in the preserved archive.
 
 Add `personal-storage` to an app manifest and use `loki_sdk::PersonalStorage` in
 signed-in HTTP handlers. The installation owner enables the app's personal
-storage permission from **Applications Ã¢â€ â€™ Manage**. Each app sees its own folder
+storage permission from **Applications → Manage**. Each app sees its own folder
 for the current user. `PersonalStorage.usage()` reports the account's usage
 across those folders. Small generated files use `write`. Use `import_upload`
 with a multipart upload and the `uploads` capability for larger files. Use `read`
@@ -104,7 +104,7 @@ storage limits.
 
 Installation backups include personal files. Users can download selected app
 folders, including folders from removed apps, in a private ZIP from
-**Account Ã¢â€ â€™ Export my data**. Each export supports up to 50 GiB and 20,000 files.
+**Account → Export my data**. Each export supports up to 50 GiB and 20,000 files.
 The ZIP's `manifest.json` lists every included file and, under `skipped`, any
 file an app replaced or deleted while the download was running.
 

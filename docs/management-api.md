@@ -23,7 +23,7 @@ repository permissions. It also works with permitted Save Sync and shared
 files on the existing `/sync/v1` and `/files/v1` APIs. Request `owner` for
 server administration. Only the installation owner can approve it, using
 their current password and configured second factor. Grants expire after 90
-days and can be revoked from **My account ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Devices**. Regular sync and files
+days and can be revoked from **My account → Devices**. Regular sync and files
 device tokens cannot call the management API.
 
 `GET /api/v1/devices` lists the caller's own devices. Send `{"name":"New name"}`
@@ -61,7 +61,7 @@ See the [Skald protocol](https://github.com/LOKI-Server/skald-vcs/blob/main/docs
 also list `/api/v1/admin/users`, `/groups`, `/grants`, `/activity`, `/settings`, and `/backups`
 under the same `/api/v1/admin` prefix.
 
-Send `POST /api/v1/admin/actions` with `{"action":"ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦","id":"ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦","data":{ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦}}`.
+Send `POST /api/v1/admin/actions` with `{"action":"…","id":"…","data":{…}}`.
 The API supports the following actions with the same permission rules as the
 dashboard:
 
