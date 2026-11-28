@@ -25,7 +25,11 @@ const PARTS: &[(&str, &str, &[&str])] = &[
     ("app-data", "App data", &["app-data"]),
     ("personal", "Personal files", &["personal-files"]),
     ("pictures", "Pictures and icons", &["avatars"]),
-    ("database", "Database", &["loki.db", "loki.db-wal", "loki.db-shm"]),
+    (
+        "database",
+        "Database",
+        &["loki.db", "loki.db-wal", "loki.db-shm"],
+    ),
     ("backups", "Backups", &["backups"]),
     ("rollbacks", "App rollback copies", &["rollback-data"]),
     ("logs", "Logs", &["logs"]),
@@ -108,7 +112,9 @@ fn size(path: &Path) -> u64 {
         for entry in entries.flatten() {
             match entry.file_type() {
                 Ok(kind) if kind.is_dir() => stack.push(entry.path()),
-                Ok(kind) if kind.is_file() => total += entry.metadata().map_or(0, |meta| meta.len()),
+                Ok(kind) if kind.is_file() => {
+                    total += entry.metadata().map_or(0, |meta| meta.len())
+                }
                 _ => {}
             }
         }
@@ -132,7 +138,12 @@ mod tests {
         let report = measure(data).unwrap();
         assert_eq!(report["total"], 3640);
         let items = report["items"].as_array().unwrap();
-        let find = |key: &str| items.iter().find(|item| item["key"] == key).map(|item| item["bytes"].clone());
+        let find = |key: &str| {
+            items
+                .iter()
+                .find(|item| item["key"] == key)
+                .map(|item| item["bytes"].clone())
+        };
         assert_eq!(find("sync"), Some(3000.into()));
         assert_eq!(find("database"), Some(600.into()));
         assert_eq!(find("other"), Some(40.into()));

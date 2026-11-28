@@ -398,10 +398,6 @@ pub async fn adopt(state: &State) -> Result<String> {
     let settings = state.0.settings.read().await.clone();
     let value = current_config(&settings).await?;
     let json = serde_json::to_string_pretty(&value)?;
-    tokio::fs::write(
-        state.0.data.join("caddy/before-adoption.json"),
-        &json,
-    )
-    .await?;
+    tokio::fs::write(state.0.data.join("caddy/before-adoption.json"), &json).await?;
     Ok(json)
 }

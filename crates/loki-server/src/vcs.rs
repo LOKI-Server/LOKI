@@ -13,7 +13,9 @@ use skald_vcs_core::server::{Conflict, Hosted};
 use std::path::{Path, PathBuf};
 
 pub(crate) use ownership::waiting_count as transfers_waiting;
-pub(crate) use quota::{Subject as QuotaSubject, overrides as quota_overrides, set_override as set_quota};
+pub(crate) use quota::{
+    Subject as QuotaSubject, overrides as quota_overrides, set_override as set_quota,
+};
 pub(crate) use web::{api_router, router};
 
 pub(crate) const PROTOCOL_PATH: &str = "/skald/v1";

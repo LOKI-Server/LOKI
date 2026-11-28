@@ -25,7 +25,9 @@ pub(crate) async fn at_startup(data: &Path, db: &SqlitePool) {
 /// An app's previous package stays beside it for rolling back; once the app is
 /// uninstalled, nothing can use it. (Uninstalling keeps the app's data on purpose.)
 async fn remove_old_packages(data: &Path, db: &SqlitePool) -> anyhow::Result<()> {
-    let installed: Vec<String> = sqlx::query_scalar("SELECT id FROM apps").fetch_all(db).await?;
+    let installed: Vec<String> = sqlx::query_scalar("SELECT id FROM apps")
+        .fetch_all(db)
+        .await?;
     for entry in std::fs::read_dir(data.join("apps"))?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if let Some(id) = name.strip_suffix(".previous")
@@ -52,7 +54,9 @@ fn clear_staging(data: &Path) {
         };
         match removed {
             Ok(()) => tracing::info!(path = %path.display(), "removed a leftover temporary file"),
-            Err(error) => tracing::warn!(path = %path.display(), %error, "could not remove a leftover temporary file"),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "could not remove a leftover temporary file")
+            }
         }
     }
 }
@@ -62,7 +66,8 @@ fn move_caddy_snapshots(data: &Path) -> std::io::Result<()> {
     let history = data.join("caddy").join("history");
     for entry in std::fs::read_dir(data.join("backups"))?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("caddy-") || !name.ends_with(".json") || !entry.file_type()?.is_file() {
+        if !name.starts_with("caddy-") || !name.ends_with(".json") || !entry.file_type()?.is_file()
+        {
             continue;
         }
         let target = if name == "caddy-before-adoption.json" {
@@ -89,7 +94,12 @@ pub fn prune_caddy_history(data: &Path) {
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let time = name.strip_prefix("caddy-")?.split('-').next()?.parse().ok()?;
+            let time = name
+                .strip_prefix("caddy-")?
+                .split('-')
+                .next()?
+                .parse()
+                .ok()?;
             Some((time, entry.path()))
         })
         .collect();
@@ -132,7 +142,8 @@ async fn tidy_rollbacks(data: &Path, db: &SqlitePool) -> anyhow::Result<()> {
     for folder in [data.join("backups"), rollbacks] {
         for entry in std::fs::read_dir(&folder)?.flatten() {
             let name = entry.file_name();
-            let is_copy = folder.ends_with("rollback-data") || name.to_string_lossy().starts_with("app-");
+            let is_copy =
+                folder.ends_with("rollback-data") || name.to_string_lossy().starts_with("app-");
             if is_copy
                 && entry.file_type()?.is_dir()
                 && !kept.contains(&name)
@@ -148,8 +159,11 @@ async fn tidy_rollbacks(data: &Path, db: &SqlitePool) -> anyhow::Result<()> {
 /// Deletes an app data copy LOKI made, never anything outside the data directory.
 pub(crate) async fn remove_copy(data: &Path, copy: &str) {
     let path = Path::new(copy);
-    let ours = ["rollback-data", "backups"].iter().any(|folder| path.starts_with(data.join(folder)) && path != data.join(folder));
-    if ours && let Err(error) = tokio::fs::remove_dir_all(path).await
+    let ours = ["rollback-data", "backups"]
+        .iter()
+        .any(|folder| path.starts_with(data.join(folder)) && path != data.join(folder));
+    if ours
+        && let Err(error) = tokio::fs::remove_dir_all(path).await
         && error.kind() != std::io::ErrorKind::NotFound
     {
         tracing::warn!(path = %path.display(), %error, "could not remove an app data copy");
@@ -164,7 +178,15 @@ mod tests {
     async fn startup_clears_staging_and_tidies_the_backups_folder() {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path();
-        for folder in ["staging/old-backup/sync", "backups", "caddy", "rollback-data/orphan", "apps/notes.previous", "apps/gone.previous", "app-data/gone"] {
+        for folder in [
+            "staging/old-backup/sync",
+            "backups",
+            "caddy",
+            "rollback-data/orphan",
+            "apps/notes.previous",
+            "apps/gone.previous",
+            "app-data/gone",
+        ] {
             std::fs::create_dir_all(data.join(folder)).unwrap();
         }
         std::fs::write(data.join("staging/old-backup/sync/blob"), b"x").unwrap();
@@ -179,20 +201,33 @@ mod tests {
         std::fs::create_dir_all(data.join("backups/app-notes-0")).unwrap();
 
         let db = crate::db::open(&data.join("loki.db")).await.unwrap();
-        sqlx::query("INSERT INTO resources(id,kind,name) VALUES('notes','app','Notes')").execute(&db).await.unwrap();
-        sqlx::query("INSERT INTO apps(id,manifest,port,secret,previous) VALUES('notes','{}',1,'',?)")
-            .bind(kept.to_string_lossy().as_ref())
+        sqlx::query("INSERT INTO resources(id,kind,name) VALUES('notes','app','Notes')")
             .execute(&db)
             .await
             .unwrap();
+        sqlx::query(
+            "INSERT INTO apps(id,manifest,port,secret,previous) VALUES('notes','{}',1,'',?)",
+        )
+        .bind(kept.to_string_lossy().as_ref())
+        .execute(&db)
+        .await
+        .unwrap();
 
         at_startup(data, &db).await;
 
         assert_eq!(std::fs::read_dir(data.join("staging")).unwrap().count(), 0);
-        let backups: Vec<_> = std::fs::read_dir(data.join("backups")).unwrap().flatten().map(|e| e.file_name().into_string().unwrap()).collect();
+        let backups: Vec<_> = std::fs::read_dir(data.join("backups"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
         assert_eq!(backups, ["loki-1-a.zip"]);
         assert!(data.join("caddy/before-adoption.json").is_file());
-        let mut history: Vec<_> = std::fs::read_dir(data.join("caddy/history")).unwrap().flatten().map(|e| e.file_name().into_string().unwrap()).collect();
+        let mut history: Vec<_> = std::fs::read_dir(data.join("caddy/history"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
         history.sort();
         assert_eq!(history.len(), CADDY_SNAPSHOTS);
         assert_eq!(history[0], "caddy-105-x.json");
@@ -203,7 +238,10 @@ mod tests {
         assert!(data.join("apps/notes.previous").is_dir());
         assert!(!data.join("apps/gone.previous").exists());
         assert!(data.join("app-data/gone").is_dir());
-        let previous: String = sqlx::query_scalar("SELECT previous FROM apps WHERE id='notes'").fetch_one(&db).await.unwrap();
+        let previous: String = sqlx::query_scalar("SELECT previous FROM apps WHERE id='notes'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert_eq!(PathBuf::from(previous), moved);
     }
 }

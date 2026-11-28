@@ -240,11 +240,12 @@ pub async fn import(
         quiesce(state, &m.id).await?;
         stop_inner(state, &m.id).await?;
         // One copy per app to roll back to; the one it replaces goes below.
-        let snapshot = state
-            .0
-            .data
-            .join("rollback-data")
-            .join(format!("app-{}-{}", m.id, auth::id()));
+        let snapshot =
+            state
+                .0
+                .data
+                .join("rollback-data")
+                .join(format!("app-{}-{}", m.id, auth::id()));
         let source = state.0.data.join("app-data").join(&m.id);
         let output = snapshot.clone();
         tokio::task::spawn_blocking(move || copy_tree(&source, &output)).await??;
@@ -471,7 +472,10 @@ pub async fn action(state: &State, id: &str, action: &str) -> Result<()> {
                     .await?;
                 tokio::fs::remove_dir_all(state.0.data.join("apps").join(id)).await?;
                 // Nothing can roll back an uninstalled app; its own data stays.
-                let _ = tokio::fs::remove_dir_all(state.0.data.join("apps").join(format!("{id}.previous"))).await;
+                let _ = tokio::fs::remove_dir_all(
+                    state.0.data.join("apps").join(format!("{id}.previous")),
+                )
+                .await;
                 if let Some(copy) = &app.previous {
                     crate::tidy::remove_copy(&state.0.data, copy).await;
                 }
@@ -695,7 +699,10 @@ mod tests {
         .unwrap();
         for config in [serde_json::json!({}), serde_json::json!({"token": ""})] {
             let error = validate_config(&manifest, &config).unwrap_err();
-            assert_eq!(error.message, "Enter Bot token in the app's settings before enabling it.");
+            assert_eq!(
+                error.message,
+                "Enter Bot token in the app's settings before enabling it."
+            );
         }
         assert!(validate_config(&manifest, &serde_json::json!({"token": "abc"})).is_ok());
         let wrong = validate_config(&manifest, &serde_json::json!({"token": 5})).unwrap_err();

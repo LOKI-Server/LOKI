@@ -1278,14 +1278,30 @@ async fn owners_set_and_clear_repository_limits_for_people_and_groups() {
 
     let limits = json!({"repo_mib":2048,"total_mib":10240});
     assert_eq!(
-        alice.request("POST", "/api/action", set(limits.clone())).await.status(),
+        alice
+            .request("POST", "/api/action", set(limits.clone()))
+            .await
+            .status(),
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        owner.request("POST", "/api/action", set(json!({"repo_mib":0,"total_mib":null}))).await.status(),
+        owner
+            .request(
+                "POST",
+                "/api/action",
+                set(json!({"repo_mib":0,"total_mib":null}))
+            )
+            .await
+            .status(),
         StatusCode::BAD_REQUEST
     );
-    assert!(owner.request("POST", "/api/action", set(limits.clone())).await.status().is_success());
+    assert!(
+        owner
+            .request("POST", "/api/action", set(limits.clone()))
+            .await
+            .status()
+            .is_success()
+    );
     let dashboard = json_body(owner.request("GET", "/api/state", Value::Null).await).await;
     assert_eq!(dashboard["vcs_quotas"]["alice"], limits);
     let bytes: (Option<i64>, Option<i64>) =
@@ -1297,10 +1313,21 @@ async fn owners_set_and_clear_repository_limits_for_people_and_groups() {
 
     // Clearing both limits returns alice to the server defaults.
     let clear = json!({"repo_mib":null,"total_mib":null});
-    assert!(owner.request("POST", "/api/action", set(clear)).await.status().is_success());
+    assert!(
+        owner
+            .request("POST", "/api/action", set(clear))
+            .await
+            .status()
+            .is_success()
+    );
     let dashboard = json_body(owner.request("GET", "/api/state", Value::Null).await).await;
     assert_eq!(dashboard["vcs_quotas"], json!({}));
-    assert!(json_body(alice.request("GET", "/api/state", Value::Null).await).await.get("vcs_quotas").is_none());
+    assert!(
+        json_body(alice.request("GET", "/api/state", Value::Null).await)
+            .await
+            .get("vcs_quotas")
+            .is_none()
+    );
 
     // Groups get limits of their own, for the repositories they own.
     let team = "0f9a3b5e-2c4d-4e6f-8a1b-3c5d7e9f1a2b";
@@ -1312,14 +1339,30 @@ async fn owners_set_and_clear_repository_limits_for_people_and_groups() {
     let group = |id: &str, data: Value| json!({"action":"vcs-group-quota","id":id,"data":data});
     let only_total = json!({"repo_mib":null,"total_mib":4096});
     assert_eq!(
-        alice.request("POST", "/api/action", group(team, only_total.clone())).await.status(),
+        alice
+            .request("POST", "/api/action", group(team, only_total.clone()))
+            .await
+            .status(),
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        owner.request("POST", "/api/action", group("no-such-group", only_total.clone())).await.status(),
+        owner
+            .request(
+                "POST",
+                "/api/action",
+                group("no-such-group", only_total.clone())
+            )
+            .await
+            .status(),
         StatusCode::NOT_FOUND
     );
-    assert!(owner.request("POST", "/api/action", group(team, only_total.clone())).await.status().is_success());
+    assert!(
+        owner
+            .request("POST", "/api/action", group(team, only_total.clone()))
+            .await
+            .status()
+            .is_success()
+    );
     let dashboard = json_body(owner.request("GET", "/api/state", Value::Null).await).await;
     assert_eq!(dashboard["vcs_group_quotas"][team], only_total);
     assert_eq!(dashboard["vcs_quotas"], json!({}));
@@ -1342,10 +1385,22 @@ async fn rejected_accounts_are_removed_three_days_later_unless_they_own_work() {
         .execute(&state.0.db)
         .await
         .unwrap();
-    assert!(alice.request("POST", "/api/repos", json!({"name":"keep"})).await.status().is_success());
+    assert!(
+        alice
+            .request("POST", "/api/repos", json!({"name":"keep"}))
+            .await
+            .status()
+            .is_success()
+    );
     for id in ["alice", "bob", "carol"] {
         let reject = json!({"action":"user-status","id":id,"data":{"status":"rejected"}});
-        assert!(owner.request("POST", "/api/action", reject).await.status().is_success());
+        assert!(
+            owner
+                .request("POST", "/api/action", reject)
+                .await
+                .status()
+                .is_success()
+        );
     }
     let dashboard = json_body(owner.request("GET", "/api/state", Value::Null).await).await;
     let due = dashboard["removals"]["bob"].as_i64().unwrap();
@@ -1360,18 +1415,26 @@ async fn rejected_accounts_are_removed_three_days_later_unless_they_own_work() {
         .await
         .unwrap();
     assert_eq!(loki_server::auth::remove_rejected(&state).await.unwrap(), 1);
-    let left: Vec<String> = sqlx::query_scalar("SELECT id FROM users WHERE id IN('alice','bob','carol') ORDER BY id")
-        .fetch_all(&state.0.db)
-        .await
-        .unwrap();
+    let left: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM users WHERE id IN('alice','bob','carol') ORDER BY id")
+            .fetch_all(&state.0.db)
+            .await
+            .unwrap();
     assert_eq!(left, ["alice", "carol"]);
 
     // Approving again stops the countdown.
     let approve = json!({"action":"user-status","id":"carol","data":{"status":"approved"}});
-    assert!(owner.request("POST", "/api/action", approve).await.status().is_success());
-    let rejected: Option<i64> = sqlx::query_scalar("SELECT rejected_at FROM users WHERE id='carol'")
-        .fetch_one(&state.0.db)
-        .await
-        .unwrap();
+    assert!(
+        owner
+            .request("POST", "/api/action", approve)
+            .await
+            .status()
+            .is_success()
+    );
+    let rejected: Option<i64> =
+        sqlx::query_scalar("SELECT rejected_at FROM users WHERE id='carol'")
+            .fetch_one(&state.0.db)
+            .await
+            .unwrap();
     assert_eq!(rejected, None);
 }

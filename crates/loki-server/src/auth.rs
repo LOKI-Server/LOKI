@@ -684,7 +684,8 @@ pub async fn remove_rejected(state: &State) -> Result<u64> {
             .await?
             .rows_affected();
         tx.commit().await?;
-        let _ = tokio::fs::remove_file(state.0.data.join("avatars").join(format!("{id}.png"))).await;
+        let _ =
+            tokio::fs::remove_file(state.0.data.join("avatars").join(format!("{id}.png"))).await;
         state.audit("", "rejected-account-removed", &id).await?;
     }
     Ok(removed)

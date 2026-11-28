@@ -68,11 +68,12 @@ pub(super) async fn limits(
         None => (Subject::User, owner),
     };
     let (table, key) = subject.table();
-    let custom: Option<(Option<i64>, Option<i64>)> =
-        sqlx::query_as(&format!("SELECT repo_bytes,total_bytes FROM {table} WHERE {key}=?"))
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await?;
+    let custom: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(&format!(
+        "SELECT repo_bytes,total_bytes FROM {table} WHERE {key}=?"
+    ))
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
     let Some((repo, total)) = custom else {
         return Ok(limits);
     };
@@ -102,7 +103,10 @@ pub(crate) async fn overrides(db: &sqlx::SqlitePool, subject: Subject) -> Result
     Ok(Value::Object(
         rows.into_iter()
             .map(|(id, repo, total)| {
-                (id, json!({"repo_mib":repo.map(|b| b / MIB),"total_mib":total.map(|b| b / MIB)}))
+                (
+                    id,
+                    json!({"repo_mib":repo.map(|b| b / MIB),"total_mib":total.map(|b| b / MIB)}),
+                )
             })
             .collect(),
     ))
@@ -163,7 +167,11 @@ mod tests {
 
     #[test]
     fn room_is_the_tightest_of_the_repository_server_and_owner_limits() {
-        let mut limits = Limits { repo: 100, server: 1000, owner: None };
+        let mut limits = Limits {
+            repo: 100,
+            server: 1000,
+            owner: None,
+        };
         assert_eq!(limits.room(40, 500), 60);
         assert_eq!(limits.room(40, 990), 10);
         limits.owner = Some((300, 280));

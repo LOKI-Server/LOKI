@@ -319,13 +319,15 @@ pub(super) async fn share_save(state: &State, id: &str, input: Share) -> Result<
             .bind(name)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO shares(id,root,excluded_extensions,supports_updates) VALUES(?,?,?,?)")
-            .bind(&rid)
-            .bind(root.to_string_lossy().as_ref())
-            .bind(&excluded)
-            .bind(input.supports_updates.unwrap_or(false))
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO shares(id,root,excluded_extensions,supports_updates) VALUES(?,?,?,?)",
+        )
+        .bind(&rid)
+        .bind(root.to_string_lossy().as_ref())
+        .bind(&excluded)
+        .bind(input.supports_updates.unwrap_or(false))
+        .execute(&mut *tx)
+        .await?;
     } else {
         let saved = sqlx::query("UPDATE shares SET root=?,excluded_extensions=?,supports_updates=coalesce(?,supports_updates) WHERE id=?")
             .bind(root.to_string_lossy().as_ref())

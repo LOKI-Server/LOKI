@@ -659,7 +659,12 @@ async fn save_picture(bytes: axum::body::Bytes, path: std::path::PathBuf) -> Res
         // its centre square here, so every picture is square.
         let side = image.width().min(image.height());
         image
-            .crop_imm((image.width() - side) / 2, (image.height() - side) / 2, side, side)
+            .crop_imm(
+                (image.width() - side) / 2,
+                (image.height() - side) / 2,
+                side,
+                side,
+            )
             .thumbnail_exact(256.min(side), 256.min(side))
             .save_with_format(path, image::ImageFormat::Png)?;
         Ok(())
@@ -736,10 +741,15 @@ async fn serve_group_icon(
 }
 /// Connected services and file shares may have an icon, kept beside people's pictures.
 pub(crate) fn resource_icon_path(state: &State, id: &str) -> Result<std::path::PathBuf> {
-    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
         return Err(Error::not_found());
     }
-    Ok(state.0.data.join("avatars").join(format!("service-{id}.png")))
+    Ok(state
+        .0
+        .data
+        .join("avatars")
+        .join(format!("service-{id}.png")))
 }
 
 /// The kinds of resource that take an icon: routes to connected services, and shares.
